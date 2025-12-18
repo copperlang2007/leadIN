@@ -32,7 +32,7 @@ export const users = pgTable("users", {
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
-  balance: decimal("balance", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  balance: decimal("balance", { precision: 10, scale: 2 }).notNull().default("500.00"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
