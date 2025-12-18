@@ -1,10 +1,11 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
 import type { Lead } from "@/lib/types";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +32,8 @@ import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_b
 
 export default function Marketplace() {
   const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [selectedLeads, setSelectedLeads] = useState<Lead[]>([]);
   const [priceRange, setPriceRange] = useState([0, 100]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
@@ -40,6 +43,38 @@ export default function Marketplace() {
   // Details Dialog State
   const [detailsLead, setDetailsLead] = useState<Lead | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+
+  const createPurchaseMutation = (leadId: number, price: string) => useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/leads/${leadId}/purchase`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Purchase failed');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Purchase successful!",
+        description: `You've purchased lead #${leadId} for $${price}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/leads'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/auth/user'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      setIsCompareOpen(false);
+      setSelectedLeads([]);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Purchase failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   // Build query params
   const queryParams = useMemo(() => {
@@ -329,33 +364,43 @@ export default function Marketplace() {
                       </div>
                       
                       {/* Lead Columns */}
-                      {selectedLeads.map(lead => (
-                        <div key={lead.id} className="space-y-4 border rounded-lg p-4 bg-card shadow-sm">
-                          <div className="h-12 flex flex-col justify-center">
-                            <span className="font-bold">#{lead.id}</span>
-                            <span className="text-xs text-muted-foreground truncate">{lead.vendor.name}</span>
+                      {selectedLeads.map(lead => {
+                        const purchaseMutation = createPurchaseMutation(lead.id, lead.price);
+                        return (
+                          <div key={lead.id} className="space-y-4 border rounded-lg p-4 bg-card shadow-sm">
+                            <div className="h-12 flex flex-col justify-center">
+                              <span className="font-bold">#{lead.id}</span>
+                              <span className="text-xs text-muted-foreground truncate">{lead.vendor.name}</span>
+                            </div>
+                            
+                            <div className="h-8 flex items-center font-bold text-lg text-primary">${lead.price}</div>
+                            <div className="h-8 flex items-center">
+                              <Badge variant={lead.compatibilityScore > 80 ? "default" : "secondary"}>
+                                {lead.compatibilityScore}% Match
+                              </Badge>
+                            </div>
+                            <div className="h-8 flex items-center text-sm">{lead.type}</div>
+                            <div className="h-8 flex items-center text-sm font-semibold">{lead.state}</div>
+                            <div className="h-8 flex items-center text-sm">{lead.exclusivity}</div>
+                            <div className="h-8 flex items-center text-sm">{lead.consumerAge}</div>
+                            <div className="h-8 flex items-center text-sm">{lead.income || "N/A"}</div>
+                            <div className="h-8 flex items-center text-sm">
+                              {lead.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <span className="text-muted-foreground">-</span>}
+                            </div>
+                            <div className="h-8 flex items-center text-sm truncate" title={lead.source}>{lead.source}</div>
+                            <div className="h-8 flex items-center text-sm">{lead.vendor.rating}/5.0</div>
+                            
+                            <Button 
+                              className="w-full mt-4"
+                              onClick={() => purchaseMutation.mutate()}
+                              disabled={purchaseMutation.isPending}
+                              data-testid={`button-purchase-compare-${lead.id}`}
+                            >
+                              {purchaseMutation.isPending ? "Processing..." : "Purchase Lead"}
+                            </Button>
                           </div>
-                          
-                          <div className="h-8 flex items-center font-bold text-lg text-primary">${lead.price}</div>
-                          <div className="h-8 flex items-center">
-                            <Badge variant={lead.compatibilityScore > 80 ? "default" : "secondary"}>
-                              {lead.compatibilityScore}% Match
-                            </Badge>
-                          </div>
-                          <div className="h-8 flex items-center text-sm">{lead.type}</div>
-                          <div className="h-8 flex items-center text-sm font-semibold">{lead.state}</div>
-                          <div className="h-8 flex items-center text-sm">{lead.exclusivity}</div>
-                          <div className="h-8 flex items-center text-sm">{lead.consumerAge}</div>
-                          <div className="h-8 flex items-center text-sm">{lead.income || "N/A"}</div>
-                          <div className="h-8 flex items-center text-sm">
-                            {lead.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <span className="text-muted-foreground">-</span>}
-                          </div>
-                          <div className="h-8 flex items-center text-sm truncate" title={lead.source}>{lead.source}</div>
-                          <div className="h-8 flex items-center text-sm">{lead.vendor.rating}/5.0</div>
-                          
-                          <Button className="w-full mt-4">Add to Cart</Button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                   <DrawerFooter>

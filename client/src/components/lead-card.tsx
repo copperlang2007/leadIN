@@ -6,6 +6,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { CheckCircle2, Clock, MapPin, Activity } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import verifiedIcon from "@assets/generated_images/verified_trust_shield_icon.png";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 
 interface LeadCardProps {
   lead: Lead;
@@ -17,9 +19,41 @@ interface LeadCardProps {
 
 export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSelectedForCompare }: LeadCardProps) {
   const isStateMatch = licensedStates.includes(lead.state);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   // Determine card border color based on compatibility
   const compatibilityColor = lead.compatibilityScore > 85 ? "border-l-success" : lead.compatibilityScore > 65 ? "border-l-warning" : "border-l-muted";
+
+  const purchaseMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/leads/${lead.id}/purchase`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Purchase failed');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Purchase successful!",
+        description: `You've purchased lead #${lead.id} for $${lead.price}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/leads'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/auth/user'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Purchase failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   return (
     <Card className={`group relative overflow-hidden transition-all duration-200 hover:shadow-md border-l-4 ${compatibilityColor}`}>
@@ -99,11 +133,18 @@ export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSel
           size="sm" 
           className="flex-1 text-xs"
           onClick={() => onCompare(lead)}
+          data-testid={`button-compare-${lead.id}`}
         >
           {isSelectedForCompare ? "Remove" : "Compare"}
         </Button>
-        <Button size="sm" className="flex-[2] text-xs font-semibold shadow-sm">
-          Purchase Lead
+        <Button 
+          size="sm" 
+          className="flex-[2] text-xs font-semibold shadow-sm"
+          onClick={() => purchaseMutation.mutate()}
+          disabled={purchaseMutation.isPending}
+          data-testid={`button-purchase-${lead.id}`}
+        >
+          {purchaseMutation.isPending ? "Processing..." : "Purchase Lead"}
         </Button>
       </CardFooter>
     </Card>
