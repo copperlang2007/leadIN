@@ -13,9 +13,10 @@ externalPort = 80
 PORT = "5000"
 
 [deployment]
-deploymentTarget = "static"
+deploymentTarget = "autoscale"
 build = ["npm", "run", "build"]
 publicDir = "dist/public"
+run = ["node", "./dist/index.cjs"]
 
 [workflows]
 runButton = "Project"
@@ -35,11 +36,12 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "npm run dev:client"
+args = "npm run dev"
 waitForPort = 5000
 
 [agent]
-mockupState = "MOCKUP"
+mockupState = "FULLSTACK"
+integrations = ["javascript_log_in_with_replit:1.0.0", "javascript_database:1.0.0"]
 
 [objectStorage]
 defaultBucketID = "replit-objstore-0d5b405f-dde9-4cea-8f75-c9e74e171367"
