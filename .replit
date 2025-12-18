@@ -37,3 +37,9 @@ author = "agent"
 task = "shell.exec"
 args = "npm run dev:client"
 waitForPort = 5000
+
+[agent]
+mockupState = "MOCKUP"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-0d5b405f-dde9-4cea-8f75-c9e74e171367"
