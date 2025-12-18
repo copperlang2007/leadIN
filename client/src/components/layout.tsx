@@ -12,10 +12,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const { user } = useAuth();
 
   const NavItem = ({ href, icon: Icon, label }: { href: string, icon: any, label: string }) => {
     const isActive = location === href;
@@ -60,14 +62,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       <div className="p-4 border-t border-sidebar-border">
         <div className="flex items-center gap-3 px-3 py-2">
-          <div className="h-8 w-8 rounded-full bg-sidebar-accent flex items-center justify-center border border-sidebar-border">
-            <span className="text-xs font-medium">JD</span>
+          <div className="h-8 w-8 rounded-full bg-sidebar-accent flex items-center justify-center border border-sidebar-border overflow-hidden">
+            {user?.profileImageUrl ? (
+              <img src={user.profileImageUrl} alt="Profile" className="h-full w-full object-cover" />
+            ) : (
+              <span className="text-xs font-medium">
+                {user?.firstName?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
+              </span>
+            )}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate text-sidebar-foreground">John Doe</p>
-            <p className="text-xs text-muted-foreground truncate">john@agency.com</p>
+            <p className="text-sm font-medium truncate text-sidebar-foreground">
+              {user?.firstName && user?.lastName 
+                ? `${user.firstName} ${user.lastName}` 
+                : user?.email || 'User'}
+            </p>
+            <p className="text-xs text-muted-foreground truncate">{user?.email || ''}</p>
           </div>
-          <LogOut className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground" />
+          <button 
+            onClick={() => window.location.href = '/api/logout'}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </div>
@@ -108,7 +125,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-full border border-border/50">
               <span className="w-2 h-2 rounded-full bg-success animate-pulse"></span>
-              Live Feed: 124 leads added in last hour
+              Live Feed: {user ? 'Connected' : 'Loading...'}
             </div>
 
             <Button variant="ghost" size="icon" className="relative">
@@ -120,7 +137,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
             
             <div className="flex flex-col items-end mr-2 hidden sm:block">
               <span className="text-xs font-medium text-muted-foreground">Balance</span>
-              <span className="text-sm font-bold font-mono">$2,450.00</span>
+              <span className="text-sm font-bold font-mono">
+                ${user?.balance ? parseFloat(user.balance).toFixed(2) : '0.00'}
+              </span>
             </div>
             
             <Button size="sm" className="bg-primary text-primary-foreground shadow-sm hover:bg-primary/90">

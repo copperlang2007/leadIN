@@ -1,23 +1,22 @@
-import { Lead, USER_PROFILE } from "@/lib/mock-data";
+import type { Lead } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { CheckCircle2, Clock, MapPin, Shield, Activity, Info } from "lucide-react";
+import { CheckCircle2, Clock, MapPin, Activity } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import verifiedIcon from "@assets/generated_images/verified_trust_shield_icon.png";
 
 interface LeadCardProps {
   lead: Lead;
+  licensedStates: string[];
   onCompare: (lead: Lead) => void;
   onViewDetails: (lead: Lead) => void;
   isSelectedForCompare: boolean;
 }
 
-export function LeadCard({ lead, onCompare, onViewDetails, isSelectedForCompare }: LeadCardProps) {
-  // Compatibility Logic
-  const isStateMatch = USER_PROFILE.licensedStates.includes(lead.state);
-  const isTypeMatch = USER_PROFILE.preferredTypes.includes(lead.type);
+export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSelectedForCompare }: LeadCardProps) {
+  const isStateMatch = licensedStates.includes(lead.state);
   
   // Determine card border color based on compatibility
   const compatibilityColor = lead.compatibilityScore > 85 ? "border-l-success" : lead.compatibilityScore > 65 ? "border-l-warning" : "border-l-muted";
@@ -77,7 +76,7 @@ export function LeadCard({ lead, onCompare, onViewDetails, isSelectedForCompare 
             <span className="text-muted-foreground">Generated</span>
             <div className="flex items-center gap-1 text-foreground">
               <Clock className="h-3 w-3 text-muted-foreground" />
-              <span>{formatDistanceToNow(new Date(lead.generatedAt), { addSuffix: true })}</span>
+              <span>{lead.createdAt ? formatDistanceToNow(new Date(lead.createdAt), { addSuffix: true }) : 'Recently'}</span>
             </div>
           </div>
           

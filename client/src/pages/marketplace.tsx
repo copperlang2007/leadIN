@@ -1,8 +1,10 @@
 import { useState, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
-import { MOCK_LEADS, Lead, LeadType, USER_PROFILE } from "@/lib/mock-data";
+import type { Lead } from "@/lib/types";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +16,7 @@ import {
   AccordionItem, 
   AccordionTrigger 
 } from "@/components/ui/accordion";
-import { Filter, X, ArrowUpDown, ChevronDown, CheckCircle2 } from "lucide-react";
+import { Filter, X, ArrowUpDown, ChevronDown, CheckCircle2, Loader2 } from "lucide-react";
 import {
   Drawer,
   DrawerClose,
@@ -28,6 +30,7 @@ import {
 import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_background.png";
 
 export default function Marketplace() {
+  const { user } = useAuth();
   const [selectedLeads, setSelectedLeads] = useState<Lead[]>([]);
   const [priceRange, setPriceRange] = useState([0, 100]);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
@@ -38,22 +41,32 @@ export default function Marketplace() {
   const [detailsLead, setDetailsLead] = useState<Lead | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
-  // Filter Logic
-  const filteredLeads = useMemo(() => {
-    return MOCK_LEADS.filter(lead => {
-      const matchesPrice = lead.price >= priceRange[0] && lead.price <= priceRange[1];
-      const matchesType = selectedTypes.length === 0 || selectedTypes.includes(lead.type);
-      const matchesState = selectedStates.length === 0 || selectedStates.includes(lead.state);
-      return matchesPrice && matchesType && matchesState;
-    });
-  }, [priceRange, selectedTypes, selectedStates]);
+  // Build query params
+  const queryParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (selectedTypes.length > 0) {
+      selectedTypes.forEach(type => params.append('types', type));
+    }
+    if (selectedStates.length > 0) {
+      selectedStates.forEach(state => params.append('states', state));
+    }
+    params.append('minPrice', priceRange[0].toString());
+    params.append('maxPrice', priceRange[1].toString());
+    return params.toString();
+  }, [selectedTypes, selectedStates, priceRange]);
+
+  // Fetch leads from API
+  const { data: leads = [], isLoading } = useQuery<Lead[]>({
+    queryKey: [`/api/leads?${queryParams}`],
+  });
+
+  const licensedStates = user?.profile?.licensedStates || [];
 
   const toggleCompare = (lead: Lead) => {
     if (selectedLeads.find(l => l.id === lead.id)) {
       setSelectedLeads(prev => prev.filter(l => l.id !== lead.id));
     } else {
       if (selectedLeads.length >= 4) {
-        // ideally show toast here
         return;
       }
       setSelectedLeads(prev => [...prev, lead]);
@@ -155,7 +168,7 @@ export default function Marketplace() {
                 <AccordionContent>
                   <div className="grid grid-cols-2 gap-2 pt-1">
                     {["FL", "TX", "CA", "AZ", "NC", "SC", "OH", "MI"].map((state) => {
-                      const isLicensed = USER_PROFILE.licensedStates.includes(state);
+                      const isLicensed = licensedStates.includes(state);
                       return (
                         <div key={state} className="flex items-center space-x-2">
                           <Checkbox 
@@ -203,7 +216,13 @@ export default function Marketplace() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between mb-4">
               <div className="text-sm text-muted-foreground">
-                Showing <span className="font-semibold text-foreground">{filteredLeads.length}</span> leads
+                {isLoading ? (
+                  <span>Loading...</span>
+                ) : (
+                  <>
+                    Showing <span className="font-semibold text-foreground">{leads.length}</span> leads
+                  </>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Sort by:</span>
@@ -213,29 +232,38 @@ export default function Marketplace() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-              {filteredLeads.map((lead) => (
-                <LeadCard 
-                  key={lead.id} 
-                  lead={lead} 
-                  onCompare={toggleCompare}
-                  onViewDetails={handleViewDetails}
-                  isSelectedForCompare={!!selectedLeads.find(l => l.id === lead.id)}
-                />
-              ))}
-            </div>
-            
-            {filteredLeads.length === 0 && (
-              <div className="text-center py-20 bg-muted/20 rounded-lg border border-dashed border-border">
-                <h3 className="text-lg font-medium">No leads found</h3>
-                <p className="text-muted-foreground">Try adjusting your filters to see more results.</p>
-                <Button 
-                  variant="link" 
-                  onClick={() => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); }}
-                >
-                  Clear all filters
-                </Button>
+            {isLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+                  {leads.map((lead) => (
+                    <LeadCard 
+                      key={lead.id} 
+                      lead={lead}
+                      licensedStates={licensedStates}
+                      onCompare={toggleCompare}
+                      onViewDetails={handleViewDetails}
+                      isSelectedForCompare={!!selectedLeads.find(l => l.id === lead.id)}
+                    />
+                  ))}
+                </div>
+                
+                {leads.length === 0 && (
+                  <div className="text-center py-20 bg-muted/20 rounded-lg border border-dashed border-border">
+                    <h3 className="text-lg font-medium">No leads found</h3>
+                    <p className="text-muted-foreground">Try adjusting your filters to see more results.</p>
+                    <Button 
+                      variant="link" 
+                      onClick={() => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); }}
+                    >
+                      Clear all filters
+                    </Button>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -248,7 +276,7 @@ export default function Marketplace() {
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="flex -space-x-2">
-                {selectedLeads.map((lead, i) => (
+                {selectedLeads.map((lead) => (
                   <div key={lead.id} className="relative group">
                     <div className="h-10 w-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center border-2 border-background font-bold text-xs">
                       {lead.state}
@@ -304,7 +332,7 @@ export default function Marketplace() {
                       {selectedLeads.map(lead => (
                         <div key={lead.id} className="space-y-4 border rounded-lg p-4 bg-card shadow-sm">
                           <div className="h-12 flex flex-col justify-center">
-                            <span className="font-bold">{lead.id}</span>
+                            <span className="font-bold">#{lead.id}</span>
                             <span className="text-xs text-muted-foreground truncate">{lead.vendor.name}</span>
                           </div>
                           
@@ -318,7 +346,7 @@ export default function Marketplace() {
                           <div className="h-8 flex items-center text-sm font-semibold">{lead.state}</div>
                           <div className="h-8 flex items-center text-sm">{lead.exclusivity}</div>
                           <div className="h-8 flex items-center text-sm">{lead.consumerAge}</div>
-                          <div className="h-8 flex items-center text-sm">{lead.attributes.income || "N/A"}</div>
+                          <div className="h-8 flex items-center text-sm">{lead.income || "N/A"}</div>
                           <div className="h-8 flex items-center text-sm">
                             {lead.verified ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <span className="text-muted-foreground">-</span>}
                           </div>

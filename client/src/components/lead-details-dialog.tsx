@@ -1,4 +1,4 @@
-import { Lead } from "@/lib/mock-data";
+import type { Lead } from "@/lib/types";
 import {
   Dialog,
   DialogContent,
@@ -59,19 +59,19 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <FileText className="h-4 w-4" /> Income Bracket
                     </span>
-                    <span className="font-medium">{lead.attributes.income}</span>
+                    <span className="font-medium">{lead.income || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <Calendar className="h-4 w-4" /> Gender
                     </span>
-                    <span className="font-medium">{lead.attributes.gender === "M" ? "Male" : "Female"}</span>
+                    <span className="font-medium">{lead.gender === "M" ? "Male" : lead.gender === "F" ? "Female" : "N/A"}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <Shield className="h-4 w-4" /> Smoker Status
                     </span>
-                    <span className="font-medium">{lead.attributes.smoker ? "Smoker" : "Non-Smoker"}</span>
+                    <span className="font-medium">{lead.smoker ? "Smoker" : "Non-Smoker"}</span>
                   </div>
                 </div>
               </div>
