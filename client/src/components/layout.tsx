@@ -50,6 +50,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           Marketplace
         </div>
         <NavItem href="/" icon={LayoutGrid} label="Browse Leads" />
+        <NavItem href="/architect" icon={ShieldCheck} label="Architectural Blueprint" />
         <NavItem href="/saved" icon={FileText} label="Saved Lists" />
         <NavItem href="/orders" icon={BarChart3} label="Order History" />
         

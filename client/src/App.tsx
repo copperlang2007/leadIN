@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import NotFound from "@/pages/not-found";
 import Marketplace from "@/pages/marketplace";
 import Landing from "@/pages/landing";
+import ArchitectBlueprint from "@/pages/architect-blueprint";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -18,6 +19,7 @@ function Router() {
       ) : (
         <>
           <Route path="/" component={Marketplace} />
+          <Route path="/architect" component={ArchitectBlueprint} />
         </>
       )}
       <Route component={NotFound} />
