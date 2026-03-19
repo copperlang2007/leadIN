@@ -44,7 +44,7 @@ export default function Profile() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch("/api/profile", {
-        method: "PUT",
+        method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ licensedStates, preferredTypes }),
@@ -59,6 +59,7 @@ export default function Profile() {
       toast({ title: "Profile saved!", description: "Your license settings have been updated." });
       queryClient.invalidateQueries({ queryKey: ["/api/profile"] });
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
     },
     onError: (err: Error) => {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });

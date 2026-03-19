@@ -134,12 +134,15 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                       </div>
                       
                       <div className="flex flex-col gap-1">
-                        {/* Layer badge */}
+                        {/* Layer badge + PASS indicator */}
                         <div className="flex items-center gap-2">
                           <Badge className={`text-[10px] px-1.5 py-0 border ${layer.color}`}>
                             {layer.label}
                           </Badge>
                           <span className="text-xs font-semibold">{layer.name}</span>
+                          <Badge className="text-[10px] px-1.5 py-0 bg-emerald-500/15 text-emerald-700 border border-emerald-500/25 dark:text-emerald-300 ml-auto">
+                            ✓ PASS
+                          </Badge>
                         </div>
 
                         {/* Step Action */}
