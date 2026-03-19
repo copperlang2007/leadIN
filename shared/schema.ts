@@ -39,7 +39,7 @@ export const users = pgTable("users", {
 
 export const userProfiles = pgTable("user_profiles", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
   licensedStates: text("licensed_states").array().notNull().default(sql`ARRAY[]::text[]`),
   preferredTypes: text("preferred_types").array().notNull().default(sql`ARRAY[]::text[]`),
   createdAt: timestamp("created_at").defaultNow(),
