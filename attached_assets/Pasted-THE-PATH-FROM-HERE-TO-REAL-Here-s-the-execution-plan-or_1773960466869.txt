@@ -1,0 +1,35 @@
+THE PATH FROM HERE TO REAL
+Here's the execution plan, ordered by dependency and impact. Each step makes the previous steps actually work.
+PHASE 1 — Make One Human Journey Complete (1-2 weeks)
+This is the only thing that matters right now. Until one real person can visit your site, read content, use a tool, submit a form, get scored, and receive an email — you have nothing.
+
+Build the homepage + lead capture page. Replace the Next.js boilerplate with an actual landing page that mounts LeadCaptureForm. One page. One form. Deployed and accepting submissions.
+Build the blog rendering route. /app/blog/[slug]/page.tsx that reads from the content table, renders markdown to HTML, includes JSON-LD schema, meta tags, and the CMS disclaimer. Use Next.js ISR (incremental static regeneration) so pages rebuild on publish.
+Build one lead magnet page. Start with the plan comparison tool — it's your highest-converting asset conceptually. Even a simplified version (enter ZIP → see plan count + types in your county from the crosswalk table) gives the lead capture form a reason to exist.
+Wire Supabase + deploy for real. Create the Supabase project, run the SQL schema, seed the 3,514 ZIPs, set the environment variables on Vercel, and deploy. Hit /api/health and see green checks.
+Submit one lead through the form and trace it end-to-end. Watch it land in the leads table, get scored by MediScore, get assigned to a nurture sequence, and receive the first email via Brevo. Fix whatever breaks.
+
+PHASE 2 — Make Autonomous Actually Autonomous (2-3 weeks)
+
+Run the content pipeline for real. Trigger the Groq content generation cron manually. Verify it generates an article, passes compliance, gets stored, and renders on the blog route. Then let it run on schedule.
+Build the sitemap generator. Next.js has a sitemap.ts convention. Generate it from the content table. Ping Google Search Console's indexing API on every publish.
+Add GA4 + Google Search Console. Drop the GA4 snippet into layout.tsx. Connect GSC. Now you have real traffic and ranking data flowing in, which feeds back into content strategy.
+Build Brevo webhook handler. /api/webhooks/brevo/route.ts to receive open/click/bounce events and update email_log + leads tables. Now your engagement data is real.
+Integration test everything. Write tests that actually hit Supabase (use a test schema or Supabase's local dev), send a test email through Brevo, and verify the cron orchestrator runs without errors.
+
+PHASE 3 — Make It a Marketplace (4-6 weeks)
+This is where "lead gen platform" becomes "marketplace."
+
+Multi-tenancy. Add an organizations table and org_id foreign keys to leads, content, nurture_sequences. Update RLS policies. Each agency/FMO sees only their data.
+Agent/agency onboarding flow. Registration, NIPR license verification (or manual upload), carrier appointment tracking, territory (ZIP/county) assignment.
+Lead routing engine. When a lead hits a score threshold, match them to an agent based on: geographic coverage (agent's appointed counties), carrier appointments (which plans they can sell), capacity (current pipeline load), and performance history (conversion rate).
+Billing infrastructure. Stripe integration. Pricing tiers: per-lead, per-enrollment, or SaaS subscription. Metered billing for API usage if you're selling to FMOs.
+Agent dashboard. The "Obsidian Vault" dashboard, but connected to real data, scoped to the logged-in agent's organization, showing their pipeline, their leads, their commissions.
+Referral marketplace mechanics. Allow agencies to list their territory, bid on lead types, set CPL thresholds. This is the actual marketplace — matching lead supply with agent demand.
+
+PHASE 4 — Make It Defensible (Ongoing)
+
+Replace hardcoded keyword list with real SEO API. DataForSEO has a free tier. Or scrape Google Search Console API data to build your own keyword gap analysis.
+Wire real competitive displacement signals. CMS Plan Finder data is public. Parse annual plan termination notices, benefit change files, and star rating updates. These feed MediScore's competitive signals.
+Federal DNC integration. The FTC's DNC registry has an API. Budget ~$15K/year for telemarketing registrants access, or use a compliance vendor (Gryphon, Convoso) at $200-500/mo.
+Behavioral signal enrichment. Implement client-side event tracking (the /api/events/track route exists — build the JavaScript SDK that calls it from your pages). Page views, scroll depth, tool interactions, time-on-page. This is what makes MediScore go from 8 active signals to 20+.
