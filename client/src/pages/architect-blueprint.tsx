@@ -1,10 +1,12 @@
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { useQuery } from "@tanstack/react-query";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Shield, Zap, CheckCircle2, Factory, Brain, Terminal,
-  TrendingUp, Users, Code2, Eye, Wrench, FileText, Scale, BarChart3
+  TrendingUp, Users, Code2, Eye, Wrench, FileText, Scale, BarChart3,
+  Activity, Wifi, Package, AlertTriangle
 } from "lucide-react";
 
 const AGENTS = [
@@ -74,339 +76,323 @@ const AGENTS = [
   },
 ];
 
-const SEMGREP_RULES = [
-  { rule: "p/owasp-top-ten", description: "Covers the 10 most critical web vulnerabilities" },
-  { rule: "p/secrets", description: "Detects hardcoded API keys and passwords" },
-  { rule: "p/ci", description: "Checks for insecure CI/CD pipeline configurations" },
-  { rule: "p/python / p/javascript", description: "Language-specific best-practice enforcement" },
-];
+interface PlatformStatus {
+  totalLeads: number;
+  totalRevenue: string;
+  soldLeads: number;
+  availableLeads: number;
+  liquidity: number;
+  activeWebSocketConnections: number;
+  topVendors: { vendorId: number; name: string; leadCount: number }[];
+  ingestedToday: number;
+  verificationPassRate: number;
+}
+
+function PlatformStatusDashboard() {
+  const { data: status, isLoading, error } = useQuery<PlatformStatus>({
+    queryKey: ["/api/admin/platform-status"],
+    refetchInterval: 10000,
+    retry: false,
+  });
+
+  if (error) {
+    return (
+      <Card className="border-amber-200 dark:border-amber-800">
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-3 text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+            <div>
+              <p className="font-semibold">Admin Access Required</p>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                Platform status metrics are available to admin users only.
+                Contact your administrator or use the admin panel to elevate your access.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[...Array(4)].map((_, i) => (
+          <Card key={i} className="animate-pulse">
+            <CardContent className="pt-6">
+              <div className="h-8 bg-muted rounded mb-2"></div>
+              <div className="h-4 bg-muted rounded w-2/3"></div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  if (!status) return null;
+
+  const liquidityColor = status.liquidity > 70 ? "text-emerald-600" : status.liquidity > 40 ? "text-amber-600" : "text-red-600";
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <Package className="h-3.5 w-3.5" /> Total Leads
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-2xl font-bold">{status.totalLeads.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">All time ingested</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <TrendingUp className="h-3.5 w-3.5" /> Total Revenue
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-2xl font-bold">${parseFloat(status.totalRevenue || "0").toFixed(2)}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{status.soldLeads} leads sold</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5" /> Liquidity
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className={`text-2xl font-bold ${liquidityColor}`}>{status.liquidity}%</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{status.availableLeads} available</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <Wifi className="h-3.5 w-3.5" /> Live Connections
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-2xl font-bold">{status.activeWebSocketConnections}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">WebSocket clients</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <TrendingUp className="h-3.5 w-3.5" /> Ingestion Throughput
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-2xl font-bold">{status.ingestedToday}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Leads ingested today</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Verification Pass Rate
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className={`text-2xl font-bold ${status.verificationPassRate > 90 ? "text-emerald-600" : status.verificationPassRate > 70 ? "text-amber-600" : "text-red-600"}`}>
+              {status.verificationPassRate}%
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">TCPA / tri-layer verified</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {status.topVendors.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Top Vendors by Volume</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {status.topVendors.map((vendor, i) => (
+                <div key={vendor.vendorId} className="flex items-center gap-3">
+                  <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                    {i + 1}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium">{vendor.name}</span>
+                      <span className="text-xs text-muted-foreground">{vendor.leadCount} leads</span>
+                    </div>
+                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full"
+                        style={{ width: `${(vendor.leadCount / (status.topVendors[0]?.leadCount || 1)) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
 
 export default function ArchitectBlueprint() {
   return (
     <Layout>
-      <div className="max-w-4xl mx-auto space-y-10 pb-12">
+      <div className="max-w-4xl mx-auto space-y-8 pb-12">
         <div className="space-y-2">
           <h1 className="text-4xl font-display font-bold tracking-tight">The Autonomous Software Foundry</h1>
           <p className="text-xl text-muted-foreground">
-            A Comprehensive Architecture for Zero-Touch, Enterprise-Grade Application Modernization and Verification
+            Platform architecture overview and real-time operational metrics
           </p>
         </div>
 
-        {/* Core Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card className="bg-primary/5 border-primary/20">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Shield className="h-4 w-4 text-primary" /> Goal
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">Perfect Code</p>
-              <p className="text-xs text-muted-foreground">Functionally correct & secure</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-emerald-500/5 border-emerald-500/20">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500" /> Assurance
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">Triple Check</p>
-              <p className="text-xs text-muted-foreground">Static, Functional, Security</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-blue-500/5 border-blue-500/20">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Zap className="h-4 w-4 text-blue-500" /> Method
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">Agentic SDLC</p>
-              <p className="text-xs text-muted-foreground">Zero-Touch Automation</p>
-            </CardContent>
-          </Card>
-        </div>
+        <Tabs defaultValue="status">
+          <TabsList>
+            <TabsTrigger value="status" className="gap-2">
+              <Activity className="h-4 w-4" /> Platform Status
+            </TabsTrigger>
+            <TabsTrigger value="blueprint" className="gap-2">
+              <Brain className="h-4 w-4" /> Architectural Blueprint
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="space-y-8">
-
-          {/* Intelligence Plane */}
-          <section className="space-y-4">
-            <h2 className="text-2xl font-display font-bold flex items-center gap-2">
-              <Brain className="h-6 w-6 text-primary" /> Intelligence Plane
-            </h2>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="space-y-4">
-                  <p className="text-muted-foreground leading-relaxed">
-                    Transitioning from probabilistic generation to deterministic verification. LLMs predict the next token — they cannot guarantee correctness. The "Triple Check" protocol enforces deterministic quality gates through three independent verification layers.
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div className="p-4 border rounded-lg space-y-2 border-blue-200 dark:border-blue-900 bg-blue-50/30 dark:bg-blue-950/10">
-                      <Badge className="bg-blue-500/15 text-blue-700 border-blue-500/25 dark:text-blue-300">Layer 1</Badge>
-                      <h4 className="font-bold">Syntactic & Static</h4>
-                      <p className="text-xs text-muted-foreground">Linters (ESLint, Flake8), compilers, dependency scanners. Deterministic checks — no runtime required.</p>
-                    </div>
-                    <div className="p-4 border rounded-lg space-y-2 border-violet-200 dark:border-violet-900 bg-violet-50/30 dark:bg-violet-950/10">
-                      <Badge className="bg-violet-500/15 text-violet-700 border-violet-500/25 dark:text-violet-300">Layer 2</Badge>
-                      <h4 className="font-bold">Functional & Logic</h4>
-                      <p className="text-xs text-muted-foreground">Unit & integration tests in E2B sandboxes. Verifies business logic with boundary, type, and adversarial cases.</p>
-                    </div>
-                    <div className="p-4 border rounded-lg space-y-2 border-emerald-200 dark:border-emerald-900 bg-emerald-50/30 dark:bg-emerald-950/10">
-                      <Badge className="bg-emerald-500/15 text-emerald-700 border-emerald-500/25 dark:text-emerald-300">Layer 3</Badge>
-                      <h4 className="font-bold">Security & Governance</h4>
-                      <p className="text-xs text-muted-foreground">SAST (Semgrep), DAST, OWASP audits, supply chain CVE checks, and license compliance scans.</p>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-
-          {/* Execution Plane */}
-          <section className="space-y-4">
-            <h2 className="text-2xl font-display font-bold flex items-center gap-2">
-              <Factory className="h-6 w-6 text-primary" /> Execution Plane
-            </h2>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
-                        <span className="text-orange-600 font-bold text-xs">n8n</span>
-                      </div>
-                      <h3 className="font-bold">Control Plane</h3>
-                    </div>
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      Visual orchestration of agentic workflows. Supports recursive "Loop Over Items" and "If/Else" nodes for the feedback loops essential to self-correcting code generation. Self-hosted on a private VPS for enterprise privacy.
-                    </p>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-lg bg-blue-600/10 flex items-center justify-center">
-                        <span className="text-blue-600 font-bold text-xs">E2B</span>
-                      </div>
-                      <h3 className="font-bold">Sandbox Plane</h3>
-                    </div>
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      Ephemeral Firecracker micro-VMs for each code execution. Runs untrusted AI-generated code in complete isolation — a fork bomb or reverse shell is destroyed with the VM. Supports long-running interactive sessions.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-
-          {/* Full Agent Taxonomy */}
-          <section className="space-y-4">
-            <h2 className="text-2xl font-display font-bold flex items-center gap-2">
-              <Terminal className="h-6 w-6 text-primary" /> Full Agent Taxonomy
-            </h2>
-            <p className="text-sm text-muted-foreground -mt-2">
-              The Mixture of Agents (MoA) architecture outperforms any single model. Each specialist agent is conditioned with a distinct system prompt and model selection optimized for its role.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {AGENTS.map((agent) => {
-                const Icon = agent.icon;
-                return (
-                  <Card key={agent.name} className={`border ${agent.color}`}>
-                    <CardContent className="pt-5 pb-4">
-                      <div className="flex items-start gap-3">
-                        <div className={`h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 ${agent.color}`}>
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-sm">{agent.name}</span>
-                            <Badge variant="outline" className="text-[10px] py-0">{agent.role}</Badge>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{agent.description}</p>
-                          <p className="text-[10px] mt-1.5 text-muted-foreground font-mono">
-                            Model: {agent.model}
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+          <TabsContent value="status" className="mt-6">
+            <div className="space-y-6">
+              <p className="text-sm text-muted-foreground">
+                Live platform metrics. Refreshes every 10 seconds. Admin access required for full visibility.
+              </p>
+              <PlatformStatusDashboard />
             </div>
-          </section>
+          </TabsContent>
 
-          {/* Economics & ROI */}
-          <section className="space-y-4">
-            <h2 className="text-2xl font-display font-bold flex items-center gap-2">
-              <BarChart3 className="h-6 w-6 text-primary" /> Unit Economics & ROI
-            </h2>
-            <Card>
-              <CardContent className="pt-6 space-y-6">
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  Comparing the autonomous Code Factory against human engineering labor reveals two orders of magnitude in cost reduction, with a compounding quality advantage through deterministic verification.
-                </p>
+          <TabsContent value="blueprint" className="mt-6">
+            <div className="space-y-8">
+              {/* Core Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Card className="bg-primary/5 border-primary/20">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Shield className="h-4 w-4 text-primary" /> Goal
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold">Perfect Code</p>
+                    <p className="text-xs text-muted-foreground">Functionally correct & secure</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-emerald-500/5 border-emerald-500/20">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" /> Assurance
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold">Triple Check</p>
+                    <p className="text-xs text-muted-foreground">Static, Functional, Security</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-blue-500/5 border-blue-500/20">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Zap className="h-4 w-4 text-blue-500" /> Method
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold">Agentic SDLC</p>
+                    <p className="text-xs text-muted-foreground">Zero-Touch Automation</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Agent Taxonomy */}
+              <section className="space-y-4">
+                <h2 className="text-2xl font-display font-bold flex items-center gap-2">
+                  <Terminal className="h-6 w-6 text-primary" /> Full Agent Taxonomy
+                </h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Human Cost */}
-                  <div className="p-5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/30 dark:bg-red-950/10 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center">
-                        <Users className="h-4 w-4 text-red-600 dark:text-red-400" />
+                  {AGENTS.map((agent) => {
+                    const Icon = agent.icon;
+                    return (
+                      <Card key={agent.name} className={`border ${agent.color}`}>
+                        <CardContent className="pt-5 pb-4">
+                          <div className="flex items-start gap-3">
+                            <div className={`h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 ${agent.color}`}>
+                              <Icon className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm">{agent.name}</span>
+                                <Badge variant="outline" className="text-[10px] py-0">{agent.role}</Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{agent.description}</p>
+                              <p className="text-[10px] mt-1.5 text-muted-foreground font-mono">
+                                Model: {agent.model}
+                              </p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* Economics */}
+              <section className="space-y-4">
+                <h2 className="text-2xl font-display font-bold flex items-center gap-2">
+                  <BarChart3 className="h-6 w-6 text-primary" /> Unit Economics & ROI
+                </h2>
+                <Card>
+                  <CardContent className="pt-6 space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="p-5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/30 dark:bg-red-950/10 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="h-8 w-8 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center">
+                            <Users className="h-4 w-4 text-red-600 dark:text-red-400" />
+                          </div>
+                          <span className="font-bold">Human Engineer</span>
+                        </div>
+                        <div className="text-3xl font-bold text-red-600 dark:text-red-400">$1,500</div>
+                        <p className="text-xs text-muted-foreground">Senior engineer at $150/hr · ~10 hours · Risk: human error</p>
                       </div>
-                      <span className="font-bold">Human Engineer</span>
-                    </div>
-                    <div className="text-3xl font-bold text-red-600 dark:text-red-400">$1,500</div>
-                    <div className="space-y-1 text-xs text-muted-foreground">
-                      <p>Senior engineer at <strong className="text-foreground">$150/hr</strong></p>
-                      <p>Manual audit, refactor, test: <strong className="text-foreground">~10 hours</strong></p>
-                      <p>Risk: human error, fatigue, blind spots</p>
-                    </div>
-                  </div>
-
-                  {/* Agent Cost */}
-                  <div className="p-5 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/30 dark:bg-emerald-950/10 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-8 w-8 rounded-full bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center">
-                        <Brain className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                      <div className="p-5 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/30 dark:bg-emerald-950/10 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="h-8 w-8 rounded-full bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center">
+                            <Brain className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                          </div>
+                          <span className="font-bold">MASMS Agents</span>
+                        </div>
+                        <div className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">$10</div>
+                        <p className="text-xs text-muted-foreground">~500k tokens ~$5 · E2B sandbox 20 min ~$5 · Zero blind spots</p>
                       </div>
-                      <span className="font-bold">MASMS Agents</span>
                     </div>
-                    <div className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">$10</div>
-                    <div className="space-y-1 text-xs text-muted-foreground">
-                      <p>~500k tokens: <strong className="text-foreground">~$5</strong></p>
-                      <p>E2B sandbox runtime (20 min): <strong className="text-foreground">~$5</strong></p>
-                      <p>Deterministic verification: zero blind spots</p>
+                    <div className="flex items-center gap-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
+                      <TrendingUp className="h-8 w-8 text-primary flex-shrink-0" />
+                      <div>
+                        <p className="font-bold text-lg">99%+ Cost Reduction</p>
+                        <p className="text-xs text-muted-foreground">
+                          Two orders of magnitude in savings per modernization job.
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* ROI Banner */}
-                <div className="flex items-center gap-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
-                  <TrendingUp className="h-8 w-8 text-primary flex-shrink-0" />
-                  <div>
-                    <p className="font-bold text-lg">99%+ Cost Reduction</p>
-                    <p className="text-xs text-muted-foreground">
-                      Two orders of magnitude in savings per modernization job. At 500 legacy repositories, human cost ≈ $750,000 vs. MASMS ≈ $5,000 — with deterministic quality guarantees the human team cannot provide.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Tooling costs */}
-                <div>
-                  <h4 className="font-semibold text-sm mb-3">Monthly Platform Costs</h4>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm border-collapse">
-                      <thead>
-                        <tr className="border-b text-left text-muted-foreground text-xs">
-                          <th className="pb-2 font-medium">Component</th>
-                          <th className="pb-2 font-medium">Option</th>
-                          <th className="pb-2 font-medium text-right">Monthly Cost</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        <tr>
-                          <td className="py-2 font-medium">n8n Orchestration</td>
-                          <td className="py-2 text-muted-foreground text-xs">Cloud Starter or self-hosted VPS</td>
-                          <td className="py-2 text-right font-mono">$0–$20</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 font-medium">E2B Sandboxes</td>
-                          <td className="py-2 text-muted-foreground text-xs">Usage-based, low volume</td>
-                          <td className="py-2 text-right font-mono">&lt;$5</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 font-medium">LLM API (input)</td>
-                          <td className="py-2 text-muted-foreground text-xs">Reading 10k lines of code</td>
-                          <td className="py-2 text-right font-mono">~$0.50</td>
-                        </tr>
-                        <tr>
-                          <td className="py-2 font-medium">LLM API (output)</td>
-                          <td className="py-2 text-muted-foreground text-xs">Writing enterprise code</td>
-                          <td className="py-2 text-right font-mono">$1–$3 / app</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-
-          {/* Implementation Appendix */}
-          <section className="space-y-4">
-            <h2 className="text-2xl font-display font-bold flex items-center gap-2">
-              <Eye className="h-6 w-6 text-primary" /> Implementation Appendix
-            </h2>
-
-            {/* QA Prompt Strategy */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">QA Agent Prompt Strategy</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
-                  The QA agent must be "ruthless." The system prompt conditions it to write only adversarial tests — never happy-path coverage.
-                </p>
-                <div className="bg-muted rounded-md p-4 font-mono text-xs space-y-1.5 border">
-                  <p className="text-primary font-semibold">// QA Agent System Prompt</p>
-                  <p><span className="text-muted-foreground">Role:</span> Lead QA Engineer specializing in breaking software.</p>
-                  <p><span className="text-muted-foreground">Directives:</span></p>
-                  <p className="pl-4">1. Do NOT write simple "happy path" tests.</p>
-                  <p className="pl-4">2. Write tests for BOUNDARIES (max int, empty strings).</p>
-                  <p className="pl-4">3. Write tests for TYPES (string → math function).</p>
-                  <p className="pl-4">4. Write tests for SECURITY (SQL injection strings).</p>
-                  <p className="text-destructive pl-4">5. If the code fails these tests, it is NOT enterprise ready.</p>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Semgrep Rules */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Security Scan Configuration (Semgrep)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
-                  The Security Agent runs a Static Application Security Testing (SAST) scan using the following Semgrep rule sets. All must return zero findings before the lead is delivered.
-                </p>
-                <div className="space-y-2">
-                  {SEMGREP_RULES.map((r) => (
-                    <div key={r.rule} className="flex items-start gap-3 p-3 rounded border bg-muted/30">
-                      <code className="text-xs font-mono font-bold text-primary min-w-[150px] flex-shrink-0">{r.rule}</code>
-                      <span className="text-xs text-muted-foreground">{r.description}</span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Recursive Loop Config */}
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Recursive Fix Loop Configuration</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
-                  When a verification layer fails, the system loops back to the Coder Agent with the failure log as context. A hard cap of 5 iterations prevents infinite billing spirals.
-                </p>
-                <div className="bg-muted rounded-md p-4 font-mono text-xs space-y-1 border">
-                  <p className="text-muted-foreground">// n8n Loop Node Logic</p>
-                  <p><span className="text-blue-600 dark:text-blue-400">SET</span> retry_count = 0</p>
-                  <p><span className="text-blue-600 dark:text-blue-400">LOOP START</span></p>
-                  <p className="pl-4">Execute Code + Tests in E2B Sandbox</p>
-                  <p className="pl-4"><span className="text-yellow-600 dark:text-yellow-400">IF</span> error:</p>
-                  <p className="pl-8">retry_count++</p>
-                  <p className="pl-8"><span className="text-yellow-600 dark:text-yellow-400">IF</span> retry_count {">"} 5:</p>
-                  <p className="pl-12 text-destructive">BREAK → Flag "Human Intervention Needed"</p>
-                  <p className="pl-8"><span className="text-yellow-600 dark:text-yellow-400">ELSE</span>:</p>
-                  <p className="pl-12">Feed stderr → Coder Agent → <span className="text-blue-600 dark:text-blue-400">CONTINUE</span></p>
-                  <p className="pl-4"><span className="text-emerald-600 dark:text-emerald-400">IF</span> success:</p>
-                  <p className="pl-8 text-emerald-600 dark:text-emerald-400">BREAK → Proceed to Delivery</p>
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-
-        </div>
+                  </CardContent>
+                </Card>
+              </section>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </Layout>
   );

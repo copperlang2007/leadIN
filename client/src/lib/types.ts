@@ -38,10 +38,18 @@ export interface Lead {
   smoker: boolean | null;
   provenance: ProvenanceStep[];
   sold: boolean;
+  flagged: boolean;
+  removed: boolean;
   soldAt: string | null;
   purchasedBy: string | null;
   createdAt: string | null;
   vendor: Vendor;
+  // PII fields (null until purchased)
+  consumerName: string | null;
+  consumerPhone: string | null;
+  consumerEmail: string | null;
+  consumerAddress: string | null;
+  piiGated?: boolean;
 }
 
 export interface UserProfile {
@@ -60,6 +68,8 @@ export interface User {
   lastName: string | null;
   profileImageUrl: string | null;
   balance: string; // decimal from DB
+  role: string;
+  notificationsEnabled: boolean;
   createdAt: string | null;
   updatedAt: string | null;
   profile: UserProfile | null;

@@ -120,6 +120,9 @@ async function seed() {
 
     await db.insert(leads).values(leadsData);
     console.log(`Created ${leadsData.length} leads`);
+    // Note: seed.ts runs as a standalone script (no WebSocket server running).
+    // Leads ingested via POST /api/v1/leads/ingest will broadcast in real-time.
+    // Use POST /api/admin/broadcast-recent-leads after the server starts to broadcast seed leads.
   } else {
     console.log(`Database already has ${existingLeads.length} leads, skipping seed`);
   }

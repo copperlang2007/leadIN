@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCircle2, ShoppingBag, Calendar, MapPin, Building2, AlertCircle } from "lucide-react";
+import { CheckCircle2, ShoppingBag, Calendar, MapPin, Building2, AlertCircle, Download, Phone, AtSign, User } from "lucide-react";
 import { format } from "date-fns";
-import type { Order } from "@/lib/types";
+import type { Order, Lead } from "@/lib/types";
+import { useToast } from "@/hooks/use-toast";
 
 type OrderWithLead = Order & {
   lead: {
@@ -17,6 +19,10 @@ type OrderWithLead = Order & {
     source: string;
     consumerAge: number;
     compatibilityScore: number;
+    consumerName: string | null;
+    consumerPhone: string | null;
+    consumerEmail: string | null;
+    consumerAddress: string | null;
     vendor: { id: number; name: string; rating: string; verified: boolean };
   };
 };
@@ -26,7 +32,42 @@ export default function Orders() {
     queryKey: ["/api/orders"],
   });
 
+  const { toast } = useToast();
+
   const totalSpent = orders.reduce((sum, o) => sum + parseFloat(o.price), 0);
+
+  const handleExportCSV = async () => {
+    try {
+      const response = await fetch("/api/orders/export", {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        throw new Error("Export failed");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `orders-${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Export successful",
+        description: "Your orders have been downloaded as a CSV file.",
+      });
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: "Could not export orders. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <Layout>
@@ -37,14 +78,27 @@ export default function Orders() {
               <ShoppingBag className="h-7 w-7 text-primary" />
               Order History
             </h1>
-            <p className="text-muted-foreground mt-1">All leads you have purchased.</p>
+            <p className="text-muted-foreground mt-1">All leads you have purchased — with full consumer contact information.</p>
           </div>
-          {orders.length > 0 && (
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Total Spent</p>
-              <p className="text-2xl font-bold font-mono text-primary">${totalSpent.toFixed(2)}</p>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {orders.length > 0 && (
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Spent</p>
+                <p className="text-2xl font-bold font-mono text-primary">${totalSpent.toFixed(2)}</p>
+              </div>
+            )}
+            {orders.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={handleExportCSV}
+                data-testid="button-export-csv"
+              >
+                <Download className="h-4 w-4" /> Export CSV
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Stats Row */}
@@ -99,13 +153,13 @@ export default function Orders() {
             {orders.map((order) => (
               <Card key={order.id} className="hover:shadow-sm transition-shadow" data-testid={`card-order-${order.id}`}>
                 <CardContent className="p-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-start gap-4">
                     {/* Lead Type + Status */}
-                    <div className="flex items-center gap-3 flex-1">
+                    <div className="flex items-start gap-3 flex-1">
                       <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
                         <CheckCircle2 className="h-5 w-5 text-primary" />
                       </div>
-                      <div>
+                      <div className="flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold" data-testid={`text-order-type-${order.id}`}>
                             {order.lead.type}
@@ -127,6 +181,37 @@ export default function Orders() {
                             {order.createdAt ? format(new Date(order.createdAt), "MMM d, yyyy 'at' h:mm a") : "—"}
                           </span>
                         </div>
+
+                        {/* PII Section - revealed since purchased */}
+                        {(order.lead.consumerName || order.lead.consumerPhone || order.lead.consumerEmail) && (
+                          <div className="mt-3 p-3 bg-emerald-50 dark:bg-emerald-950/20 rounded-lg border border-emerald-100 dark:border-emerald-900 space-y-1">
+                            <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-200 mb-2">Consumer Information</p>
+                            {order.lead.consumerName && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <User className="h-3 w-3 text-emerald-600" />
+                                <span className="font-medium">{order.lead.consumerName}</span>
+                              </div>
+                            )}
+                            {order.lead.consumerPhone && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <Phone className="h-3 w-3 text-emerald-600" />
+                                <span className="font-medium">{order.lead.consumerPhone}</span>
+                              </div>
+                            )}
+                            {order.lead.consumerEmail && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <AtSign className="h-3 w-3 text-emerald-600" />
+                                <span className="font-medium">{order.lead.consumerEmail}</span>
+                              </div>
+                            )}
+                            {order.lead.consumerAddress && (
+                              <div className="flex items-center gap-2 text-xs">
+                                <MapPin className="h-3 w-3 text-emerald-600" />
+                                <span className="font-medium">{order.lead.consumerAddress}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 

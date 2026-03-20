@@ -7,14 +7,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar } from "lucide-react";
+import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2 } from "lucide-react";
 import { format } from "date-fns";
+import { useQuery } from "@tanstack/react-query";
 
 interface LeadDetailsDialogProps {
   lead: Lead | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  isPurchased?: boolean;
+  onPurchase?: () => void;
+  isPurchasing?: boolean;
 }
 
 const VERIFICATION_LAYERS = [
@@ -41,8 +46,42 @@ const VERIFICATION_LAYERS = [
   },
 ];
 
-export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialogProps) {
+function PIIField({ label, value, icon: Icon }: { label: string; value: string | null; icon: any }) {
+  if (value) {
+    return (
+      <div className="flex justify-between items-center">
+        <span className="text-sm text-muted-foreground flex items-center gap-2">
+          <Icon className="h-4 w-4" /> {label}
+        </span>
+        <span className="font-medium text-sm">{value}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-between items-center">
+      <span className="text-sm text-muted-foreground flex items-center gap-2">
+        <Icon className="h-4 w-4" /> {label}
+      </span>
+      <div className="flex items-center gap-1.5 bg-muted/60 border border-dashed rounded px-2 py-0.5">
+        <Lock className="h-3 w-3 text-muted-foreground" />
+        <span className="text-xs text-muted-foreground">Purchase to reveal</span>
+      </div>
+    </div>
+  );
+}
+
+export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPurchase, isPurchasing }: LeadDetailsDialogProps) {
+  const { data: revealedLead, isLoading: isRevealing } = useQuery<Lead>({
+    queryKey: [`/api/leads/${lead?.id}/reveal`],
+    enabled: !!lead?.id && isPurchased,
+    retry: false,
+  });
+
   if (!lead) return null;
+
+  const displayLead = (isPurchased && revealedLead) ? revealedLead : lead;
+  const hasPII = !!(displayLead.consumerName || displayLead.consumerPhone || displayLead.consumerEmail || displayLead.consumerAddress);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -53,6 +92,11 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
             {lead.verified && (
               <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 border-emerald-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> Verified & Compliant
+              </Badge>
+            )}
+            {isPurchased && (
+              <Badge className="bg-blue-500/15 text-blue-700 border-blue-500/20">
+                <CheckCircle2 className="h-3 w-3 mr-1" /> Purchased
               </Badge>
             )}
           </div>
@@ -67,9 +111,35 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
 
         <ScrollArea className="flex-1 pr-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-4">
-            
+
             {/* Left Column: Attributes */}
             <div className="space-y-6">
+              {/* PII Section */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider">Consumer Contact</h4>
+                  {isPurchased && isRevealing && (
+                    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                <div className="bg-muted/30 rounded-lg p-4 space-y-3 border border-border/50">
+                  <PIIField label="Full Name" value={displayLead.consumerName} icon={User} />
+                  <PIIField label="Phone" value={displayLead.consumerPhone} icon={Phone} />
+                  <PIIField label="Email" value={displayLead.consumerEmail} icon={AtSign} />
+                  <PIIField label="Address" value={displayLead.consumerAddress} icon={MapPin} />
+                </div>
+
+                {!isPurchased && (
+                  <div className="mt-3 p-3 bg-amber-50 dark:bg-amber-950/20 rounded border border-amber-200 dark:border-amber-800">
+                    <p className="text-xs text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                      <Lock className="h-3.5 w-3.5" />
+                      Purchase this lead to reveal full consumer contact information
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Consumer Profile */}
               <div>
                 <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-3">Consumer Profile</h4>
                 <div className="bg-muted/30 rounded-lg p-4 space-y-3 border border-border/50">
@@ -100,6 +170,7 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                 </div>
               </div>
 
+              {/* Compatibility */}
               <div>
                 <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-3">Compatibility Analysis</h4>
                 <div className="bg-blue-50/50 dark:bg-blue-950/20 rounded-lg p-4 border border-blue-100 dark:border-blue-900">
@@ -113,6 +184,21 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                   </p>
                 </div>
               </div>
+
+              {!isPurchased && onPurchase && (
+                <Button
+                  className="w-full gap-2"
+                  onClick={onPurchase}
+                  disabled={isPurchasing}
+                  data-testid={`button-purchase-dialog-${lead.id}`}
+                >
+                  {isPurchasing ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Processing...</>
+                  ) : (
+                    <><CheckCircle2 className="h-4 w-4" /> Purchase for ${parseFloat(lead.price).toFixed(2)}</>
+                  )}
+                </Button>
+              )}
             </div>
 
             {/* Right Column: Tri-Layer Provenance Log */}
@@ -132,9 +218,8 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                       <div className={`absolute -left-[9px] top-1 h-4 w-4 rounded-full bg-background border-2 ${layer.dotColor} flex items-center justify-center`}>
                         <div className="h-1.5 w-1.5 rounded-full bg-primary" />
                       </div>
-                      
+
                       <div className="flex flex-col gap-1">
-                        {/* Layer badge + PASS indicator */}
                         <div className="flex items-center gap-2">
                           <Badge className={`text-[10px] px-1.5 py-0 border ${layer.color}`}>
                             {layer.label}
@@ -145,10 +230,8 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                           </Badge>
                         </div>
 
-                        {/* Step Action */}
                         <span className="font-medium text-sm">{step.action}</span>
 
-                        {/* Timestamp + Actor */}
                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/50 w-fit px-2 py-1 rounded">
                           {step.icon === 'check' && <CheckCircle2 className="h-3 w-3 text-blue-500" />}
                           {step.icon === 'lock' && <Lock className="h-3 w-3 text-violet-500" />}
@@ -160,7 +243,6 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                           </span>
                         </div>
 
-                        {/* Layer description */}
                         <p className="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
                           {layer.description}
                         </p>
@@ -169,7 +251,7 @@ export function LeadDetailsDialog({ lead, open, onOpenChange }: LeadDetailsDialo
                   );
                 })}
               </div>
-              
+
               <div className="mt-6 p-3 bg-emerald-50 dark:bg-emerald-950/20 rounded border border-emerald-100 dark:border-emerald-900 flex gap-3">
                 <Shield className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <div className="text-xs text-emerald-800 dark:text-emerald-200">

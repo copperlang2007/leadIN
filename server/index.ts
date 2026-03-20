@@ -2,6 +2,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { storage } from "./storage";
+import { broadcastNewLead } from "./websocket";
 
 const app = express();
 const httpServer = createServer(app);
@@ -33,6 +35,21 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// Recursively redact PII keys from any nested JSON structure before logging
+function redactPII(obj: any, piiKeys: Set<string>): any {
+  if (Array.isArray(obj)) {
+    return obj.map(item => redactPII(item, piiKeys));
+  }
+  if (obj !== null && typeof obj === "object") {
+    const redacted: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      redacted[k] = piiKeys.has(k) ? "[REDACTED]" : redactPII(v, piiKeys);
+    }
+    return redacted;
+  }
+  return obj;
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -49,7 +66,10 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // Redact PII fields before logging to prevent sensitive data exposure
+        const PII_KEYS = new Set(["consumerName", "consumerPhone", "consumerEmail", "consumerAddress"]);
+        const redacted = redactPII(capturedJsonResponse, PII_KEYS);
+        logLine += ` :: ${JSON.stringify(redacted)}`;
       }
 
       log(logLine);
@@ -91,8 +111,34 @@ app.use((req, res, next) => {
       host: "0.0.0.0",
       reusePort: true,
     },
-    () => {
+    async () => {
       log(`serving on port ${port}`);
+
+      // Broadcast seed/existing leads once the WebSocket server is ready.
+      // Leads ingested via POST /api/v1/leads/ingest broadcast inline.
+      // This startup broadcast ensures seed data appears in the real-time feed.
+      try {
+        const seedLeads = await storage.getLeads({ soldOnly: false });
+        const toEmit = seedLeads.slice(0, 20);
+        for (const lead of toEmit) {
+          broadcastNewLead({
+            id: lead.id,
+            type: lead.type,
+            state: lead.state,
+            zipCode: lead.zipCode,
+            price: lead.price,
+            exclusivity: lead.exclusivity,
+            verified: lead.verified,
+            vendorName: lead.vendor?.name ?? "Unknown",
+            createdAt: lead.createdAt ? lead.createdAt.toISOString() : null,
+          });
+        }
+        if (toEmit.length > 0) {
+          log(`Broadcasted ${toEmit.length} existing leads on startup`);
+        }
+      } catch (err) {
+        log(`Startup lead broadcast skipped: ${err}`);
+      }
     },
   );
 })();

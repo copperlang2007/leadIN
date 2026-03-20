@@ -7,9 +7,10 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
-import { User, MapPin, Shield, Activity, Save, Loader2 } from "lucide-react";
+import { User, MapPin, Shield, Activity, Save, Loader2, Bell } from "lucide-react";
 import type { UserProfile } from "@/lib/types";
 
 const ALL_STATES = [
@@ -77,6 +78,38 @@ export default function Profile() {
       prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
     );
   };
+
+  const [notificationsEnabled, setNotificationsEnabled] = useState(user?.notificationsEnabled ?? true);
+
+  useEffect(() => {
+    if (user) {
+      setNotificationsEnabled(user.notificationsEnabled ?? true);
+    }
+  }, [user]);
+
+  const toggleNotifications = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await fetch("/api/profile/notifications", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) throw new Error("Failed to update notification setting");
+      return res.json();
+    },
+    onSuccess: (_, enabled) => {
+      setNotificationsEnabled(enabled);
+      toast({
+        title: enabled ? "Notifications enabled" : "Notifications disabled",
+        description: enabled ? "You'll receive email alerts for new matching leads." : "Email notifications have been turned off.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+    },
+    onError: () => {
+      toast({ title: "Failed to update", variant: "destructive" });
+    },
+  });
 
   const hasChanges =
     JSON.stringify([...licensedStates].sort()) !== JSON.stringify([...(profile?.licensedStates || [])].sort()) ||
@@ -233,6 +266,36 @@ export default function Profile() {
                 </div>
               </>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Notifications */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Bell className="h-4 w-4 text-primary" /> Email Notifications
+            </CardTitle>
+            <CardDescription>
+              Receive email alerts when new leads match your licensed states and preferred types.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">New Lead Alerts</p>
+                <p className="text-sm text-muted-foreground">
+                  {notificationsEnabled
+                    ? "You will receive email notifications for new matching leads."
+                    : "Email notifications are currently disabled."}
+                </p>
+              </div>
+              <Switch
+                checked={notificationsEnabled}
+                onCheckedChange={(val) => toggleNotifications.mutate(val)}
+                disabled={toggleNotifications.isPending}
+                data-testid="switch-notifications"
+              />
+            </div>
           </CardContent>
         </Card>
 
