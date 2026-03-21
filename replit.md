@@ -2,7 +2,7 @@
 
 ## Overview
 
-LeadMarket is an insurance lead marketplace platform where buyers can purchase verified Medicare Advantage, Medicare Supplement, and Final Expense leads. The platform features lead provenance tracking, compatibility matching based on user licensing, PII gating with post-purchase reveal, real-time WebSocket live feed, Stripe wallet funding, vendor API ingestion, email notifications, an admin panel, and CSV order export.
+LeadMarket is an insurance lead marketplace platform where buyers can purchase verified Medicare Advantage, Medicare Supplement, and Final Expense leads. The platform features lead provenance tracking, compatibility matching based on user licensing, PII gating with post-purchase reveal, real-time WebSocket live feed, Stripe wallet funding, vendor API ingestion, email notifications, an admin panel, CSV order export, and an autonomous content engine with a public blog.
 
 ## User Preferences
 
@@ -56,6 +56,10 @@ Preferred communication style: Simple, everyday language.
 6. **Admin Panel**: `/admin` page with stats, lead management (flag/remove), vendor volume. Admin role assigned via `POST /api/admin/seed-admin`.
 7. **CSV Export**: `GET /api/orders/export` generates CSV with all order and PII data for the authenticated user.
 8. **Platform Status Dashboard**: `/architect` page shows live metrics (when admin) or "Admin Access Required" message.
+9. **Autonomous Content Engine**: `server/contentGeneration.ts` uses `node-cron` to publish one article per day at 09:00. 10 topic templates cover Medicare Advantage, Medicare Supplement, Final Expense, and Industry News categories. Articles stored in `contentArticles` table.
+10. **Public Blog**: `/blog` lists published articles grouped by category; `/blog/:slug` renders full markdown article with reading time, tags, and a LeadMarket CTA. Accessible without login.
+11. **Dynamic Sitemap**: `GET /sitemap.xml` returns a standards-compliant XML sitemap including all published blog articles with `lastmod` dates. Pings Google on each new publication.
+12. **GA4 Analytics**: Google Analytics 4 tag (`G-LEADMARKET01`) included in `client/index.html` for production traffic tracking.
 
 ### Data Flow
 1. Frontend makes API requests via TanStack Query
@@ -101,3 +105,5 @@ Preferred communication style: Simple, everyday language.
 - `/admin` - Admin panel (admin role required)
 - `/saved` - Saved lists (placeholder)
 - `/settings` - Settings (placeholder)
+- `/blog` - Public blog listing all published articles grouped by category
+- `/blog/:slug` - Individual article with markdown rendering, tags, reading time, and CTA

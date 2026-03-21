@@ -7,6 +7,7 @@ import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, getActiveConnections } from "./websocket";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
+import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -45,6 +46,9 @@ export async function registerRoutes(
 
   // Set up WebSocket server
   setupWebSocket(httpServer);
+
+  // Start the daily content generation cron
+  startContentEngine();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -694,6 +698,109 @@ export async function registerRoutes(
       res.json({ isAdmin: user?.role === "admin" });
     } catch (error) {
       res.status(500).json({ message: "Failed to check admin status" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Content Engine API
+  // ──────────────────────────────────────────────────────
+
+  // List published articles (public)
+  app.get("/api/content", async (_req, res) => {
+    try {
+      const articles = await storage.getContentArticles(true);
+      res.json(articles);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch articles" });
+    }
+  });
+
+  // Single article by slug (public)
+  app.get("/api/content/:slug", async (req, res) => {
+    try {
+      const article = await storage.getContentArticleBySlug(req.params.slug);
+      if (!article || !article.published) {
+        return res.status(404).json({ message: "Article not found" });
+      }
+      res.json(article);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch article" });
+    }
+  });
+
+  // Admin: trigger content generation manually
+  app.post("/api/admin/content/generate", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      await generateAndPublishArticle();
+      const count = await storage.getPublishedArticleCount();
+      res.json({ success: true, publishedCount: count });
+    } catch (error) {
+      res.status(500).json({ message: "Content generation failed" });
+    }
+  });
+
+  // Admin: list all articles (including unpublished)
+  app.get("/api/admin/content", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const articles = await storage.getContentArticles(false);
+      res.json(articles);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch articles" });
+    }
+  });
+
+  // Dynamic sitemap.xml
+  app.get("/sitemap.xml", async (_req, res) => {
+    try {
+      const articles = await storage.getContentArticles(true);
+      const baseUrl = process.env.APP_URL || "https://leadmarket.replit.app";
+
+      const staticUrls = [
+        { loc: baseUrl, priority: "1.0", changefreq: "daily" },
+        { loc: `${baseUrl}/blog`, priority: "0.9", changefreq: "daily" },
+      ];
+
+      const articleUrls = articles.map((a) => ({
+        loc: `${baseUrl}/blog/${a.slug}`,
+        priority: "0.7",
+        changefreq: "monthly",
+        lastmod: a.publishedAt
+          ? new Date(a.publishedAt).toISOString().split("T")[0]
+          : undefined,
+      }));
+
+      const allUrls = [...staticUrls, ...articleUrls];
+
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${allUrls
+  .map(
+    (u) => `  <url>
+    <loc>${u.loc}</loc>
+    <changefreq>${u.changefreq}</changefreq>
+    <priority>${u.priority}</priority>${
+      u.lastmod ? `\n    <lastmod>${u.lastmod}</lastmod>` : ""
+    }
+  </url>`
+  )
+  .join("\n")}
+</urlset>`;
+
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(xml);
+    } catch (error) {
+      res.status(500).send("<?xml version='1.0'?><urlset/>");
     }
   });
 

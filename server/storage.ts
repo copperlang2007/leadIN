@@ -7,6 +7,7 @@ import {
   orders,
   stripeCheckoutSessions,
   notifications,
+  contentArticles,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -19,6 +20,8 @@ import {
   type InsertOrder,
   type StripeCheckoutSession,
   type InsertStripeCheckoutSession,
+  type ContentArticle,
+  type InsertContentArticle,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, inArray, desc, sql, gte, lt, count, sum } from "drizzle-orm";
@@ -93,6 +96,14 @@ export interface IStorage {
 
   // Notification preferences
   updateNotificationPreference(userId: string, enabled: boolean): Promise<User>;
+
+  // Content article operations
+  getContentArticles(publishedOnly?: boolean): Promise<ContentArticle[]>;
+  getContentArticleBySlug(slug: string): Promise<ContentArticle | undefined>;
+  createContentArticle(data: InsertContentArticle): Promise<ContentArticle>;
+  updateContentArticle(id: number, updates: Partial<InsertContentArticle>): Promise<ContentArticle>;
+  getPublishedArticleCount(): Promise<number>;
+  slugExists(slug: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -590,6 +601,63 @@ export class DatabaseStorage implements IStorage {
       .where(eq(users.id, userId))
       .returning();
     return user;
+  }
+
+  // Content article operations
+  async getContentArticles(publishedOnly = true): Promise<ContentArticle[]> {
+    const query = db
+      .select()
+      .from(contentArticles)
+      .orderBy(desc(contentArticles.publishedAt));
+    if (publishedOnly) {
+      return db
+        .select()
+        .from(contentArticles)
+        .where(eq(contentArticles.published, true))
+        .orderBy(desc(contentArticles.publishedAt));
+    }
+    return query;
+  }
+
+  async getContentArticleBySlug(slug: string): Promise<ContentArticle | undefined> {
+    const [article] = await db
+      .select()
+      .from(contentArticles)
+      .where(eq(contentArticles.slug, slug));
+    return article;
+  }
+
+  async createContentArticle(data: InsertContentArticle): Promise<ContentArticle> {
+    const [article] = await db
+      .insert(contentArticles)
+      .values(data)
+      .returning();
+    return article;
+  }
+
+  async updateContentArticle(id: number, updates: Partial<InsertContentArticle>): Promise<ContentArticle> {
+    const [article] = await db
+      .update(contentArticles)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(contentArticles.id, id))
+      .returning();
+    return article;
+  }
+
+  async getPublishedArticleCount(): Promise<number> {
+    const [result] = await db
+      .select({ count: count() })
+      .from(contentArticles)
+      .where(eq(contentArticles.published, true));
+    return result?.count ?? 0;
+  }
+
+  async slugExists(slug: string): Promise<boolean> {
+    const [result] = await db
+      .select({ id: contentArticles.id })
+      .from(contentArticles)
+      .where(eq(contentArticles.slug, slug));
+    return !!result;
   }
 }
 

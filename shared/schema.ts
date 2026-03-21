@@ -193,6 +193,32 @@ export const ordersRelations = relations(orders, ({ one }) => ({
   }),
 }));
 
+// Content articles for the autonomous content engine
+export const contentArticles = pgTable("content_articles", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  slug: varchar("slug", { length: 255 }).notNull().unique(),
+  title: varchar("title", { length: 500 }).notNull(),
+  excerpt: text("excerpt").notNull(),
+  body: text("body").notNull(),
+  category: varchar("category", { length: 100 }).notNull(),
+  tags: text("tags").array().notNull().default(sql`ARRAY[]::text[]`),
+  seoTitle: varchar("seo_title", { length: 500 }),
+  seoDescription: text("seo_description"),
+  published: boolean("published").notNull().default(false),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_articles_slug").on(table.slug),
+  index("idx_articles_published").on(table.published),
+  index("idx_articles_category").on(table.category),
+]);
+
+export type InsertContentArticle = typeof contentArticles.$inferInsert;
+export type ContentArticle = typeof contentArticles.$inferSelect;
+
+export const insertContentArticleSchema = createInsertSchema(contentArticles).omit({ id: true, createdAt: true, updatedAt: true });
+
 // Types
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;

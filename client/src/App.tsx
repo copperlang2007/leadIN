@@ -12,6 +12,8 @@ import ArchitectBlueprint from "@/pages/architect-blueprint";
 import Orders from "@/pages/orders";
 import Profile from "@/pages/profile";
 import Admin from "@/pages/admin";
+import Blog from "@/pages/blog";
+import BlogPost from "@/pages/blog-post";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -19,6 +21,8 @@ function Router() {
   if (isLoading || !isAuthenticated) {
     return (
       <Switch>
+        <Route path="/blog" component={Blog} />
+        <Route path="/blog/:slug" component={BlogPost} />
         <Route path="/" component={Landing} />
         <Route component={Landing} />
       </Switch>
@@ -32,6 +36,8 @@ function Router() {
       <Route path="/orders" component={Orders} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
+      <Route path="/blog" component={Blog} />
+      <Route path="/blog/:slug" component={BlogPost} />
       <Route component={NotFound} />
     </Switch>
   );
