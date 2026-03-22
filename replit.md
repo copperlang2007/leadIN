@@ -104,6 +104,6 @@ Preferred communication style: Simple, everyday language.
 - `/architect` - Platform Status dashboard + Architectural Blueprint
 - `/admin` - Admin panel (admin role required)
 - `/saved` - Saved lists (placeholder)
-- `/settings` - Settings (placeholder)
+- `/settings` - Settings: wallet funding (Stripe), account info, notification toggle, sign out
 - `/blog` - Public blog listing all published articles grouped by category
 - `/blog/:slug` - Individual article with markdown rendering, tags, reading time, and CTA
