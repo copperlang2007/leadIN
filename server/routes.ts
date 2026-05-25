@@ -18,6 +18,7 @@ import { checkDnc } from "./dncCompliance";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
+import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { z } from "zod";
@@ -75,6 +76,7 @@ export async function registerRoutes(
   // Phase 4 – signal enrichment cron jobs
   startSeoSignalCron();
   startCmsSignalCron();
+  startDncRecheckCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -1061,6 +1063,17 @@ export async function registerRoutes(
       res.json(rows);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch keyword signals" });
+    }
+  });
+
+  app.post("/api/admin/dnc/recheck", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runDncRecheck();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Recheck failed" });
     }
   });
 
