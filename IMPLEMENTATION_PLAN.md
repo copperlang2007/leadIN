@@ -27,3 +27,16 @@ no `[ ]` item is tractable in this environment.
 
 When the remaining backlog is dominated by `[~]` items (need creds / human review),
 write a final summary comment to the PR and end the loop.
+
+## Deferred (need creds or human review — not tractable in this loop)
+
+- [~] **17 Dependabot vulns**: needs per-package upgrade + manual verification. Run Dependabot auto-PRs.
+- [~] **License document upload**: needs Replit object-storage SDK + signed-URL flow. Held until storage IDs are provisioned.
+- [~] **Redis-backed rate limiter**: only needed for multi-instance deploys.
+- [~] **ML MediScore weighting**: needs labelled training data; deterministic weights are correct for now.
+- [~] **Federal DNC registry direct access**: $15K/yr tier. Use a vendor API (already wired) instead.
+
+## Status
+
+All tractable items shipped. CI green: tsc, lint (0 errors), 21 tests, drizzle
+schema check. 9 iterations, 9 commits on `claude/laughing-cannon-xgMYi`. Loop ends.
