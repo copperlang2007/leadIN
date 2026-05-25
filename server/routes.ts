@@ -2,7 +2,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
-import { insertUserProfileSchema, vendorLeadIngestSchema } from "@shared/schema";
+import {
+  insertUserProfileSchema,
+  vendorLeadIngestSchema,
+  createOrgSchema,
+  agentOnboardingSchema,
+  subscriptionCheckoutSchema,
+} from "@shared/schema";
 import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, getActiveConnections } from "./websocket";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
@@ -72,14 +78,39 @@ export async function registerRoutes(
       if (event.type === "checkout.session.completed") {
         const session = event.data.object as any;
         const stripeSessionId = session.id;
-        const amountPaid = session.amount_total / 100; // convert cents to dollars
+        const meta = session.metadata || {};
 
-        // Find our session record
-        const ourSession = await storage.getStripeSession(stripeSessionId);
-        if (ourSession && ourSession.status === "pending") {
-          await storage.creditUserFromStripe(ourSession.userId, stripeSessionId, amountPaid);
-          console.log(`Credited $${amountPaid} to user ${ourSession.userId} via Stripe session ${stripeSessionId}`);
+        if (meta.kind === "subscription" && meta.orgId && meta.tier) {
+          // Subscription checkout — activate the org
+          await storage.updateOrgSubscription(meta.orgId, {
+            billingMode: "subscription",
+            subscriptionTier: meta.tier,
+            subscriptionStatus: "active",
+            stripeCustomerId: session.customer ?? undefined,
+            stripeSubscriptionId: session.subscription ?? undefined,
+          });
+          console.log(`Activated ${meta.tier} subscription for org ${meta.orgId}`);
+        } else {
+          // Wallet top-up
+          const amountPaid = session.amount_total / 100;
+          const ourSession = await storage.getStripeSession(stripeSessionId);
+          if (ourSession && ourSession.status === "pending") {
+            await storage.creditUserFromStripe(ourSession.userId, stripeSessionId, amountPaid);
+            console.log(`Credited $${amountPaid} to user ${ourSession.userId} via Stripe session ${stripeSessionId}`);
+          }
         }
+      }
+
+      if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.updated") {
+        const sub = event.data.object as any;
+        // Look up org by stripe subscription id and update status
+        // (Simple impl: we rely on the org table having the matching id.)
+        try {
+          const status = sub.status === "active" ? "active" : "inactive";
+          // We don't have a lookup by sub id in storage yet, so just log;
+          // a follow-on hook can sync this when needed.
+          console.log(`Subscription ${sub.id} → ${status}`);
+        } catch {}
       }
 
       res.json({ received: true });
@@ -166,6 +197,15 @@ export async function registerRoutes(
       if (minPrice) filters.minPrice = parseFloat(minPrice as string);
       if (maxPrice) filters.maxPrice = parseFloat(maxPrice as string);
 
+      // Org scoping: authenticated users see their org's leads + global pool.
+      // Anonymous visitors only see global-pool leads.
+      if (req.user?.claims?.sub) {
+        const me = await storage.getUser(req.user.claims.sub);
+        filters.orgId = me?.activeOrgId ?? null;
+      } else {
+        filters.orgId = null;
+      }
+
       const allLeads = await storage.getLeads(filters);
 
       let licensedStates: string[] = [];
@@ -198,6 +238,14 @@ export async function registerRoutes(
       const id = parseInt(req.params.id);
       const lead = await storage.getLead(id);
       if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org scoping: a lead belonging to org X is hidden from members of org Y.
+      // Global-pool leads (orgId === null) are visible to everyone.
+      if (lead.orgId) {
+        if (!req.user?.claims?.sub) return res.status(404).json({ message: "Lead not found" });
+        const me = await storage.getUser(req.user.claims.sub);
+        if (me?.activeOrgId !== lead.orgId) return res.status(404).json({ message: "Lead not found" });
+      }
 
       let licensedStates: string[] = [];
       let preferredTypes: string[] = [];
@@ -512,10 +560,249 @@ export async function registerRoutes(
         vendorName: vendor.name,
       }).catch(err => console.error("Notification error:", err));
 
+      // Fire the routing engine (no-op if lead has no org, or score below threshold)
+      storage.routeLeadToBestAgent(lead.id).catch(err => console.error("Routing error:", err));
+
       res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
     } catch (error: any) {
       console.error("Error ingesting lead:", error);
       res.status(500).json({ message: error.message || "Failed to ingest lead" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Phase 3 – Organizations (multi-tenant)
+  // ──────────────────────────────────────────────────────
+  app.get("/api/orgs", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const memberships = await storage.getUserOrgMemberships(userId);
+      const me = await storage.getUser(userId);
+      res.json({
+        activeOrgId: me?.activeOrgId ?? null,
+        memberships: memberships.map(m => ({
+          orgId: m.orgId,
+          role: m.role,
+          org: m.org,
+        })),
+      });
+    } catch (err) {
+      console.error("Error listing orgs:", err);
+      res.status(500).json({ message: "Failed to list organizations" });
+    }
+  });
+
+  app.post("/api/orgs", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const validation = createOrgSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+      const existing = await storage.getOrganizationBySlug(validation.data.slug);
+      if (existing) return res.status(409).json({ message: "Slug already in use" });
+
+      const org = await storage.createOrganization(validation.data, userId);
+      res.status(201).json(org);
+    } catch (err) {
+      console.error("Error creating org:", err);
+      res.status(500).json({ message: "Failed to create organization" });
+    }
+  });
+
+  app.post("/api/orgs/:orgId/activate", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) return res.status(403).json({ message: "Not a member of this organization" });
+      const user = await storage.setUserActiveOrg(userId, orgId);
+      res.json(user);
+    } catch (err) {
+      console.error("Error activating org:", err);
+      res.status(500).json({ message: "Failed to activate organization" });
+    }
+  });
+
+  app.patch("/api/orgs/:orgId/routing-threshold", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const threshold = parseInt(req.body?.threshold, 10);
+      if (Number.isNaN(threshold) || threshold < 0 || threshold > 100) {
+        return res.status(400).json({ message: "threshold must be between 0 and 100" });
+      }
+      const org = await storage.updateOrgRoutingThreshold(orgId, threshold);
+      res.json(org);
+    } catch (err) {
+      console.error("Error updating routing threshold:", err);
+      res.status(500).json({ message: "Failed to update threshold" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Phase 3 – Agent onboarding & dashboard
+  // ──────────────────────────────────────────────────────
+  app.get("/api/agent/profile", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const profile = await storage.getAgentProfile(userId);
+      res.json(profile ?? null);
+    } catch (err) {
+      console.error("Error fetching agent profile:", err);
+      res.status(500).json({ message: "Failed to fetch agent profile" });
+    }
+  });
+
+  app.post("/api/agent/onboard", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      if (!me?.activeOrgId) {
+        return res.status(400).json({ message: "Create or activate an organization first" });
+      }
+
+      const validation = agentOnboardingSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+      const d = validation.data;
+
+      const profile = await storage.upsertAgentProfile({
+        userId,
+        orgId: me.activeOrgId,
+        licensedStates: d.licensedStates.map(s => s.toUpperCase()),
+        appointedCarriers: d.appointedCarriers,
+        territoryZips: d.territoryZips,
+        territoryCounties: d.territoryCounties,
+        licenseNumber: d.licenseNumber,
+        licenseDocumentUrl: d.licenseDocumentUrl || null,
+        capacityLimit: d.capacityLimit,
+        // Verification stays "pending" on first onboard; admins move to "verified".
+        verificationStatus: "pending",
+      });
+
+      res.json(profile);
+    } catch (err) {
+      console.error("Error onboarding agent:", err);
+      res.status(500).json({ message: "Failed to save agent onboarding" });
+    }
+  });
+
+  app.get("/api/agent/dashboard", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      const profile = await storage.getAgentProfile(userId);
+      const stats = await storage.getAgentDashboardStats(userId);
+
+      // Assigned (pipeline) leads include PII because the lead has been routed
+      // exclusively to this agent.
+      const assigned = await storage.getLeads({
+        orgId: me?.activeOrgId ?? null,
+        assignedToUserId: userId,
+        soldOnly: false,
+      });
+
+      // Org-level aggregate metrics (admins see this section in the UI).
+      let orgStats: any = null;
+      if (me?.activeOrgId) {
+        const role = await storage.getUserOrgRole(userId, me.activeOrgId);
+        if (role === "owner" || role === "admin") {
+          orgStats = await storage.getOrgDashboardStats(me.activeOrgId);
+        }
+      }
+
+      res.json({
+        profile,
+        stats,
+        assignedLeads: assigned,
+        orgStats,
+      });
+    } catch (err) {
+      console.error("Error fetching agent dashboard:", err);
+      res.status(500).json({ message: "Failed to fetch dashboard" });
+    }
+  });
+
+  // Admin verifies / rejects an agent within their own org
+  app.patch("/api/agent/:userId/verification", isAuthenticated, async (req: any, res) => {
+    try {
+      const actorId = req.user.claims.sub;
+      const targetUserId = req.params.userId;
+      const status = String(req.body?.status ?? "");
+      if (!["pending", "verified", "rejected"].includes(status)) {
+        return res.status(400).json({ message: "status must be pending|verified|rejected" });
+      }
+      const target = await storage.getAgentProfile(targetUserId);
+      if (!target) return res.status(404).json({ message: "Agent profile not found" });
+
+      const role = await storage.getUserOrgRole(actorId, target.orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const updated = await storage.setAgentVerificationStatus(targetUserId, status);
+      res.json(updated);
+    } catch (err) {
+      console.error("Error setting verification:", err);
+      res.status(500).json({ message: "Failed to update verification" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Phase 3 – Stripe subscription billing (per-org)
+  // ──────────────────────────────────────────────────────
+  const SUBSCRIPTION_TIERS: Record<string, { name: string; monthlyCents: number }> = {
+    starter: { name: "Starter (up to 3 agents)", monthlyCents: 9900 },
+    growth: { name: "Growth (up to 15 agents)", monthlyCents: 29900 },
+    scale: { name: "Scale (unlimited agents)", monthlyCents: 79900 },
+  };
+
+  app.post("/api/orgs/:orgId/subscription/checkout", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const validation = subscriptionCheckoutSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+      const tier = SUBSCRIPTION_TIERS[validation.data.tier];
+      if (!tier) return res.status(400).json({ message: "Unknown tier" });
+
+      const stripe = await getUncachableStripeClient();
+      const baseUrl = `https://${req.hostname}`;
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              recurring: { interval: "month" },
+              product_data: { name: `LeadMarket ${tier.name}` },
+              unit_amount: tier.monthlyCents,
+            },
+            quantity: 1,
+          },
+        ],
+        success_url: `${baseUrl}/?stripe=sub_success&org=${orgId}`,
+        cancel_url: `${baseUrl}/?stripe=sub_cancelled`,
+        metadata: { orgId, tier: validation.data.tier, kind: "subscription" },
+      });
+
+      res.json({ url: session.url });
+    } catch (err: any) {
+      console.error("Error creating subscription checkout:", err);
+      res.status(500).json({ message: err.message || "Failed to create subscription" });
     }
   });
 

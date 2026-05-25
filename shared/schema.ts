@@ -26,6 +26,25 @@ export const sessions = pgTable(
   (table) => [index("IDX_session_expire").on(table.expire)],
 );
 
+// ──────────────────────────────────────────────────────
+// Multi-tenant organizations (Phase 3)
+// ──────────────────────────────────────────────────────
+export const organizations = pgTable("organizations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 255 }).notNull(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  billingMode: varchar("billing_mode", { length: 20 }).notNull().default("per_lead"), // 'per_lead' | 'subscription'
+  subscriptionTier: varchar("subscription_tier", { length: 50 }),
+  subscriptionStatus: varchar("subscription_status", { length: 20 }).notNull().default("inactive"),
+  stripeCustomerId: varchar("stripe_customer_id", { length: 255 }),
+  stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }),
+  routingScoreThreshold: integer("routing_score_threshold").notNull().default(70),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_orgs_slug").on(table.slug),
+]);
+
 // User storage table (mandatory for Replit Auth)
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -36,9 +55,45 @@ export const users = pgTable("users", {
   balance: decimal("balance", { precision: 10, scale: 2 }).notNull().default("0.00"),
   role: varchar("role", { length: 20 }).notNull().default("user"),
   notificationsEnabled: boolean("notifications_enabled").notNull().default(true),
+  // Active org context – the org the user is currently working under
+  activeOrgId: varchar("active_org_id").references(() => organizations.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
+
+// Members of an org – a user can belong to many orgs with different roles
+export const orgMembers = pgTable("org_members", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: varchar("role", { length: 20 }).notNull().default("agent"), // 'owner' | 'admin' | 'agent'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_org_member").on(table.orgId, table.userId),
+  index("idx_org_members_user").on(table.userId),
+  index("idx_org_members_org").on(table.orgId),
+]);
+
+// Per-agent profile: licensing, carrier appointments, territory, license docs
+export const agentProfiles = pgTable("agent_profiles", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  licensedStates: text("licensed_states").array().notNull().default(sql`ARRAY[]::text[]`),
+  appointedCarriers: text("appointed_carriers").array().notNull().default(sql`ARRAY[]::text[]`),
+  territoryZips: text("territory_zips").array().notNull().default(sql`ARRAY[]::text[]`),
+  territoryCounties: text("territory_counties").array().notNull().default(sql`ARRAY[]::text[]`),
+  licenseNumber: varchar("license_number", { length: 100 }),
+  licenseDocumentUrl: text("license_document_url"),
+  verificationStatus: varchar("verification_status", { length: 20 }).notNull().default("pending"), // 'pending' | 'verified' | 'rejected'
+  capacityLimit: integer("capacity_limit").notNull().default(25),
+  conversionRate: decimal("conversion_rate", { precision: 5, scale: 4 }).notNull().default("0.0000"),
+  acceptingLeads: boolean("accepting_leads").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_agent_profiles_org").on(table.orgId),
+]);
 
 export const userProfiles = pgTable("user_profiles", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -70,6 +125,11 @@ export const vendorApiKeys = pgTable("vendor_api_keys", {
 export const leads = pgTable("leads", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  // Org that owns/sees this lead. Null = global pool (legacy / pre-Phase-3 leads).
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  // Agent the lead has been routed to (set by the routing engine when the lead crosses threshold)
+  assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  assignedAt: timestamp("assigned_at"),
   type: varchar("type", { length: 100 }).notNull(),
   source: varchar("source", { length: 100 }).notNull(),
   exclusivity: varchar("exclusivity", { length: 50 }).notNull(),
@@ -108,18 +168,38 @@ export const leads = pgTable("leads", {
   index("idx_leads_state").on(table.state),
   index("idx_leads_type").on(table.type),
   index("idx_leads_sold").on(table.sold),
+  index("idx_leads_org").on(table.orgId),
+  index("idx_leads_assigned").on(table.assignedToUserId),
 ]);
 
 export const orders = pgTable("orders", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
   leadId: integer("lead_id").notNull().references(() => leads.id),
   price: decimal("price", { precision: 10, scale: 2 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("completed"),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_orders_user").on(table.userId),
+  index("idx_orders_org").on(table.orgId),
   index("idx_orders_created").on(table.createdAt),
+]);
+
+// Routing audit log: every assignment decision, including reasons + score
+export const leadAssignments = pgTable("lead_assignments", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  matchScore: integer("match_score").notNull(),
+  reason: text("reason"),
+  status: varchar("status", { length: 20 }).notNull().default("assigned"), // 'assigned' | 'accepted' | 'declined' | 'expired'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_assignments_lead").on(table.leadId),
+  index("idx_assignments_agent").on(table.agentUserId),
+  index("idx_assignments_org").on(table.orgId),
 ]);
 
 // Stripe checkout sessions for wallet funding
@@ -144,11 +224,43 @@ export const notifications = pgTable("notifications", {
 ]);
 
 // Relations
+export const organizationsRelations = relations(organizations, ({ many }) => ({
+  members: many(orgMembers),
+  agentProfiles: many(agentProfiles),
+  leads: many(leads),
+  orders: many(orders),
+}));
+
+export const orgMembersRelations = relations(orgMembers, ({ one }) => ({
+  org: one(organizations, { fields: [orgMembers.orgId], references: [organizations.id] }),
+  user: one(users, { fields: [orgMembers.userId], references: [users.id] }),
+}));
+
+export const agentProfilesRelations = relations(agentProfiles, ({ one }) => ({
+  user: one(users, { fields: [agentProfiles.userId], references: [users.id] }),
+  org: one(organizations, { fields: [agentProfiles.orgId], references: [organizations.id] }),
+}));
+
+export const leadAssignmentsRelations = relations(leadAssignments, ({ one }) => ({
+  lead: one(leads, { fields: [leadAssignments.leadId], references: [leads.id] }),
+  agent: one(users, { fields: [leadAssignments.agentUserId], references: [users.id] }),
+  org: one(organizations, { fields: [leadAssignments.orgId], references: [organizations.id] }),
+}));
+
 export const usersRelations = relations(users, ({ one, many }) => ({
   profile: one(userProfiles, {
     fields: [users.id],
     references: [userProfiles.userId],
   }),
+  agentProfile: one(agentProfiles, {
+    fields: [users.id],
+    references: [agentProfiles.userId],
+  }),
+  activeOrg: one(organizations, {
+    fields: [users.activeOrgId],
+    references: [organizations.id],
+  }),
+  orgMemberships: many(orgMembers),
   orders: many(orders),
 }));
 
@@ -248,6 +360,43 @@ export type Notification = typeof notifications.$inferSelect;
 export const insertUserProfileSchema = createInsertSchema(userProfiles);
 export const insertLeadSchema = createInsertSchema(leads);
 export const insertOrderSchema = createInsertSchema(orders);
+
+// ──────────────────────────────────────────────────────
+// Phase 3 types & validation schemas
+// ──────────────────────────────────────────────────────
+export type InsertOrganization = typeof organizations.$inferInsert;
+export type Organization = typeof organizations.$inferSelect;
+
+export type InsertOrgMember = typeof orgMembers.$inferInsert;
+export type OrgMember = typeof orgMembers.$inferSelect;
+
+export type InsertAgentProfile = typeof agentProfiles.$inferInsert;
+export type AgentProfile = typeof agentProfiles.$inferSelect;
+
+export type InsertLeadAssignment = typeof leadAssignments.$inferInsert;
+export type LeadAssignment = typeof leadAssignments.$inferSelect;
+
+export const createOrgSchema = z.object({
+  name: z.string().min(2).max(255),
+  slug: z.string().min(2).max(100).regex(/^[a-z0-9-]+$/, "lowercase letters, numbers, hyphens only"),
+});
+
+export const agentOnboardingSchema = z.object({
+  licensedStates: z.array(z.string().length(2)).min(1, "At least one licensed state required"),
+  appointedCarriers: z.array(z.string().min(1)).default([]),
+  territoryZips: z.array(z.string().min(3).max(10)).default([]),
+  territoryCounties: z.array(z.string().min(1)).default([]),
+  licenseNumber: z.string().min(1).max(100).optional(),
+  licenseDocumentUrl: z.string().url().optional().or(z.literal("")),
+  capacityLimit: z.number().int().min(1).max(500).default(25),
+});
+
+export const subscriptionCheckoutSchema = z.object({
+  tier: z.enum(["starter", "growth", "scale"]),
+});
+
+export type AgentOnboardingInput = z.infer<typeof agentOnboardingSchema>;
+export type CreateOrgInput = z.infer<typeof createOrgSchema>;
 
 // Vendor ingestion payload schema
 export const vendorLeadIngestSchema = z.object({
