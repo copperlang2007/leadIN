@@ -41,6 +41,8 @@ export default function Marketplace() {
   const [selectedStates, setSelectedStates] = useState<string[]>([]);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [newLeadIds, setNewLeadIds] = useState<Set<number>>(new Set());
+  const [includeDnc, setIncludeDnc] = useState(false);
+  const [sortBy, setSortBy] = useState<"relevance" | "mediscore" | "price_asc" | "price_desc" | "newest">("relevance");
 
   // Details Dialog State
   const [detailsLead, setDetailsLead] = useState<Lead | null>(null);
@@ -80,12 +82,37 @@ export default function Marketplace() {
     }
     params.append('minPrice', priceRange[0].toString());
     params.append('maxPrice', priceRange[1].toString());
+    if (includeDnc) params.append('includeDnc', 'true');
     return params.toString();
-  }, [selectedTypes, selectedStates, priceRange]);
+  }, [selectedTypes, selectedStates, priceRange, includeDnc]);
 
-  const { data: leads = [], isLoading } = useQuery<Lead[]>({
+  const { data: rawLeads = [], isLoading } = useQuery<Lead[]>({
     queryKey: [`/api/leads?${queryParams}`],
   });
+
+  // Client-side sort. Backend already org-scopes + price-filters; sort key is
+  // a view concern so we keep it local.
+  const leads = useMemo(() => {
+    const list = [...rawLeads];
+    switch (sortBy) {
+      case "mediscore":
+        list.sort((a, b) => (b.mediscore ?? 0) - (a.mediscore ?? 0));
+        break;
+      case "price_asc":
+        list.sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+        break;
+      case "price_desc":
+        list.sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
+        break;
+      case "newest":
+        list.sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+        break;
+      case "relevance":
+      default:
+        list.sort((a, b) => (b.compatibilityScore ?? 0) - (a.compatibilityScore ?? 0));
+    }
+    return list;
+  }, [rawLeads, sortBy]);
 
   const { data: orders = [] } = useQuery<(Order & { lead: Lead })[]>({
     queryKey: ['/api/orders'],
@@ -305,11 +332,26 @@ export default function Marketplace() {
                   </>
                 )}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Sort by:</span>
-                <Button variant="outline" size="sm" className="h-8 gap-1">
-                  Relevance <ChevronDown className="h-3 w-3" />
-                </Button>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer">
+                  <Checkbox checked={includeDnc} onCheckedChange={v => setIncludeDnc(!!v)} data-testid="checkbox-include-dnc" />
+                  Show DNC-flagged
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Sort by:</span>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                    className="h-8 rounded-md border bg-background px-2 text-sm"
+                    data-testid="select-sort"
+                  >
+                    <option value="relevance">Relevance</option>
+                    <option value="mediscore">MediScore</option>
+                    <option value="newest">Newest</option>
+                    <option value="price_asc">Price: low → high</option>
+                    <option value="price_desc">Price: high → low</option>
+                  </select>
+                </div>
               </div>
             </div>
 

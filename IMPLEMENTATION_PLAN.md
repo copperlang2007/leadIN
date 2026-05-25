@@ -14,8 +14,8 @@ no `[ ]` item is tractable in this environment.
 
 - [x] **dnc-recheck**: nightly cron at 02:30 + admin `POST /api/admin/dnc/recheck`. MediScore recomputes on flag flip.
 - [x] **stripe-price-ids**: env vars `STRIPE_PRICE_STARTER/GROWTH/SCALE`; inline fallback for dev.
-- [ ] **marketplace-dnc-toggle**: UI checkbox to show DNC-flagged leads. Touches `client/src/pages/marketplace.tsx`.
-- [ ] **marketplace-mediscore-sort**: add a sort-by-MediScore option. Touches marketplace.
+- [x] **marketplace-dnc-toggle**: checkbox above the grid; passes `?includeDnc=true`.
+- [x] **marketplace-mediscore-sort**: native `<select>` with relevance/MediScore/newest/price asc+desc.
 - [ ] **architect-blueprint-refresh**: update `/architect` page to reflect orgs, routing, MediScore, signal feeds.
 - [ ] **eslint-config**: add eslint with TypeScript + React plugins; `npm run lint`. Touches `package.json`, new `.eslintrc`.
 - [ ] **landing-empty-state**: new-user onboarding card on the marketplace when no orders and no profile.
