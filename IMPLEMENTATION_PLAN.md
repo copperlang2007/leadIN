@@ -19,7 +19,7 @@ no `[ ]` item is tractable in this environment.
 - [x] **architect-blueprint-refresh**: new "Subsystems" tab on `/architect` listing shipped systems.
 - [x] **eslint-config**: eslint 10 flat config, `npm run lint`, wired into CI. 0 errors, 45 stylistic warnings.
 - [x] **landing-empty-state**: onboarding card under the hero for users with no licenses + no orders.
-- [ ] **money-math-decimal**: replace `parseFloat` with `decimal.js` for wallet ops. Touches storage + routes.
+- [x] **money-math-decimal**: `purchaseLead` uses Decimal for balance compare and subtraction; 4 regression tests.
 
 ## Stop criteria
 

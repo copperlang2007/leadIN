@@ -41,6 +41,7 @@ import {
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
+import Decimal from "decimal.js";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -380,15 +381,19 @@ export class DatabaseStorage implements IStorage {
 
       if (!user) throw new Error("User not found");
 
-      const leadPrice = parseFloat(lead.price);
-      const userBalance = parseFloat(user.balance);
+      // Money math uses Decimal to avoid float rounding drift on
+      // long-running wallets. The DB column is `numeric` so the SQL update
+      // is exact too — we pass the canonical string form.
+      const leadPrice = new Decimal(lead.price);
+      const userBalance = new Decimal(user.balance);
 
-      if (userBalance < leadPrice) throw new Error("Insufficient balance");
+      if (userBalance.lessThan(leadPrice)) throw new Error("Insufficient balance");
 
+      const newBalance = userBalance.minus(leadPrice).toFixed(2);
       await tx
         .update(users)
         .set({
-          balance: sql`${users.balance}::numeric - ${leadPrice}`,
+          balance: newBalance,
           updatedAt: new Date(),
         })
         .where(eq(users.id, userId));
