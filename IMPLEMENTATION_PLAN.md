@@ -18,7 +18,7 @@ no `[ ]` item is tractable in this environment.
 - [x] **marketplace-mediscore-sort**: native `<select>` with relevance/MediScore/newest/price asc+desc.
 - [ ] **architect-blueprint-refresh**: update `/architect` page to reflect orgs, routing, MediScore, signal feeds.
 - [x] **eslint-config**: eslint 10 flat config, `npm run lint`, wired into CI. 0 errors, 45 stylistic warnings.
-- [ ] **landing-empty-state**: new-user onboarding card on the marketplace when no orders and no profile.
+- [x] **landing-empty-state**: onboarding card under the hero for users with no licenses + no orders.
 - [ ] **money-math-decimal**: replace `parseFloat` with `decimal.js` for wallet ops. Touches storage + routes.
 
 ## Stop criteria

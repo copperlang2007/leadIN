@@ -226,6 +226,26 @@ export default function Marketplace() {
           </div>
         </div>
 
+        {/* New-user onboarding card: shown only when the user has no licenses
+            on file and no purchases yet. Hidden once they engage. */}
+        {user && (user.profile?.licensedStates?.length ?? 0) === 0 && orders.length === 0 && (
+          <div className="bg-primary/5 border border-primary/20 rounded-xl p-5 flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold text-primary">Welcome to LeadMarket</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Get matched to high-intent leads. Three quick steps:
+                <span className="font-medium text-foreground"> 1) add your licensed states</span>,
+                <span className="font-medium text-foreground"> 2) fund your wallet</span>,
+                <span className="font-medium text-foreground"> 3) onboard as an agent</span> to receive auto-routed leads.
+              </p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <a href="/profile" className="inline-flex h-9 items-center rounded-md bg-primary text-primary-foreground px-3 text-sm font-medium hover:bg-primary/90">Add licenses</a>
+              <a href="/agent/onboarding" className="inline-flex h-9 items-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted">Become an agent</a>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col md:flex-row gap-6 items-start">
 
           {/* Filters Sidebar */}
