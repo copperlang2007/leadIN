@@ -697,6 +697,17 @@ export async function registerRoutes(
     }
   });
 
+  // List vendors so the org-admin UI can pick one when minting a key.
+  app.get("/api/vendors", isAuthenticated, async (_req, res) => {
+    try {
+      const vendors = await storage.getVendors();
+      res.json(vendors);
+    } catch (err) {
+      console.error("Error listing vendors:", err);
+      res.status(500).json({ message: "Failed to list vendors" });
+    }
+  });
+
   // Mint a vendor API key bound to a vendor and (optionally) to the caller's
   // active org. Org owners/admins only. Returns the raw key ONCE.
   app.post("/api/orgs/:orgId/vendor-keys", isAuthenticated, async (req: any, res) => {

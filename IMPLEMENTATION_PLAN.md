@@ -21,7 +21,7 @@ no `[ ]` item is tractable in this environment.
 - [x] **landing-empty-state**: onboarding card under the hero for users with no licenses + no orders.
 - [x] **money-math-decimal**: `purchaseLead` uses Decimal for balance compare and subtraction; 4 regression tests.
 - [x] **ws-auth**: WebSocket upgrades require a `connect.sid` cookie; anonymous clients get 401.
-- [ ] **vendor-key-ui**: org admins can mint vendor keys via API but there's no UI. Add to `/org-admin`.
+- [x] **vendor-key-ui**: vendor selector + mint button on `/org-admin`. New `GET /api/vendors` endpoint. Key shown once, copyable.
 
 ## Stop criteria
 

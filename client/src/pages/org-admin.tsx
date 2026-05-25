@@ -5,12 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, ShieldX, Loader2 } from "lucide-react";
+import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy } from "lucide-react";
+import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 
 interface OrgList {
   activeOrgId: string | null;
   memberships: { orgId: string; role: string; org: { id: string; name: string; slug: string; subscriptionStatus: string; billingMode: string } }[];
+}
+
+interface Vendor {
+  id: number;
+  name: string;
+  rating: string;
+  verified: boolean;
 }
 
 interface OrgAgent {
@@ -39,6 +47,34 @@ export default function OrgAdmin() {
   const { data: agents = [], isLoading } = useQuery<OrgAgent[]>({
     queryKey: [`/api/orgs/${orgs?.activeOrgId}/agents`],
     enabled: !!orgs?.activeOrgId,
+  });
+
+  const { data: vendors = [] } = useQuery<Vendor[]>({
+    queryKey: ["/api/vendors"],
+    enabled: !!orgs?.activeOrgId,
+  });
+
+  const [selectedVendor, setSelectedVendor] = useState<string>("");
+  const [mintedKey, setMintedKey] = useState<string | null>(null);
+
+  const mintKeyMutation = useMutation({
+    mutationFn: async () => {
+      const vendorId = parseInt(selectedVendor, 10);
+      if (!Number.isFinite(vendorId)) throw new Error("Select a vendor");
+      const res = await fetch(`/api/orgs/${orgs!.activeOrgId}/vendor-keys`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendorId }),
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Mint failed");
+      return res.json() as Promise<{ apiKey: string; keyPrefix: string }>;
+    },
+    onSuccess: (data) => {
+      setMintedKey(data.apiKey);
+      toast({ title: "Key minted", description: `Prefix: ${data.keyPrefix}. Copy it now — it won't be shown again.` });
+    },
+    onError: (e: Error) => toast({ title: "Mint failed", description: e.message, variant: "destructive" }),
   });
 
   const verifyMutation = useMutation({
@@ -173,6 +209,57 @@ export default function OrgAdmin() {
                 <Loader2 className="h-4 w-4 animate-spin" /> Updating...
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Key className="h-5 w-5" /> Vendor API keys</CardTitle>
+            <CardDescription>
+              Mint a key for a vendor partner. Leads ingested with this key are scoped to this organization and routed by the engine.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2 items-center">
+              <select
+                value={selectedVendor}
+                onChange={e => setSelectedVendor(e.target.value)}
+                className="h-9 rounded-md border bg-background px-2 text-sm flex-1"
+                data-testid="select-vendor"
+              >
+                <option value="">Select vendor…</option>
+                {vendors.map(v => (
+                  <option key={v.id} value={v.id}>{v.name}{v.verified ? " ✓" : ""}</option>
+                ))}
+              </select>
+              <Button
+                onClick={() => mintKeyMutation.mutate()}
+                disabled={mintKeyMutation.isPending || !selectedVendor}
+              >
+                {mintKeyMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Key className="h-4 w-4 mr-2" />}
+                Mint key
+              </Button>
+            </div>
+            {mintedKey && (
+              <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded-md p-3 space-y-2">
+                <div className="text-sm font-medium text-amber-900 dark:text-amber-100">
+                  Copy this key now — it won't be shown again.
+                </div>
+                <div className="flex gap-2">
+                  <code className="flex-1 font-mono text-xs bg-background border rounded px-2 py-1.5 break-all">{mintedKey}</code>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { navigator.clipboard.writeText(mintedKey); toast({ title: "Copied to clipboard" }); }}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Vendors send leads via <code>POST /api/v1/leads/ingest</code> with the <code>X-Api-Key</code> header.
+            </p>
           </CardContent>
         </Card>
       </div>
