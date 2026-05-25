@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, Wifi, WifiOff, Loader2, Plus, DollarSign, BookOpen } from "lucide-react";
+import { Search, Bell, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, Wifi, WifiOff, Loader2, Plus, DollarSign, BookOpen, Briefcase } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -253,6 +253,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <NavItem href="/blog" icon={BookOpen} label="Industry Blog" />
         <NavItem href="/saved" icon={FileText} label="Saved Lists" />
         <NavItem href="/orders" icon={BarChart3} label="Order History" />
+
+        <div className="px-3 mt-8 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          Agent
+        </div>
+        <NavItem href="/agent" icon={Briefcase} label="Agent Dashboard" />
+        <NavItem href="/agent/onboarding" icon={ShieldCheck} label="Agent Onboarding" />
 
         <div className="px-3 mt-8 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Account

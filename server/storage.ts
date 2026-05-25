@@ -8,6 +8,10 @@ import {
   stripeCheckoutSessions,
   notifications,
   contentArticles,
+  organizations,
+  orgMembers,
+  agentProfiles,
+  leadAssignments,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -22,9 +26,15 @@ import {
   type InsertStripeCheckoutSession,
   type ContentArticle,
   type InsertContentArticle,
+  type Organization,
+  type InsertOrganization,
+  type OrgMember,
+  type AgentProfile,
+  type InsertAgentProfile,
+  type LeadAssignment,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, desc, sql, gte, lt, count, sum } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 
 export interface IStorage {
@@ -52,6 +62,8 @@ export interface IStorage {
     maxPrice?: number;
     soldOnly?: boolean;
     includeRemoved?: boolean;
+    orgId?: string | null;
+    assignedToUserId?: string;
   }): Promise<(Lead & { vendor: Vendor })[]>;
   getLead(id: number): Promise<(Lead & { vendor: Vendor }) | undefined>;
   createLead(data: InsertLead): Promise<Lead>;
@@ -104,6 +116,41 @@ export interface IStorage {
   updateContentArticle(id: number, updates: Partial<InsertContentArticle>): Promise<ContentArticle>;
   getPublishedArticleCount(): Promise<number>;
   slugExists(slug: string): Promise<boolean>;
+
+  // ──────────────────────────────────────────────────────
+  // Phase 3: organizations, agents, routing, subscriptions
+  // ──────────────────────────────────────────────────────
+  createOrganization(data: InsertOrganization, ownerUserId: string): Promise<Organization>;
+  getOrganization(orgId: string): Promise<Organization | undefined>;
+  getOrganizationBySlug(slug: string): Promise<Organization | undefined>;
+  setUserActiveOrg(userId: string, orgId: string | null): Promise<User>;
+  getUserOrgMemberships(userId: string): Promise<(OrgMember & { org: Organization })[]>;
+  getUserOrgRole(userId: string, orgId: string): Promise<string | null>;
+  updateOrgRoutingThreshold(orgId: string, threshold: number): Promise<Organization>;
+  updateOrgSubscription(orgId: string, fields: Partial<InsertOrganization>): Promise<Organization>;
+
+  getAgentProfile(userId: string): Promise<AgentProfile | undefined>;
+  upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile>;
+  setAgentVerificationStatus(userId: string, status: string): Promise<AgentProfile>;
+  listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
+
+  routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
+  getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]>;
+  getAgentDashboardStats(agentUserId: string): Promise<{
+    openLeads: number;
+    purchasedLeads: number;
+    totalSpent: string;
+    averageCpl: string;
+    estimatedCommissions: string;
+    conversionRate: string;
+  }>;
+  getOrgDashboardStats(orgId: string): Promise<{
+    totalLeads: number;
+    assignedLeads: number;
+    soldLeads: number;
+    totalSpent: string;
+    activeAgents: number;
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -215,8 +262,10 @@ export class DatabaseStorage implements IStorage {
     maxPrice?: number;
     soldOnly?: boolean;
     includeRemoved?: boolean;
+    orgId?: string | null;
+    assignedToUserId?: string;
   }): Promise<(Lead & { vendor: Vendor })[]> {
-    const conditions = [eq(leads.sold, filters?.soldOnly ?? false)];
+    const conditions: any[] = [eq(leads.sold, filters?.soldOnly ?? false)];
 
     if (!filters?.includeRemoved) {
       conditions.push(eq(leads.removed, false));
@@ -236,6 +285,20 @@ export class DatabaseStorage implements IStorage {
 
     if (filters?.maxPrice !== undefined) {
       conditions.push(sql`${leads.price}::numeric <= ${filters.maxPrice}`);
+    }
+
+    // Org scoping: when an orgId is provided, show only that org's leads OR
+    // unowned (global / legacy) leads. This prevents cross-tenant leakage.
+    if (filters?.orgId !== undefined) {
+      if (filters.orgId === null) {
+        conditions.push(isNull(leads.orgId));
+      } else {
+        conditions.push(or(eq(leads.orgId, filters.orgId), isNull(leads.orgId))!);
+      }
+    }
+
+    if (filters?.assignedToUserId) {
+      conditions.push(eq(leads.assignedToUserId, filters.assignedToUserId));
     }
 
     const results = await db
@@ -311,7 +374,7 @@ export class DatabaseStorage implements IStorage {
 
       const [order] = await tx
         .insert(orders)
-        .values({ userId, leadId, price: lead.price, status: "completed" })
+        .values({ userId, leadId, orgId: lead.orgId ?? null, price: lead.price, status: "completed" })
         .returning();
 
       return order;
@@ -658,6 +721,353 @@ export class DatabaseStorage implements IStorage {
       .from(contentArticles)
       .where(eq(contentArticles.slug, slug));
     return !!result;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Phase 3: organizations & multi-tenancy
+  // ──────────────────────────────────────────────────────
+  async createOrganization(data: InsertOrganization, ownerUserId: string): Promise<Organization> {
+    return await db.transaction(async (tx) => {
+      const [org] = await tx.insert(organizations).values(data).returning();
+      await tx.insert(orgMembers).values({
+        orgId: org.id,
+        userId: ownerUserId,
+        role: "owner",
+      });
+      // Set as active org if user has none
+      const [user] = await tx.select().from(users).where(eq(users.id, ownerUserId));
+      if (user && !user.activeOrgId) {
+        await tx.update(users).set({ activeOrgId: org.id, updatedAt: new Date() }).where(eq(users.id, ownerUserId));
+      }
+      return org;
+    });
+  }
+
+  async getOrganization(orgId: string): Promise<Organization | undefined> {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, orgId));
+    return org;
+  }
+
+  async getOrganizationBySlug(slug: string): Promise<Organization | undefined> {
+    const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug));
+    return org;
+  }
+
+  async setUserActiveOrg(userId: string, orgId: string | null): Promise<User> {
+    const [user] = await db
+      .update(users)
+      .set({ activeOrgId: orgId, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return user;
+  }
+
+  async getUserOrgMemberships(userId: string): Promise<(OrgMember & { org: Organization })[]> {
+    const rows = await db
+      .select()
+      .from(orgMembers)
+      .leftJoin(organizations, eq(orgMembers.orgId, organizations.id))
+      .where(eq(orgMembers.userId, userId));
+    return rows.map(r => ({ ...r.org_members, org: r.organizations! }));
+  }
+
+  async getUserOrgRole(userId: string, orgId: string): Promise<string | null> {
+    const [m] = await db
+      .select()
+      .from(orgMembers)
+      .where(and(eq(orgMembers.userId, userId), eq(orgMembers.orgId, orgId)));
+    return m?.role ?? null;
+  }
+
+  async updateOrgRoutingThreshold(orgId: string, threshold: number): Promise<Organization> {
+    const [org] = await db
+      .update(organizations)
+      .set({ routingScoreThreshold: threshold, updatedAt: new Date() })
+      .where(eq(organizations.id, orgId))
+      .returning();
+    return org;
+  }
+
+  async updateOrgSubscription(orgId: string, fields: Partial<InsertOrganization>): Promise<Organization> {
+    const [org] = await db
+      .update(organizations)
+      .set({ ...fields, updatedAt: new Date() })
+      .where(eq(organizations.id, orgId))
+      .returning();
+    return org;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Agent profiles
+  // ──────────────────────────────────────────────────────
+  async getAgentProfile(userId: string): Promise<AgentProfile | undefined> {
+    const [p] = await db.select().from(agentProfiles).where(eq(agentProfiles.userId, userId));
+    return p;
+  }
+
+  async upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile> {
+    const [p] = await db
+      .insert(agentProfiles)
+      .values(data)
+      .onConflictDoUpdate({
+        target: agentProfiles.userId,
+        set: { ...data, updatedAt: new Date() },
+      })
+      .returning();
+    return p;
+  }
+
+  async setAgentVerificationStatus(userId: string, status: string): Promise<AgentProfile> {
+    const [p] = await db
+      .update(agentProfiles)
+      .set({ verificationStatus: status, updatedAt: new Date() })
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    return p;
+  }
+
+  async listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]> {
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(eq(agentProfiles.orgId, orgId));
+
+    const result: (AgentProfile & { user: User; openLeads: number })[] = [];
+    for (const r of rows) {
+      if (!r.users) continue;
+      const [c] = await db
+        .select({ count: count() })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.assignedToUserId, r.users.id),
+            eq(leads.sold, false),
+            eq(leads.removed, false),
+          ),
+        );
+      result.push({
+        ...r.agent_profiles,
+        user: r.users,
+        openLeads: Number(c?.count ?? 0),
+      });
+    }
+    return result;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Lead routing engine
+  // Ranks eligible agents and assigns the lead to the best match.
+  // Returns the assignment record, or null if no agent qualifies.
+  // ──────────────────────────────────────────────────────
+  async routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!lead || lead.sold || lead.removed) return null;
+    if (lead.assignedToUserId) return null; // already routed
+    if (!lead.orgId) return null; // global pool leads aren't auto-routed
+
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, lead.orgId));
+    if (!org) return null;
+
+    if ((lead.compatibilityScore ?? 0) < org.routingScoreThreshold) return null;
+
+    // Find eligible agents for this org
+    const candidates = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          eq(agentProfiles.orgId, lead.orgId),
+          eq(agentProfiles.acceptingLeads, true),
+          eq(agentProfiles.verificationStatus, "verified"),
+        ),
+      );
+
+    let best: { agent: AgentProfile; user: User; score: number; reasons: string[] } | null = null;
+
+    for (const row of candidates) {
+      if (!row.users) continue;
+      const ap = row.agent_profiles;
+
+      // 1) Geographic: licensed in lead's state (hard requirement)
+      const stateOk = ap.licensedStates.length === 0 || ap.licensedStates.includes(lead.state);
+      if (!stateOk) continue;
+
+      // 2) Territory ZIP/county — if defined, lead's ZIP must be inside
+      const territoryDefined = ap.territoryZips.length > 0 || ap.territoryCounties.length > 0;
+      const territoryOk = !territoryDefined || ap.territoryZips.includes(lead.zipCode);
+      if (!territoryOk) continue;
+
+      // 3) Capacity — count current open assigned leads
+      const [openCountRow] = await db
+        .select({ count: count() })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.assignedToUserId, row.users.id),
+            eq(leads.sold, false),
+            eq(leads.removed, false),
+          ),
+        );
+      const openCount = Number(openCountRow?.count ?? 0);
+      if (openCount >= ap.capacityLimit) continue;
+
+      // 4) Carrier appointment soft signal — if appointed list is defined,
+      //    matching the lead source/type pushes the score up.
+      const reasons: string[] = [];
+      let score = lead.compatibilityScore ?? 50;
+
+      reasons.push(`state-match:${lead.state}`);
+      if (ap.territoryZips.includes(lead.zipCode)) {
+        score += 10;
+        reasons.push(`territory-zip:${lead.zipCode}`);
+      }
+
+      // Capacity slack bonus: more headroom = better
+      const slack = ap.capacityLimit - openCount;
+      const slackBonus = Math.min(20, Math.round((slack / ap.capacityLimit) * 20));
+      score += slackBonus;
+      reasons.push(`capacity-slack:${slack}/${ap.capacityLimit}`);
+
+      // Historical conversion rate bonus (0..30)
+      const conv = parseFloat(ap.conversionRate ?? "0");
+      const convBonus = Math.round(conv * 30);
+      score += convBonus;
+      if (convBonus > 0) reasons.push(`conv-rate:${(conv * 100).toFixed(1)}%`);
+
+      // Carrier appointments soft match — if any appointments declared and the lead's source matches one, bump
+      if (ap.appointedCarriers.length > 0 && ap.appointedCarriers.some(c => c.toLowerCase() === lead.source.toLowerCase())) {
+        score += 5;
+        reasons.push(`carrier:${lead.source}`);
+      }
+
+      if (!best || score > best.score) {
+        best = { agent: ap, user: row.users, score, reasons };
+      }
+    }
+
+    if (!best) return null;
+
+    return await db.transaction(async (tx) => {
+      // Re-check assignment status under transaction to avoid double-assign races
+      const [fresh] = await tx.select().from(leads).where(eq(leads.id, leadId)).for("update");
+      if (!fresh || fresh.assignedToUserId || fresh.sold || fresh.removed) return null;
+
+      await tx
+        .update(leads)
+        .set({ assignedToUserId: best!.user.id, assignedAt: new Date() })
+        .where(eq(leads.id, leadId));
+
+      const [assignment] = await tx
+        .insert(leadAssignments)
+        .values({
+          leadId,
+          orgId: lead.orgId!,
+          agentUserId: best!.user.id,
+          matchScore: best!.score,
+          reason: best!.reasons.join(", "),
+          status: "assigned",
+        })
+        .returning();
+
+      return assignment;
+    });
+  }
+
+  async getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]> {
+    const rows = await db
+      .select()
+      .from(leadAssignments)
+      .leftJoin(leads, eq(leadAssignments.leadId, leads.id))
+      .leftJoin(vendors, eq(leads.vendorId, vendors.id))
+      .where(eq(leadAssignments.agentUserId, agentUserId))
+      .orderBy(desc(leadAssignments.createdAt));
+
+    return rows
+      .filter(r => r.leads && r.vendors)
+      .map(r => ({
+        ...r.lead_assignments,
+        lead: { ...r.leads!, vendor: r.vendors! },
+      }));
+  }
+
+  async getAgentDashboardStats(agentUserId: string): Promise<{
+    openLeads: number;
+    purchasedLeads: number;
+    totalSpent: string;
+    averageCpl: string;
+    estimatedCommissions: string;
+    conversionRate: string;
+  }> {
+    const [openRow] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(
+        and(
+          eq(leads.assignedToUserId, agentUserId),
+          eq(leads.sold, false),
+          eq(leads.removed, false),
+        ),
+      );
+
+    const [purchasedRow] = await db
+      .select({ count: count(), total: sum(orders.price) })
+      .from(orders)
+      .where(eq(orders.userId, agentUserId));
+
+    const purchased = Number(purchasedRow?.count ?? 0);
+    const totalSpent = parseFloat(purchasedRow?.total ?? "0");
+    const averageCpl = purchased > 0 ? (totalSpent / purchased) : 0;
+
+    const profile = await this.getAgentProfile(agentUserId);
+    const conv = parseFloat(profile?.conversionRate ?? "0");
+
+    // Rough commission estimate: $400 avg first-year commission per closed lead
+    const estimated = purchased * conv * 400;
+
+    return {
+      openLeads: Number(openRow?.count ?? 0),
+      purchasedLeads: purchased,
+      totalSpent: totalSpent.toFixed(2),
+      averageCpl: averageCpl.toFixed(2),
+      estimatedCommissions: estimated.toFixed(2),
+      conversionRate: (conv * 100).toFixed(1),
+    };
+  }
+
+  async getOrgDashboardStats(orgId: string): Promise<{
+    totalLeads: number;
+    assignedLeads: number;
+    soldLeads: number;
+    totalSpent: string;
+    activeAgents: number;
+  }> {
+    const [totalRow] = await db.select({ count: count() }).from(leads).where(eq(leads.orgId, orgId));
+    const [assignedRow] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(and(eq(leads.orgId, orgId), sql`${leads.assignedToUserId} IS NOT NULL`));
+    const [soldRow] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(and(eq(leads.orgId, orgId), eq(leads.sold, true)));
+    const [spendRow] = await db
+      .select({ total: sum(orders.price) })
+      .from(orders)
+      .where(eq(orders.orgId, orgId));
+    const [agentRow] = await db
+      .select({ count: count() })
+      .from(agentProfiles)
+      .where(and(eq(agentProfiles.orgId, orgId), eq(agentProfiles.acceptingLeads, true)));
+
+    return {
+      totalLeads: Number(totalRow?.count ?? 0),
+      assignedLeads: Number(assignedRow?.count ?? 0),
+      soldLeads: Number(soldRow?.count ?? 0),
+      totalSpent: (parseFloat(spendRow?.total ?? "0")).toFixed(2),
+      activeAgents: Number(agentRow?.count ?? 0),
+    };
   }
 }
 
