@@ -18,6 +18,8 @@ jobs:
         run: npm ci
       - name: TypeScript check
         run: npm run check
+      - name: Lint
+        run: npm run lint
       - name: Unit tests
         run: npm run test
       - name: Validate Drizzle schema

@@ -17,7 +17,7 @@ no `[ ]` item is tractable in this environment.
 - [x] **marketplace-dnc-toggle**: checkbox above the grid; passes `?includeDnc=true`.
 - [x] **marketplace-mediscore-sort**: native `<select>` with relevance/MediScore/newest/price asc+desc.
 - [ ] **architect-blueprint-refresh**: update `/architect` page to reflect orgs, routing, MediScore, signal feeds.
-- [ ] **eslint-config**: add eslint with TypeScript + React plugins; `npm run lint`. Touches `package.json`, new `.eslintrc`.
+- [x] **eslint-config**: eslint 10 flat config, `npm run lint`, wired into CI. 0 errors, 45 stylistic warnings.
 - [ ] **landing-empty-state**: new-user onboarding card on the marketplace when no orders and no profile.
 - [ ] **money-math-decimal**: replace `parseFloat` with `decimal.js` for wallet ops. Touches storage + routes.
 
