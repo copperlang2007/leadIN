@@ -13,7 +13,7 @@ no `[ ]` item is tractable in this environment.
 ## Backlog (priority order)
 
 - [x] **dnc-recheck**: nightly cron at 02:30 + admin `POST /api/admin/dnc/recheck`. MediScore recomputes on flag flip.
-- [ ] **stripe-price-ids**: read `STRIPE_PRICE_STARTER/GROWTH/SCALE` env vars; fall back to inline `price_data` only if unset. Touches `server/routes.ts`.
+- [x] **stripe-price-ids**: env vars `STRIPE_PRICE_STARTER/GROWTH/SCALE`; inline fallback for dev.
 - [ ] **marketplace-dnc-toggle**: UI checkbox to show DNC-flagged leads. Touches `client/src/pages/marketplace.tsx`.
 - [ ] **marketplace-mediscore-sort**: add a sort-by-MediScore option. Touches marketplace.
 - [ ] **architect-blueprint-refresh**: update `/architect` page to reflect orgs, routing, MediScore, signal feeds.

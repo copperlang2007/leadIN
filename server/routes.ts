@@ -906,10 +906,13 @@ export async function registerRoutes(
   // ──────────────────────────────────────────────────────
   // Phase 3 – Stripe subscription billing (per-org)
   // ──────────────────────────────────────────────────────
-  const SUBSCRIPTION_TIERS: Record<string, { name: string; monthlyCents: number }> = {
-    starter: { name: "Starter (up to 3 agents)", monthlyCents: 9900 },
-    growth: { name: "Growth (up to 15 agents)", monthlyCents: 29900 },
-    scale: { name: "Scale (unlimited agents)", monthlyCents: 79900 },
+  // Fallback inline pricing when STRIPE_PRICE_* env vars aren't configured.
+  // Production should set the env vars so each subscription reuses a single
+  // Stripe Product/Price instead of minting a new one per checkout.
+  const SUBSCRIPTION_TIERS: Record<string, { name: string; monthlyCents: number; priceIdEnv: string }> = {
+    starter: { name: "Starter (up to 3 agents)", monthlyCents: 9900, priceIdEnv: "STRIPE_PRICE_STARTER" },
+    growth: { name: "Growth (up to 15 agents)", monthlyCents: 29900, priceIdEnv: "STRIPE_PRICE_GROWTH" },
+    scale: { name: "Scale (unlimited agents)", monthlyCents: 79900, priceIdEnv: "STRIPE_PRICE_SCALE" },
   };
 
   app.post("/api/orgs/:orgId/subscription/checkout", isAuthenticated, async (req: any, res) => {
@@ -933,11 +936,12 @@ export async function registerRoutes(
       // when APP_URL is not set (dev / first-deploy).
       const baseUrl = process.env.APP_URL || `https://${req.hostname}`;
 
-      const session = await stripe.checkout.sessions.create({
-        mode: "subscription",
-        payment_method_types: ["card"],
-        line_items: [
-          {
+      // Use the configured Stripe Price ID when available (recommended);
+      // otherwise create an inline price_data line item so dev still works.
+      const priceId = process.env[tier.priceIdEnv];
+      const lineItem: any = priceId
+        ? { price: priceId, quantity: 1 }
+        : {
             price_data: {
               currency: "usd",
               recurring: { interval: "month" },
@@ -945,14 +949,18 @@ export async function registerRoutes(
               unit_amount: tier.monthlyCents,
             },
             quantity: 1,
-          },
-        ],
+          };
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        payment_method_types: ["card"],
+        line_items: [lineItem],
         success_url: `${baseUrl}/?stripe=sub_success&org=${orgId}`,
         cancel_url: `${baseUrl}/?stripe=sub_cancelled`,
         metadata: { orgId, tier: validation.data.tier, kind: "subscription" },
       });
 
-      res.json({ url: session.url });
+      res.json({ url: session.url, usedPriceId: !!priceId });
     } catch (err: any) {
       console.error("Error creating subscription checkout:", err);
       res.status(500).json({ message: err.message || "Failed to create subscription" });
