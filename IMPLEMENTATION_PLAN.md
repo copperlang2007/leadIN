@@ -16,7 +16,7 @@ no `[ ]` item is tractable in this environment.
 - [x] **stripe-price-ids**: env vars `STRIPE_PRICE_STARTER/GROWTH/SCALE`; inline fallback for dev.
 - [x] **marketplace-dnc-toggle**: checkbox above the grid; passes `?includeDnc=true`.
 - [x] **marketplace-mediscore-sort**: native `<select>` with relevance/MediScore/newest/price asc+desc.
-- [ ] **architect-blueprint-refresh**: update `/architect` page to reflect orgs, routing, MediScore, signal feeds.
+- [x] **architect-blueprint-refresh**: new "Subsystems" tab on `/architect` listing shipped systems.
 - [x] **eslint-config**: eslint 10 flat config, `npm run lint`, wired into CI. 0 errors, 45 stylistic warnings.
 - [x] **landing-empty-state**: onboarding card under the hero for users with no licenses + no orders.
 - [ ] **money-math-decimal**: replace `parseFloat` with `decimal.js` for wallet ops. Touches storage + routes.

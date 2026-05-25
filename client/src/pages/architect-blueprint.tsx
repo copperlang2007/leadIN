@@ -263,10 +263,47 @@ export default function ArchitectBlueprint() {
             <TabsTrigger value="status" className="gap-2">
               <Activity className="h-4 w-4" /> Platform Status
             </TabsTrigger>
+            <TabsTrigger value="subsystems" className="gap-2">
+              <Factory className="h-4 w-4" /> Subsystems
+            </TabsTrigger>
             <TabsTrigger value="blueprint" className="gap-2">
               <Brain className="h-4 w-4" /> Architectural Blueprint
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="subsystems" className="mt-6">
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Live subsystems shipping in production. Each card describes a real service in the codebase.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {[
+                  { name: "Multi-tenant scoping", desc: "Org-scoped queries on leads, orders, reveal. Vendor API keys bound to an org.", icon: Users },
+                  { name: "Routing engine", desc: "Ranks agents by state license, territory, capacity, conversion rate, carrier match. Notifies via WebSocket; accept/decline endpoints free or claim a lead.", icon: Zap },
+                  { name: "MediScore", desc: "22 weighted signals → 0-100. Surfaced in lead cards and detail dialog.", icon: BarChart3 },
+                  { name: "DNC compliance", desc: "Vendor API + local fallback at ingest; nightly re-check at 02:30 catches phones added later.", icon: AlertTriangle },
+                  { name: "Behavioral tracker", desc: "Page views, scroll depth, dwell, CTA, tool clicks. Rate-limited, deduped within 5s, ties to a lead when a detail dialog is open.", icon: Eye },
+                  { name: "SEO + CMS signals", desc: "Daily GSC/DataForSEO refresh feeds content engine. Weekly CMS Plan Finder parser (RFC-4180 CSV) feeds MediScore.", icon: TrendingUp },
+                  { name: "Stripe billing", desc: "Per-lead wallet top-up + per-org subscriptions (Starter/Growth/Scale). Subscription cancellations sync via webhook.", icon: Scale },
+                  { name: "Security", desc: "Helmet, double-submit CSRF, token-bucket rate limits on ingest/checkout/events, secure-prod cookies.", icon: Shield },
+                ].map(s => {
+                  const Icon = s.icon;
+                  return (
+                    <Card key={s.name}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <Icon className="h-4 w-4 text-primary" /> {s.name}
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <p className="text-sm text-muted-foreground">{s.desc}</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          </TabsContent>
 
           <TabsContent value="status" className="mt-6">
             <div className="space-y-6">
