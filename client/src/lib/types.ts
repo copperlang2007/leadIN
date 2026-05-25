@@ -50,6 +50,15 @@ export interface Lead {
   consumerEmail: string | null;
   consumerAddress: string | null;
   piiGated?: boolean;
+  // Phase 4 signal enrichment
+  dncFlagged?: boolean;
+  mediscore?: number;
+  mediscoreSignals?: {
+    score: number;
+    activeSignalCount: number;
+    signals: { key: string; label: string; weight: number; hit: boolean }[];
+    computedAt: string;
+  } | null;
 }
 
 export interface UserProfile {

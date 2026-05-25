@@ -12,6 +12,9 @@ import {
   orgMembers,
   agentProfiles,
   leadAssignments,
+  keywordSignals,
+  cmsPlanSignals,
+  behavioralEvents,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -32,6 +35,8 @@ import {
   type AgentProfile,
   type InsertAgentProfile,
   type LeadAssignment,
+  type InsertBehavioralEvent,
+  type BehavioralEvent,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -151,6 +156,13 @@ export interface IStorage {
     totalSpent: string;
     activeAgents: number;
   }>;
+
+  // Phase 4 – signal enrichment
+  setLeadDncStatus(leadId: number, flagged: boolean): Promise<void>;
+  setLeadSessionId(leadId: number, sessionId: string): Promise<void>;
+  recordBehavioralEvent(data: InsertBehavioralEvent): Promise<BehavioralEvent>;
+  getEventCountsForSession(sessionId: string): Promise<{ total: number; byType: Record<string, number> }>;
+  attachSessionToLeadIfMatch(sessionId: string, phone: string | undefined, email: string | undefined): Promise<number | null>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1068,6 +1080,63 @@ export class DatabaseStorage implements IStorage {
       totalSpent: (parseFloat(spendRow?.total ?? "0")).toFixed(2),
       activeAgents: Number(agentRow?.count ?? 0),
     };
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Phase 4: signal enrichment
+  // ──────────────────────────────────────────────────────
+  async setLeadDncStatus(leadId: number, flagged: boolean): Promise<void> {
+    await db
+      .update(leads)
+      .set({ dncFlagged: flagged, dncCheckedAt: new Date() })
+      .where(eq(leads.id, leadId));
+  }
+
+  async setLeadSessionId(leadId: number, sessionId: string): Promise<void> {
+    await db.update(leads).set({ sessionId }).where(eq(leads.id, leadId));
+  }
+
+  async recordBehavioralEvent(data: InsertBehavioralEvent): Promise<BehavioralEvent> {
+    const [event] = await db.insert(behavioralEvents).values(data).returning();
+    return event;
+  }
+
+  async getEventCountsForSession(sessionId: string): Promise<{ total: number; byType: Record<string, number> }> {
+    const rows = await db
+      .select({ type: behavioralEvents.eventType, c: count() })
+      .from(behavioralEvents)
+      .where(eq(behavioralEvents.sessionId, sessionId))
+      .groupBy(behavioralEvents.eventType);
+
+    const byType: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) {
+      const n = Number(r.c ?? 0);
+      byType[r.type] = n;
+      total += n;
+    }
+    return { total, byType };
+  }
+
+  async attachSessionToLeadIfMatch(
+    sessionId: string,
+    phone: string | undefined,
+    email: string | undefined,
+  ): Promise<number | null> {
+    if (!phone && !email) return null;
+    const conditions: any[] = [];
+    if (phone) conditions.push(eq(leads.consumerPhone, phone));
+    if (email) conditions.push(eq(leads.consumerEmail, email));
+    if (conditions.length === 0) return null;
+    const [match] = await db
+      .select()
+      .from(leads)
+      .where(or(...conditions)!)
+      .orderBy(desc(leads.createdAt))
+      .limit(1);
+    if (!match) return null;
+    await db.update(leads).set({ sessionId }).where(eq(leads.id, match.id));
+    return match.id;
   }
 }
 

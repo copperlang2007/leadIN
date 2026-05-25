@@ -14,6 +14,11 @@ import { setupWebSocket, broadcastNewLead, getActiveConnections } from "./websoc
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
+import { checkDnc } from "./dncCompliance";
+import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
+import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
+import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
+import { trackEventSchema } from "@shared/schema";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -55,6 +60,10 @@ export async function registerRoutes(
 
   // Start the daily content generation cron
   startContentEngine();
+
+  // Phase 4 – signal enrichment cron jobs
+  startSeoSignalCron();
+  startCmsSignalCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -514,6 +523,9 @@ export async function registerRoutes(
         },
       ];
 
+      // Phase 4: run DNC check before listing
+      const dnc = await checkDnc(data.consumerPhone);
+
       const lead = await storage.createLead({
         vendorId: vendor.id,
         type: data.type,
@@ -535,7 +547,13 @@ export async function registerRoutes(
         verified: data.verified ?? false,
         provenance,
         sold: false,
+        dncFlagged: dnc.flagged,
+        dncCheckedAt: new Date(),
       });
+
+      // Compute initial MediScore and persist (non-blocking would also be fine,
+      // but doing it inline lets the response include the score for vendors).
+      await recomputeAndPersistMediScore(lead.id).catch(err => console.error("[mediscore] init error:", err));
 
       // Broadcast new lead via WebSocket (non-PII data only)
       broadcastNewLead({
@@ -803,6 +821,84 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("Error creating subscription checkout:", err);
       res.status(500).json({ message: err.message || "Failed to create subscription" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Phase 4 – Behavioral tracking + MediScore
+  // ──────────────────────────────────────────────────────
+  app.post("/api/events/track", async (req: any, res) => {
+    try {
+      const validation = trackEventSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+      const d = validation.data;
+      const userId = req.user?.claims?.sub ?? null;
+      await storage.recordBehavioralEvent({
+        sessionId: d.sessionId,
+        leadId: d.leadId ?? null,
+        userId,
+        eventType: d.eventType,
+        path: d.path,
+        value: d.value,
+        metadata: d.metadata,
+        userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
+        ip: String(req.ip ?? req.socket?.remoteAddress ?? "").slice(0, 64),
+      });
+
+      // If the event is tied to a lead, recompute that lead's score so the
+      // marketplace surfaces fresh signals. Non-blocking.
+      if (d.leadId) {
+        recomputeAndPersistMediScore(d.leadId).catch(() => {});
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("Error tracking event:", err);
+      res.status(500).json({ message: "Failed to track event" });
+    }
+  });
+
+  app.get("/api/leads/:id/mediscore", async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const lead = await storage.getLead(id);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Respect org scoping
+      if (lead.orgId) {
+        if (!req.user?.claims?.sub) return res.status(404).json({ message: "Lead not found" });
+        const me = await storage.getUser(req.user.claims.sub);
+        if (me?.activeOrgId !== lead.orgId) return res.status(404).json({ message: "Lead not found" });
+      }
+
+      const breakdown = await computeMediScore(id);
+      res.json(breakdown);
+    } catch (err) {
+      console.error("Error computing MediScore:", err);
+      res.status(500).json({ message: "Failed to compute MediScore" });
+    }
+  });
+
+  app.get("/api/signals/keywords/top", async (_req, res) => {
+    try {
+      const rows = await getTopOpportunityKeywords(20);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch keyword signals" });
+    }
+  });
+
+  app.post("/api/admin/signals/refresh", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const kw = await refreshKeywordSignals();
+      const cms = await refreshCmsPlanSignals();
+      res.json({ keywords: kw, cms });
+    } catch (err: any) {
+      console.error("Error refreshing signals:", err);
+      res.status(500).json({ message: err.message || "Refresh failed" });
     }
   });
 
