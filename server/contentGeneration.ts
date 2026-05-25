@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { storage } from "./storage";
+import { getTopOpportunityKeywords } from "./seoSignals";
 
 const ARTICLE_TOPICS = [
   {
@@ -225,7 +226,18 @@ async function generateAndPublishArticle(): Promise<void> {
     return;
   }
 
-  const topic = available[Math.floor(Math.random() * available.length)];
+  // Phase 4: prefer topics in the category of the top SEO-opportunity keyword.
+  let topic = available[Math.floor(Math.random() * available.length)];
+  try {
+    const top = await getTopOpportunityKeywords(5);
+    const preferred = available.filter(a => top.some(k => k.category === a.category));
+    if (preferred.length > 0) {
+      topic = preferred[0];
+      console.log(`[content-engine] SEO-prioritised topic: ${topic.title}`);
+    }
+  } catch (err) {
+    console.warn("[content-engine] SEO prioritisation failed, using random:", err);
+  }
   const slug = slugify(topic.title);
   const body = generateArticleBody(topic.title, topic.category, topic.tags);
   const now = new Date();

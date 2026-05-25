@@ -156,6 +156,16 @@ export const leads = pgTable("leads", {
   // Provenance data
   provenance: jsonb("provenance").notNull(),
 
+  // ──── Phase 4: signal enrichment ────
+  // DNC compliance: result of the DNC registry check on ingest
+  dncFlagged: boolean("dnc_flagged").notNull().default(false),
+  dncCheckedAt: timestamp("dnc_checked_at"),
+  // MediScore = aggregated signal score (0-100), recomputed when signals change
+  mediscore: integer("mediscore").notNull().default(0),
+  mediscoreSignals: jsonb("mediscore_signals"),
+  // Server-assigned session id when the source form fired (links behavioral events)
+  sessionId: varchar("session_id", { length: 64 }),
+
   // Status
   sold: boolean("sold").notNull().default(false),
   flagged: boolean("flagged").notNull().default(false),
@@ -305,6 +315,64 @@ export const ordersRelations = relations(orders, ({ one }) => ({
   }),
 }));
 
+// ──────────────────────────────────────────────────────
+// Phase 4 – Signal enrichment
+// ──────────────────────────────────────────────────────
+
+// Live SEO keyword signals (Google Search Console / DataForSEO)
+export const keywordSignals = pgTable("keyword_signals", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  keyword: varchar("keyword", { length: 300 }).notNull(),
+  source: varchar("source", { length: 50 }).notNull(), // 'gsc' | 'dataforseo' | 'seed'
+  impressions: integer("impressions").notNull().default(0),
+  clicks: integer("clicks").notNull().default(0),
+  position: decimal("position", { precision: 6, scale: 2 }).notNull().default("0"),
+  opportunityScore: integer("opportunity_score").notNull().default(0),
+  category: varchar("category", { length: 100 }),
+  fetchedAt: timestamp("fetched_at").defaultNow(),
+}, (table) => [
+  unique("uniq_kw_source").on(table.keyword, table.source),
+  index("idx_kw_opportunity").on(table.opportunityScore),
+]);
+
+// CMS Plan Finder public data: plan terminations, benefit changes, star ratings
+export const cmsPlanSignals = pgTable("cms_plan_signals", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  planId: varchar("plan_id", { length: 100 }).notNull(),
+  carrier: varchar("carrier", { length: 255 }),
+  state: varchar("state", { length: 2 }).notNull(),
+  county: varchar("county", { length: 100 }),
+  signalType: varchar("signal_type", { length: 50 }).notNull(), // 'termination' | 'benefit_change' | 'star_rating'
+  starRating: decimal("star_rating", { precision: 2, scale: 1 }),
+  effectiveDate: timestamp("effective_date"),
+  details: jsonb("details"),
+  fetchedAt: timestamp("fetched_at").defaultNow(),
+}, (table) => [
+  index("idx_cms_state").on(table.state),
+  index("idx_cms_county").on(table.county),
+  unique("uniq_cms_plan_signal").on(table.planId, table.signalType, table.effectiveDate),
+]);
+
+// Behavioral events from the client-side tracker SDK
+export const behavioralEvents = pgTable("behavioral_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  sessionId: varchar("session_id", { length: 64 }).notNull(),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  eventType: varchar("event_type", { length: 50 }).notNull(), // 'page_view' | 'scroll_depth' | 'time_on_page' | 'tool_interaction' | 'cta_click'
+  path: varchar("path", { length: 500 }),
+  value: integer("value"), // numeric payload (e.g., scroll percent, seconds, count)
+  metadata: jsonb("metadata"),
+  userAgent: varchar("user_agent", { length: 500 }),
+  ip: varchar("ip", { length: 64 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_events_session").on(table.sessionId),
+  index("idx_events_lead").on(table.leadId),
+  index("idx_events_type").on(table.eventType),
+  index("idx_events_created").on(table.createdAt),
+]);
+
 // Content articles for the autonomous content engine
 export const contentArticles = pgTable("content_articles", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -397,6 +465,29 @@ export const subscriptionCheckoutSchema = z.object({
 
 export type AgentOnboardingInput = z.infer<typeof agentOnboardingSchema>;
 export type CreateOrgInput = z.infer<typeof createOrgSchema>;
+
+// ──────────────────────────────────────────────────────
+// Phase 4 types + validation
+// ──────────────────────────────────────────────────────
+export type InsertKeywordSignal = typeof keywordSignals.$inferInsert;
+export type KeywordSignal = typeof keywordSignals.$inferSelect;
+
+export type InsertCmsPlanSignal = typeof cmsPlanSignals.$inferInsert;
+export type CmsPlanSignal = typeof cmsPlanSignals.$inferSelect;
+
+export type InsertBehavioralEvent = typeof behavioralEvents.$inferInsert;
+export type BehavioralEvent = typeof behavioralEvents.$inferSelect;
+
+export const trackEventSchema = z.object({
+  sessionId: z.string().min(8).max(64),
+  leadId: z.number().int().optional(),
+  eventType: z.enum(["page_view", "scroll_depth", "time_on_page", "tool_interaction", "cta_click"]),
+  path: z.string().max(500).optional(),
+  value: z.number().int().optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
+});
+
+export type TrackEventInput = z.infer<typeof trackEventSchema>;
 
 // Vendor ingestion payload schema
 export const vendorLeadIngestSchema = z.object({

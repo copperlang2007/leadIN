@@ -9,7 +9,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2 } from "lucide-react";
+import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2, AlertTriangle, Sparkles } from "lucide-react";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 
@@ -78,6 +78,15 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
     retry: false,
   });
 
+  const { data: mediscore } = useQuery<{
+    score: number;
+    activeSignalCount: number;
+    signals: { key: string; label: string; weight: number; hit: boolean }[];
+  }>({
+    queryKey: [`/api/leads/${lead?.id}/mediscore`],
+    enabled: !!lead?.id && open,
+  });
+
   if (!lead) return null;
 
   const displayLead = (isPurchased && revealedLead) ? revealedLead : lead;
@@ -87,7 +96,7 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <Badge variant="outline">{lead.type}</Badge>
             {lead.verified && (
               <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 border-emerald-500/20">
@@ -97,6 +106,21 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
             {isPurchased && (
               <Badge className="bg-blue-500/15 text-blue-700 border-blue-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> Purchased
+              </Badge>
+            )}
+            {mediscore && (
+              <Badge
+                className="bg-primary/15 text-primary border-primary/30"
+                data-testid="badge-mediscore"
+                data-track-tool={`mediscore-badge-${lead.id}`}
+              >
+                <Sparkles className="h-3 w-3 mr-1" />
+                MediScore {mediscore.score} · {mediscore.activeSignalCount} active signals
+              </Badge>
+            )}
+            {lead.dncFlagged && (
+              <Badge className="bg-destructive/15 text-destructive border-destructive/30">
+                <AlertTriangle className="h-3 w-3 mr-1" /> DNC flagged
               </Badge>
             )}
           </div>
@@ -185,12 +209,37 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
                 </div>
               </div>
 
+              {mediscore && (
+                <div>
+                  <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-3">
+                    MediScore Signals ({mediscore.activeSignalCount}/{mediscore.signals.length} active)
+                  </h4>
+                  <div className="bg-muted/30 rounded-lg p-3 border border-border/50 max-h-48 overflow-y-auto">
+                    <ul className="grid grid-cols-1 gap-1 text-xs">
+                      {mediscore.signals.map(s => (
+                        <li
+                          key={s.key}
+                          className={`flex items-center justify-between px-2 py-1 rounded ${s.hit ? "text-foreground" : "text-muted-foreground/60 line-through"}`}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <span className={`h-1.5 w-1.5 rounded-full ${s.hit ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                            {s.label}
+                          </span>
+                          <span className="font-mono">+{s.weight}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
               {!isPurchased && onPurchase && (
                 <Button
                   className="w-full gap-2"
                   onClick={onPurchase}
                   disabled={isPurchasing}
                   data-testid={`button-purchase-dialog-${lead.id}`}
+                  data-track-cta={`purchase-lead-${lead.id}`}
                 >
                   {isPurchasing ? (
                     <><Loader2 className="h-4 w-4 animate-spin" /> Processing...</>
