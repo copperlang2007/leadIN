@@ -17,6 +17,7 @@ import BlogPost from "@/pages/blog-post";
 import SettingsPage from "@/pages/settings";
 import AgentDashboard from "@/pages/agent-dashboard";
 import AgentOnboarding from "@/pages/agent-onboarding";
+import OrgAdmin from "@/pages/org-admin";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -42,6 +43,7 @@ function Router() {
       <Route path="/settings" component={SettingsPage} />
       <Route path="/agent" component={AgentDashboard} />
       <Route path="/agent/onboarding" component={AgentOnboarding} />
+      <Route path="/org-admin" component={OrgAdmin} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
       <Route component={NotFound} />

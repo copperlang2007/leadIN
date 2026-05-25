@@ -56,8 +56,9 @@ export interface IStorage {
   getVendor(id: number): Promise<Vendor | undefined>;
 
   // Vendor API key operations
-  getVendorByApiKey(apiKey: string): Promise<Vendor | undefined>;
-  createVendorApiKey(vendorId: number): Promise<{ key: string; record: VendorApiKey }>;
+  getVendorByApiKey(apiKey: string): Promise<(Vendor & { orgId: string | null }) | undefined>;
+  createVendorApiKey(vendorId: number, orgId?: string | null): Promise<{ key: string; record: VendorApiKey }>;
+  revokeVendorApiKey(keyId: number): Promise<void>;
 
   // Lead operations
   getLeads(filters?: {
@@ -133,6 +134,7 @@ export interface IStorage {
   getUserOrgRole(userId: string, orgId: string): Promise<string | null>;
   updateOrgRoutingThreshold(orgId: string, threshold: number): Promise<Organization>;
   updateOrgSubscription(orgId: string, fields: Partial<InsertOrganization>): Promise<Organization>;
+  getOrgByStripeSubscription(subscriptionId: string): Promise<Organization | undefined>;
 
   getAgentProfile(userId: string): Promise<AgentProfile | undefined>;
   upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile>;
@@ -140,6 +142,7 @@ export interface IStorage {
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
+  setAssignmentStatus(assignmentId: number, agentUserId: string, status: "accepted" | "declined"): Promise<LeadAssignment | null>;
   getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]>;
   getAgentDashboardStats(agentUserId: string): Promise<{
     openLeads: number;
@@ -235,35 +238,46 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Vendor API key operations
-  async getVendorByApiKey(apiKey: string): Promise<Vendor | undefined> {
+  async getVendorByApiKey(apiKey: string): Promise<(Vendor & { orgId: string | null }) | undefined> {
     const prefix = apiKey.substring(0, 8);
     const hash = crypto.createHash("sha256").update(apiKey).digest("hex");
 
+    // Use both prefix (indexed) and hash for the lookup — the prefix narrows
+    // the candidate set so the hash comparison only runs on a tiny subset.
     const [result] = await db
       .select()
       .from(vendorApiKeys)
       .leftJoin(vendors, eq(vendorApiKeys.vendorId, vendors.id))
       .where(
         and(
+          eq(vendorApiKeys.keyPrefix, prefix),
           eq(vendorApiKeys.keyHash, hash),
           eq(vendorApiKeys.active, true)
         )
       );
 
-    return result?.vendors ?? undefined;
+    if (!result?.vendors) return undefined;
+    return { ...result.vendors, orgId: result.vendor_api_keys.orgId ?? null };
   }
 
-  async createVendorApiKey(vendorId: number): Promise<{ key: string; record: VendorApiKey }> {
+  async createVendorApiKey(vendorId: number, orgId: string | null = null): Promise<{ key: string; record: VendorApiKey }> {
     const rawKey = `vk_${crypto.randomBytes(32).toString("hex")}`;
     const prefix = rawKey.substring(0, 8);
     const hash = crypto.createHash("sha256").update(rawKey).digest("hex");
 
     const [record] = await db
       .insert(vendorApiKeys)
-      .values({ vendorId, keyHash: hash, keyPrefix: prefix })
+      .values({ vendorId, orgId, keyHash: hash, keyPrefix: prefix })
       .returning();
 
     return { key: rawKey, record };
+  }
+
+  async revokeVendorApiKey(keyId: number): Promise<void> {
+    await db
+      .update(vendorApiKeys)
+      .set({ active: false, revokedAt: new Date() })
+      .where(eq(vendorApiKeys.id, keyId));
   }
 
   // Lead operations
@@ -809,6 +823,14 @@ export class DatabaseStorage implements IStorage {
     return org;
   }
 
+  async getOrgByStripeSubscription(subscriptionId: string): Promise<Organization | undefined> {
+    const [org] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.stripeSubscriptionId, subscriptionId));
+    return org;
+  }
+
   // ──────────────────────────────────────────────────────
   // Agent profiles
   // ──────────────────────────────────────────────────────
@@ -880,6 +902,9 @@ export class DatabaseStorage implements IStorage {
 
     const [org] = await db.select().from(organizations).where(eq(organizations.id, lead.orgId));
     if (!org) return null;
+
+    // Gate: orgs without active billing don't get auto-routing.
+    if (org.billingMode !== "per_lead" && org.subscriptionStatus !== "active") return null;
 
     if ((lead.compatibilityScore ?? 0) < org.routingScoreThreshold) return null;
 
@@ -984,6 +1009,37 @@ export class DatabaseStorage implements IStorage {
         .returning();
 
       return assignment;
+    });
+  }
+
+  async setAssignmentStatus(
+    assignmentId: number,
+    agentUserId: string,
+    status: "accepted" | "declined",
+  ): Promise<LeadAssignment | null> {
+    return await db.transaction(async (tx) => {
+      const [a] = await tx
+        .select()
+        .from(leadAssignments)
+        .where(and(eq(leadAssignments.id, assignmentId), eq(leadAssignments.agentUserId, agentUserId)))
+        .for("update");
+      if (!a) return null;
+      if (a.status !== "assigned") return a; // idempotent
+
+      const [updated] = await tx
+        .update(leadAssignments)
+        .set({ status })
+        .where(eq(leadAssignments.id, assignmentId))
+        .returning();
+
+      // On decline, free the lead so the routing engine can re-route it.
+      if (status === "declined") {
+        await tx
+          .update(leads)
+          .set({ assignedToUserId: null, assignedAt: null })
+          .where(eq(leads.id, a.leadId));
+      }
+      return updated;
     });
   }
 

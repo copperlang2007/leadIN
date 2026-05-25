@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: TypeScript check
+        run: npm run check
+      - name: Unit tests
+        run: npm run test
+      - name: Validate Drizzle schema
+        env:
+          DATABASE_URL: postgres://x:x@localhost:5432/x
+        run: npx drizzle-kit generate --dialect=postgresql --schema=./shared/schema.ts --out=./.ci-migrations

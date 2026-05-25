@@ -12,6 +12,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2, AlertTriangle, Sparkles } from "lucide-react";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { setTrackerLeadId } from "@/lib/tracker";
 
 interface LeadDetailsDialogProps {
   lead: Lead | null;
@@ -86,6 +88,14 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
     queryKey: [`/api/leads/${lead?.id}/mediscore`],
     enabled: !!lead?.id && open,
   });
+
+  // Scope behavioral events to this lead while the dialog is open.
+  useEffect(() => {
+    if (open && lead?.id) {
+      setTrackerLeadId(lead.id);
+      return () => setTrackerLeadId(undefined);
+    }
+  }, [open, lead?.id]);
 
   if (!lead) return null;
 

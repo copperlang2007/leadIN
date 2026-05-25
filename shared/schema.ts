@@ -116,11 +116,16 @@ export const vendors = pgTable("vendors", {
 export const vendorApiKeys = pgTable("vendor_api_keys", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  // Org that ingested leads are routed to. Null = legacy global-pool key.
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
   keyHash: varchar("key_hash", { length: 255 }).notNull().unique(),
   keyPrefix: varchar("key_prefix", { length: 20 }).notNull(),
   active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [
+  index("idx_vendor_keys_prefix").on(table.keyPrefix),
+]);
 
 export const leads = pgTable("leads", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -397,7 +402,7 @@ export const contentArticles = pgTable("content_articles", {
 export type InsertContentArticle = typeof contentArticles.$inferInsert;
 export type ContentArticle = typeof contentArticles.$inferSelect;
 
-export const insertContentArticleSchema = createInsertSchema(contentArticles).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertContentArticleSchema = createInsertSchema(contentArticles);
 
 // Types
 export type UpsertUser = typeof users.$inferInsert;
@@ -455,8 +460,12 @@ export const agentOnboardingSchema = z.object({
   territoryZips: z.array(z.string().min(3).max(10)).default([]),
   territoryCounties: z.array(z.string().min(1)).default([]),
   licenseNumber: z.string().min(1).max(100).optional(),
-  licenseDocumentUrl: z.string().url().optional().or(z.literal("")),
+  licenseDocumentUrl: z.string().url().refine(
+    u => u.startsWith("http://") || u.startsWith("https://"),
+    "Must be an http(s) URL",
+  ).optional().or(z.literal("")),
   capacityLimit: z.number().int().min(1).max(500).default(25),
+  acceptingLeads: z.boolean().default(true),
 });
 
 export const subscriptionCheckoutSchema = z.object({

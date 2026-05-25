@@ -49,6 +49,18 @@ export function broadcastNewLead(leadData: {
   });
 }
 
+export function broadcastLeadAssignment(payload: {
+  agentUserId: string;
+  leadId: number;
+  matchScore: number;
+}) {
+  if (!wss) return;
+  const message = JSON.stringify({ type: "lead_assignment", ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
 export function getActiveConnections(): number {
   return activeConnections;
 }

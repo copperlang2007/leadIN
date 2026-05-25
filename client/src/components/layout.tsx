@@ -259,6 +259,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <NavItem href="/agent" icon={Briefcase} label="Agent Dashboard" />
         <NavItem href="/agent/onboarding" icon={ShieldCheck} label="Agent Onboarding" />
+        <NavItem href="/org-admin" icon={ShieldCheck} label="Org Admin" />
 
         <div className="px-3 mt-8 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Account

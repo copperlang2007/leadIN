@@ -7,6 +7,22 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// CSRF: the server issues a non-HttpOnly `lm_csrf` cookie. The SPA reads it
+// and echoes it via `X-CSRF-Token` on every state-changing request so the
+// server's double-submit check succeeds.
+function getCsrfToken(): string | undefined {
+  const m = document.cookie.match(/(?:^|;\s*)lm_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : undefined;
+}
+
+function buildHeaders(hasJsonBody: boolean): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (hasJsonBody) h["Content-Type"] = "application/json";
+  const token = getCsrfToken();
+  if (token) h["X-CSRF-Token"] = token;
+  return h;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
@@ -14,7 +30,7 @@ export async function apiRequest(
 ): Promise<Response> {
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: buildHeaders(!!data),
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
