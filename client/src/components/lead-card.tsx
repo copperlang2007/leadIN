@@ -140,24 +140,32 @@ export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSel
             </div>
           </div>
 
-          {/* Compatibility + MediScore */}
-          <div className="col-span-2 mt-2 bg-muted/30 rounded-md p-2 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Activity className={`h-4 w-4 ${lead.compatibilityScore > 80 ? "text-success" : "text-warning"}`} />
-              <span className="text-xs font-medium text-muted-foreground">Compatibility</span>
-            </div>
-            <span className={`text-sm font-bold ${lead.compatibilityScore > 80 ? "text-success" : "text-warning"}`}>
-              {lead.compatibilityScore}%
-            </span>
-          </div>
-
-          {typeof lead.mediscore === "number" && lead.mediscore > 0 && (
-            <div className="col-span-2 bg-primary/5 rounded-md p-2 flex items-center justify-between border border-primary/15">
+          {/* MediScore is the headline number (22 signals). Compatibility
+              is shown as a small annotation only when the user has a
+              licensed-states profile that drives it. */}
+          {typeof lead.mediscore === "number" && lead.mediscore > 0 ? (
+            <div className="col-span-2 mt-2 bg-primary/5 rounded-md p-2 flex items-center justify-between border border-primary/15">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-primary" />
                 <span className="text-xs font-medium text-primary">MediScore</span>
               </div>
               <span className="text-sm font-bold text-primary">{lead.mediscore}</span>
+            </div>
+          ) : (
+            <div className="col-span-2 mt-2 bg-muted/30 rounded-md p-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className={`h-4 w-4 ${lead.compatibilityScore > 80 ? "text-success" : "text-warning"}`} />
+                <span className="text-xs font-medium text-muted-foreground">Compatibility</span>
+              </div>
+              <span className={`text-sm font-bold ${lead.compatibilityScore > 80 ? "text-success" : "text-warning"}`}>
+                {lead.compatibilityScore}%
+              </span>
+            </div>
+          )}
+
+          {licensedStates.length > 0 && typeof lead.mediscore === "number" && lead.mediscore > 0 && (
+            <div className="col-span-2 -mt-1 text-[10px] text-muted-foreground text-right">
+              Compatibility {lead.compatibilityScore}%
             </div>
           )}
 
