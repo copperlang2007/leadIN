@@ -150,6 +150,33 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
+  // Health (unauthenticated, fast). Returns 503 when the DB is unreachable
+  // so load balancers / uptime probes flip correctly. Don't include any
+  // secrets or counts that an attacker could fingerprint.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/health", async (_req, res) => {
+    const start = Date.now();
+    try {
+      const { db } = await import("./db");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`SELECT 1`);
+      const latencyMs = Date.now() - start;
+      res.json({
+        status: "ok",
+        uptimeSec: Math.round(process.uptime()),
+        dbLatencyMs: latencyMs,
+        wsConnections: getActiveConnections(),
+      });
+    } catch (err: any) {
+      res.status(503).json({
+        status: "degraded",
+        uptimeSec: Math.round(process.uptime()),
+        error: "db_unreachable",
+      });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
   // Auth Routes
   // ──────────────────────────────────────────────────────
   app.get("/api/auth/user", isAuthenticated, async (req: any, res) => {
