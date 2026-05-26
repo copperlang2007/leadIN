@@ -42,12 +42,14 @@ export default function Landing() {
               >
                 Get Started
               </Button>
-              <Button 
-                size="lg" 
-                variant="outline" 
+              <Button
+                size="lg"
+                variant="outline"
                 className="text-lg px-8 py-6 bg-white/10 backdrop-blur-sm border-white/20 text-white hover:bg-white/20"
+                onClick={() => window.location.href = "/pricing"}
+                data-track-cta="landing-see-pricing"
               >
-                Learn More
+                See Pricing
               </Button>
             </div>
 
