@@ -1412,6 +1412,7 @@ export async function registerRoutes(
       type SitemapUrl = { loc: string; priority: string; changefreq: string; lastmod?: string };
       const staticUrls: SitemapUrl[] = [
         { loc: baseUrl, priority: "1.0", changefreq: "daily" },
+        { loc: `${baseUrl}/pricing`, priority: "0.9", changefreq: "weekly" },
         { loc: `${baseUrl}/blog`, priority: "0.9", changefreq: "daily" },
       ];
 
