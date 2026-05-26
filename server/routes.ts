@@ -19,6 +19,7 @@ import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
+import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { z } from "zod";
@@ -1082,6 +1083,32 @@ export async function registerRoutes(
       res.json(rows);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch keyword signals" });
+    }
+  });
+
+  // PM + Growth funnel snapshot. Admin-only because it's aggregated PII-adjacent.
+  app.get("/api/admin/analytics/funnel", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const days = Math.max(1, Math.min(90, parseInt(String(req.query.days ?? "7"), 10)));
+      const snapshot = await getFunnelSnapshot(days);
+      res.json(snapshot);
+    } catch (err: any) {
+      console.error("Funnel error:", err);
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.get("/api/admin/analytics/leads", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const data = await getLeadAnalytics();
+      res.json(data);
+    } catch (err: any) {
+      console.error("Lead analytics error:", err);
+      res.status(500).json({ message: err.message || "Failed" });
     }
   });
 
