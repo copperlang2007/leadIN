@@ -6,9 +6,21 @@ import { createServer } from "http";
 import { storage } from "./storage";
 import { broadcastNewLead } from "./websocket";
 import { csrfMiddleware } from "./csrf";
+import { log as logger, newRequestId } from "./logger";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Request-ID middleware: every request gets a short id we can grep across
+// logs. Honors an inbound X-Request-Id header so a frontend trace can
+// propagate end-to-end.
+app.use((req, res, next) => {
+  const incoming = String(req.headers["x-request-id"] ?? "").slice(0, 32);
+  const reqId = incoming || newRequestId();
+  (req as any).reqId = reqId;
+  res.setHeader("X-Request-Id", reqId);
+  next();
+});
 
 // Security headers. CSP is left in report-only-friendly defaults for the
 // frontend; tighten in prod once the asset pipeline is locked.
@@ -36,15 +48,10 @@ app.use(express.urlencoded({ extended: false }));
 // CSRF: applied globally, exempts webhook + API-key + login redirect paths.
 app.use(csrfMiddleware);
 
+// Re-export the structured logger as `log` so legacy callers keep working,
+// but interpret a single-string call as an `info` message.
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  logger.info(message, { source });
 }
 
 // Recursively redact PII keys from any nested JSON structure before logging
@@ -76,15 +83,17 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        // Redact PII fields before logging to prevent sensitive data exposure
-        const PII_KEYS = new Set(["consumerName", "consumerPhone", "consumerEmail", "consumerAddress"]);
-        const redacted = redactPII(capturedJsonResponse, PII_KEYS);
-        logLine += ` :: ${JSON.stringify(redacted)}`;
-      }
-
-      log(logLine);
+      const PII_KEYS = new Set(["consumerName", "consumerPhone", "consumerEmail", "consumerAddress"]);
+      const body = capturedJsonResponse ? redactPII(capturedJsonResponse, PII_KEYS) : undefined;
+      const level = res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info";
+      logger[level]("http", {
+        reqId: (req as any).reqId,
+        method: req.method,
+        path,
+        status: res.statusCode,
+        durationMs: duration,
+        ...(body ? { body } : {}),
+      });
     }
   });
 
