@@ -42,6 +42,7 @@ import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
+import { rankCandidates, type AgentCandidate } from "./routing";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -926,22 +927,12 @@ export class DatabaseStorage implements IStorage {
         ),
       );
 
-    let best: { agent: AgentProfile; user: User; score: number; reasons: string[] } | null = null;
-
+    // Hydrate candidates with their open-lead count, then delegate to the
+    // pure ranker. The N+1 here is intentional and bounded by org size.
+    const hydrated: AgentCandidate[] = [];
     for (const row of candidates) {
       if (!row.users) continue;
       const ap = row.agent_profiles;
-
-      // 1) Geographic: licensed in lead's state (hard requirement)
-      const stateOk = ap.licensedStates.length === 0 || ap.licensedStates.includes(lead.state);
-      if (!stateOk) continue;
-
-      // 2) Territory ZIP/county — if defined, lead's ZIP must be inside
-      const territoryDefined = ap.territoryZips.length > 0 || ap.territoryCounties.length > 0;
-      const territoryOk = !territoryDefined || ap.territoryZips.includes(lead.zipCode);
-      if (!territoryOk) continue;
-
-      // 3) Capacity — count current open assigned leads
       const [openCountRow] = await db
         .select({ count: count() })
         .from(leads)
@@ -952,42 +943,29 @@ export class DatabaseStorage implements IStorage {
             eq(leads.removed, false),
           ),
         );
-      const openCount = Number(openCountRow?.count ?? 0);
-      if (openCount >= ap.capacityLimit) continue;
-
-      // 4) Carrier appointment soft signal — if appointed list is defined,
-      //    matching the lead source/type pushes the score up.
-      const reasons: string[] = [];
-      let score = lead.compatibilityScore ?? 50;
-
-      reasons.push(`state-match:${lead.state}`);
-      if (ap.territoryZips.includes(lead.zipCode)) {
-        score += 10;
-        reasons.push(`territory-zip:${lead.zipCode}`);
-      }
-
-      // Capacity slack bonus: more headroom = better
-      const slack = ap.capacityLimit - openCount;
-      const slackBonus = Math.min(20, Math.round((slack / ap.capacityLimit) * 20));
-      score += slackBonus;
-      reasons.push(`capacity-slack:${slack}/${ap.capacityLimit}`);
-
-      // Historical conversion rate bonus (0..30)
-      const conv = parseFloat(ap.conversionRate ?? "0");
-      const convBonus = Math.round(conv * 30);
-      score += convBonus;
-      if (convBonus > 0) reasons.push(`conv-rate:${(conv * 100).toFixed(1)}%`);
-
-      // Carrier appointments soft match — if any appointments declared and the lead's source matches one, bump
-      if (ap.appointedCarriers.length > 0 && ap.appointedCarriers.some(c => c.toLowerCase() === lead.source.toLowerCase())) {
-        score += 5;
-        reasons.push(`carrier:${lead.source}`);
-      }
-
-      if (!best || score > best.score) {
-        best = { agent: ap, user: row.users, score, reasons };
-      }
+      hydrated.push({
+        userId: row.users.id,
+        licensedStates: ap.licensedStates,
+        appointedCarriers: ap.appointedCarriers,
+        territoryZips: ap.territoryZips,
+        territoryCounties: ap.territoryCounties,
+        capacityLimit: ap.capacityLimit,
+        openLeadCount: Number(openCountRow?.count ?? 0),
+        conversionRate: parseFloat(ap.conversionRate ?? "0"),
+        acceptingLeads: ap.acceptingLeads,
+        verified: ap.verificationStatus === "verified",
+      });
     }
+
+    const best = rankCandidates(
+      {
+        state: lead.state,
+        zipCode: lead.zipCode,
+        source: lead.source,
+        compatibilityScore: lead.compatibilityScore ?? 50,
+      },
+      hydrated,
+    );
 
     if (!best) return null;
 
@@ -998,7 +976,7 @@ export class DatabaseStorage implements IStorage {
 
       await tx
         .update(leads)
-        .set({ assignedToUserId: best!.user.id, assignedAt: new Date() })
+        .set({ assignedToUserId: best.userId, assignedAt: new Date() })
         .where(eq(leads.id, leadId));
 
       const [assignment] = await tx
@@ -1006,9 +984,9 @@ export class DatabaseStorage implements IStorage {
         .values({
           leadId,
           orgId: lead.orgId!,
-          agentUserId: best!.user.id,
-          matchScore: best!.score,
-          reason: best!.reasons.join(", "),
+          agentUserId: best.userId,
+          matchScore: best.score,
+          reason: best.reasons.join(", "),
           status: "assigned",
         })
         .returning();
