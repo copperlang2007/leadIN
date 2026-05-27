@@ -321,6 +321,36 @@ export const ordersRelations = relations(orders, ({ one }) => ({
 }));
 
 // ──────────────────────────────────────────────────────
+// Saved lists — agents bookmark leads to revisit / share with a teammate.
+// Org-scoped: a list belongs to an org so members of that org can see it.
+// ──────────────────────────────────────────────────────
+export const savedLists = pgTable("saved_lists", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_saved_lists_org").on(table.orgId),
+  index("idx_saved_lists_owner").on(table.ownerUserId),
+]);
+
+export const savedListItems = pgTable("saved_list_items", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  listId: integer("list_id").notNull().references(() => savedLists.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  addedAt: timestamp("added_at").defaultNow(),
+}, (table) => [
+  unique("uniq_saved_list_lead").on(table.listId, table.leadId),
+  index("idx_saved_list_items_list").on(table.listId),
+]);
+
+export type InsertSavedList = typeof savedLists.$inferInsert;
+export type SavedList = typeof savedLists.$inferSelect;
+export type SavedListItem = typeof savedListItems.$inferSelect;
+
+// ──────────────────────────────────────────────────────
 // Phase 4 – Signal enrichment
 // ──────────────────────────────────────────────────────
 

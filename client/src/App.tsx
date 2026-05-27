@@ -20,6 +20,7 @@ import AgentOnboarding from "@/pages/agent-onboarding";
 import OrgAdmin from "@/pages/org-admin";
 import Analytics from "@/pages/analytics";
 import Pricing from "@/pages/pricing";
+import SavedLists from "@/pages/saved-lists";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/org-admin" component={OrgAdmin} />
       <Route path="/analytics" component={Analytics} />
       <Route path="/pricing" component={Pricing} />
+      <Route path="/saved" component={SavedLists} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
       <Route component={NotFound} />

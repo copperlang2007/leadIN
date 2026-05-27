@@ -251,6 +251,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <NavItem href="/" icon={LayoutGrid} label="Browse Leads" />
         <NavItem href="/architect" icon={ShieldCheck} label="Platform Status" />
         <NavItem href="/blog" icon={BookOpen} label="Industry Blog" />
+        <NavItem href="/saved" icon={FileText} label="Saved Lists" />
         <NavItem href="/orders" icon={BarChart3} label="Order History" />
 
         <div className="px-3 mt-8 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">

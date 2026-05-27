@@ -15,6 +15,8 @@ import {
   keywordSignals,
   cmsPlanSignals,
   behavioralEvents,
+  savedLists,
+  savedListItems,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -37,6 +39,8 @@ import {
   type LeadAssignment,
   type InsertBehavioralEvent,
   type BehavioralEvent,
+  type SavedList,
+  type InsertSavedList,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -1166,6 +1170,68 @@ export class DatabaseStorage implements IStorage {
       total += n;
     }
     return { total, byType };
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Saved lists
+  // ──────────────────────────────────────────────────────
+  async createSavedList(data: InsertSavedList): Promise<SavedList> {
+    const [list] = await db.insert(savedLists).values(data).returning();
+    return list;
+  }
+
+  async listSavedLists(userId: string, orgId: string | null): Promise<(SavedList & { itemCount: number })[]> {
+    const conditions: any[] = [];
+    if (orgId) {
+      conditions.push(or(eq(savedLists.orgId, orgId), eq(savedLists.ownerUserId, userId))!);
+    } else {
+      conditions.push(eq(savedLists.ownerUserId, userId));
+    }
+    const lists = await db.select().from(savedLists).where(and(...conditions)).orderBy(desc(savedLists.createdAt));
+
+    const result: (SavedList & { itemCount: number })[] = [];
+    for (const l of lists) {
+      const [c] = await db.select({ count: count() }).from(savedListItems).where(eq(savedListItems.listId, l.id));
+      result.push({ ...l, itemCount: Number(c?.count ?? 0) });
+    }
+    return result;
+  }
+
+  async getSavedListWithItems(listId: number, userId: string): Promise<{ list: SavedList; leads: (Lead & { vendor: Vendor })[] } | null> {
+    const [list] = await db.select().from(savedLists).where(eq(savedLists.id, listId));
+    if (!list) return null;
+    if (list.ownerUserId !== userId && list.orgId) {
+      // Check membership
+      const [m] = await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, list.orgId), eq(orgMembers.userId, userId)));
+      if (!m) return null;
+    } else if (list.ownerUserId !== userId) {
+      return null;
+    }
+    const items = await db
+      .select()
+      .from(savedListItems)
+      .leftJoin(leads, eq(savedListItems.leadId, leads.id))
+      .leftJoin(vendors, eq(leads.vendorId, vendors.id))
+      .where(eq(savedListItems.listId, listId));
+    const leadRows = items.filter(r => r.leads && r.vendors).map(r => ({ ...r.leads!, vendor: r.vendors! }));
+    return { list, leads: leadRows };
+  }
+
+  async addLeadToSavedList(listId: number, leadId: number, userId: string): Promise<void> {
+    const [list] = await db.select().from(savedLists).where(eq(savedLists.id, listId));
+    if (!list || list.ownerUserId !== userId) throw new Error("List not found");
+    await db.insert(savedListItems).values({ listId, leadId }).onConflictDoNothing();
+    await db.update(savedLists).set({ updatedAt: new Date() }).where(eq(savedLists.id, listId));
+  }
+
+  async removeLeadFromSavedList(listId: number, leadId: number, userId: string): Promise<void> {
+    const [list] = await db.select().from(savedLists).where(eq(savedLists.id, listId));
+    if (!list || list.ownerUserId !== userId) throw new Error("List not found");
+    await db.delete(savedListItems).where(and(eq(savedListItems.listId, listId), eq(savedListItems.leadId, leadId)));
+  }
+
+  async deleteSavedList(listId: number, userId: string): Promise<void> {
+    await db.delete(savedLists).where(and(eq(savedLists.id, listId), eq(savedLists.ownerUserId, userId)));
   }
 
   async attachSessionToLeadIfMatch(

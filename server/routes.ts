@@ -1032,6 +1032,85 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
+  // Saved lists — agents bookmark leads to revisit
+  // ──────────────────────────────────────────────────────
+  app.get("/api/saved-lists", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      const lists = await storage.listSavedLists(userId, me?.activeOrgId ?? null);
+      res.json(lists);
+    } catch (err) {
+      console.error("Error listing saved lists:", err);
+      res.status(500).json({ message: "Failed to list saved lists" });
+    }
+  });
+
+  app.post("/api/saved-lists", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      const name = String(req.body?.name ?? "").trim();
+      if (!name) return res.status(400).json({ message: "name required" });
+      if (name.length > 200) return res.status(400).json({ message: "name too long" });
+      const list = await storage.createSavedList({
+        name,
+        ownerUserId: userId,
+        orgId: me?.activeOrgId ?? null,
+      });
+      res.status(201).json(list);
+    } catch (err) {
+      console.error("Error creating saved list:", err);
+      res.status(500).json({ message: "Failed to create saved list" });
+    }
+  });
+
+  app.get("/api/saved-lists/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const result = await storage.getSavedListWithItems(id, req.user.claims.sub);
+      if (!result) return res.status(404).json({ message: "List not found" });
+      res.json(result);
+    } catch (err) {
+      console.error("Error fetching saved list:", err);
+      res.status(500).json({ message: "Failed to fetch saved list" });
+    }
+  });
+
+  app.post("/api/saved-lists/:id/items", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const leadId = parseInt(req.body?.leadId, 10);
+      if (!Number.isFinite(leadId)) return res.status(400).json({ message: "leadId required" });
+      await storage.addLeadToSavedList(id, leadId, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(err.message === "List not found" ? 404 : 500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.delete("/api/saved-lists/:id/items/:leadId", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const leadId = parseInt(req.params.leadId, 10);
+      await storage.removeLeadFromSavedList(id, leadId, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(err.message === "List not found" ? 404 : 500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.delete("/api/saved-lists/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      await storage.deleteSavedList(id, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
   // Phase 4 – Behavioral tracking + MediScore
   // ──────────────────────────────────────────────────────
   app.post("/api/events/track", async (req: any, res) => {
