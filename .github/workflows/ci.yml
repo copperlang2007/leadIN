@@ -8,6 +8,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: leadmarket_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,7 +35,15 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm run test
-      - name: Validate Drizzle schema
+      - name: Validate Drizzle schema (regen check)
         env:
           DATABASE_URL: postgres://x:x@localhost:5432/x
         run: npx drizzle-kit generate --dialect=postgresql --schema=./shared/schema.ts --out=./.ci-migrations
+      - name: Apply committed migrations to a real Postgres
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for f in migrations/*.sql; do
+            echo "Applying $f"
+            psql -h localhost -U postgres -d leadmarket_ci -v ON_ERROR_STOP=1 -f "$f"
+          done
