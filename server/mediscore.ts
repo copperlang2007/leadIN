@@ -51,6 +51,77 @@ type SignalKey = (typeof SIGNAL_DEFS)[number]["key"];
 
 const PREMIUM_SOURCES = new Set(["Call Center Transfer", "Organic Search"]);
 
+// Inputs to the pure scorer. Decoupled from DB rows so the function is unit-
+// testable without spinning up Postgres. `computeMediScore(leadId)` builds
+// this struct from the DB then delegates to `scoreFromInputs`.
+export interface MediScoreInputs {
+  verified: boolean;
+  hasTcpa: boolean;
+  exclusivity: string;
+  ageHours: number;
+  phonePresent: boolean;
+  emailPresent: boolean;
+  addressPresent: boolean;
+  consumerAge: number;
+  homeowner: boolean | null;
+  income: string | null;
+  smoker: boolean | null;
+  hasCondition: boolean | null;
+  source: string;
+  dncFlagged: boolean;
+  cmsTermination: boolean;
+  cmsBenefitChange: boolean;
+  cmsStarDrop: boolean;
+  maxDwellSeconds: number;
+  maxScrollPercent: number;
+  ctaClicks: number;
+  toolInteractions: number;
+  seoCategoryMatch: boolean;
+}
+
+export function scoreFromInputs(i: MediScoreInputs): MediScoreBreakdown {
+  const incomeQualified = (i.income ?? "").includes("$25k") || (i.income ?? "").includes("$50k+");
+
+  const hits: Record<SignalKey, boolean> = {
+    verified: !!i.verified,
+    tcpa_consent: i.hasTcpa,
+    exclusive: i.exclusivity === "Exclusive",
+    fresh_lead: i.ageHours <= 24,
+    phone_present: i.phonePresent,
+    email_present: i.emailPresent,
+    address_present: i.addressPresent,
+    age_in_window: i.consumerAge >= 60 && i.consumerAge <= 80,
+    homeowner: i.homeowner === true,
+    income_qualified: incomeQualified,
+    non_smoker: i.smoker === false,
+    no_condition: i.hasCondition === false,
+    premium_source: PREMIUM_SOURCES.has(i.source),
+    dnc_clean: !i.dncFlagged,
+    cms_termination: i.cmsTermination,
+    cms_benefit_change: i.cmsBenefitChange,
+    cms_star_drop: i.cmsStarDrop,
+    behavior_dwell: i.maxDwellSeconds >= 60,
+    behavior_scroll: i.maxScrollPercent >= 75,
+    behavior_cta: i.ctaClicks > 0,
+    behavior_tool: i.toolInteractions > 0,
+    seo_demand: i.seoCategoryMatch,
+  };
+
+  const signals: MediScoreSignal[] = SIGNAL_DEFS.map(def => ({
+    key: def.key,
+    label: def.label,
+    weight: def.weight,
+    hit: hits[def.key as SignalKey] ?? false,
+  }));
+
+  const earned = signals.filter(s => s.hit).reduce((a, s) => a + s.weight, 0);
+  const denominator = SIGNAL_DEFS.reduce((a, s) => a + s.weight, 0);
+  const score = Math.min(100, Math.round((earned / denominator) * 100));
+  const activeSignalCount = signals.filter(s => s.hit).length;
+
+  return { score, activeSignalCount, signals, computedAt: new Date().toISOString() };
+}
+
 export async function computeMediScore(leadId: number): Promise<MediScoreBreakdown> {
   const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
   if (!lead) throw new Error(`Lead ${leadId} not found`);
@@ -96,46 +167,30 @@ export async function computeMediScore(leadId: number): Promise<MediScoreBreakdo
     ? (Date.now() - new Date(lead.createdAt).getTime()) / (1000 * 60 * 60)
     : 99;
 
-  const incomeQualified = (lead.income ?? "").includes("$25k") || (lead.income ?? "").includes("$50k+");
-
-  const hits: Record<SignalKey, boolean> = {
+  return scoreFromInputs({
     verified: !!lead.verified,
-    tcpa_consent: hasTcpa,
-    exclusive: lead.exclusivity === "Exclusive",
-    fresh_lead: ageHours <= 24,
-    phone_present: !!lead.consumerPhone,
-    email_present: !!lead.consumerEmail,
-    address_present: !!lead.consumerAddress,
-    age_in_window: lead.consumerAge >= 60 && lead.consumerAge <= 80,
-    homeowner: lead.homeowner === true,
-    income_qualified: incomeQualified,
-    non_smoker: lead.smoker === false,
-    no_condition: lead.hasCondition === false,
-    premium_source: PREMIUM_SOURCES.has(lead.source),
-    dnc_clean: !lead.dncFlagged,
-    cms_termination: cmsTermination,
-    cms_benefit_change: cmsBenefit,
-    cms_star_drop: cmsStarDrop,
-    behavior_dwell: maxDwell >= 60,
-    behavior_scroll: maxScroll >= 75,
-    behavior_cta: ctaClicks > 0,
-    behavior_tool: toolUses > 0,
-    seo_demand: seoMatch,
-  };
-
-  const signals: MediScoreSignal[] = SIGNAL_DEFS.map(def => ({
-    key: def.key,
-    label: def.label,
-    weight: def.weight,
-    hit: hits[def.key as SignalKey] ?? false,
-  }));
-
-  const earned = signals.filter(s => s.hit).reduce((a, s) => a + s.weight, 0);
-  const denominator = SIGNAL_DEFS.reduce((a, s) => a + s.weight, 0);
-  const score = Math.min(100, Math.round((earned / denominator) * 100));
-  const activeSignalCount = signals.filter(s => s.hit).length;
-
-  return { score, activeSignalCount, signals, computedAt: new Date().toISOString() };
+    hasTcpa,
+    exclusivity: lead.exclusivity,
+    ageHours,
+    phonePresent: !!lead.consumerPhone,
+    emailPresent: !!lead.consumerEmail,
+    addressPresent: !!lead.consumerAddress,
+    consumerAge: lead.consumerAge,
+    homeowner: lead.homeowner,
+    income: lead.income,
+    smoker: lead.smoker,
+    hasCondition: lead.hasCondition,
+    source: lead.source,
+    dncFlagged: !!lead.dncFlagged,
+    cmsTermination,
+    cmsBenefitChange: cmsBenefit,
+    cmsStarDrop,
+    maxDwellSeconds: maxDwell,
+    maxScrollPercent: maxScroll,
+    ctaClicks,
+    toolInteractions: toolUses,
+    seoCategoryMatch: seoMatch,
+  });
 }
 
 export async function recomputeAndPersistMediScore(leadId: number): Promise<MediScoreBreakdown> {

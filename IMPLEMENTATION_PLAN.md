@@ -1,42 +1,21 @@
-# Implementation plan
+# End-to-end completion loop
 
-State for the Ralph-style loop. Each iteration: read this file, pick the
-highest-priority **[ ]** item, ship it, flip to **[x]**, commit. Stop when
-no `[ ]` item is tractable in this environment.
+Each iteration: pick the top **[ ]** item, ship it, flip to **[x]**, commit.
+Loop ends when remaining items need creds, real infra, or are out of scope.
 
-## Rules
-- One thing per iteration.
-- Tractable = no missing creds, no big refactor, no item that needs human review.
-- Commit each iteration. CI must stay green.
-- If an item proves untractable mid-iteration, mark `[~]` with the reason and skip.
+## Backlog
 
-## Backlog (priority order)
+- [ ] **mediscore-pure-tests**: extract pure scoring fn from `mediscore.ts` so it's testable without DB; add 6+ unit tests covering each signal class.
+- [ ] **routing-pure-tests**: same for the agent-ranking logic; tests prove the tie-break order.
+- [ ] **conversion-rate-update**: `PATCH /api/agent/:userId/conversion-rate` (admin only); UI field in `/org-admin`. Unblocks "$0 estimated commissions" bug.
+- [ ] **saved-lists**: real feature — `saved_lists` + `saved_list_items` tables, CRUD endpoints, `/saved` page. Restore the nav link.
+- [ ] **migrations-dry-run-ci**: GitHub Action step that applies `migrations/*.sql` against a throwaway Postgres service.
+- [ ] **lead-view-event**: fire a behavioral event when a user opens a lead detail dialog; lets MediScore's behavior signals fire on real leads.
+- [ ] **email-digest-cron**: daily org-admin digest (new leads, new assignments, conversion%) — only sends when SendGrid/Resend key is configured.
 
-- [x] **dnc-recheck**: nightly cron at 02:30 + admin `POST /api/admin/dnc/recheck`. MediScore recomputes on flag flip.
-- [x] **stripe-price-ids**: env vars `STRIPE_PRICE_STARTER/GROWTH/SCALE`; inline fallback for dev.
-- [x] **marketplace-dnc-toggle**: checkbox above the grid; passes `?includeDnc=true`.
-- [x] **marketplace-mediscore-sort**: native `<select>` with relevance/MediScore/newest/price asc+desc.
-- [x] **architect-blueprint-refresh**: new "Subsystems" tab on `/architect` listing shipped systems.
-- [x] **eslint-config**: eslint 10 flat config, `npm run lint`, wired into CI. 0 errors, 45 stylistic warnings.
-- [x] **landing-empty-state**: onboarding card under the hero for users with no licenses + no orders.
-- [x] **money-math-decimal**: `purchaseLead` uses Decimal for balance compare and subtraction; 4 regression tests.
-- [x] **ws-auth**: WebSocket upgrades require a `connect.sid` cookie; anonymous clients get 401.
-- [x] **vendor-key-ui**: vendor selector + mint button on `/org-admin`. New `GET /api/vendors` endpoint. Key shown once, copyable.
+## Deferred
 
-## Stop criteria
-
-When the remaining backlog is dominated by `[~]` items (need creds / human review),
-write a final summary comment to the PR and end the loop.
-
-## Deferred (need creds or human review — not tractable in this loop)
-
-- [~] **17 Dependabot vulns**: needs per-package upgrade + manual verification. Run Dependabot auto-PRs.
-- [~] **License document upload**: needs Replit object-storage SDK + signed-URL flow. Held until storage IDs are provisioned.
-- [~] **Redis-backed rate limiter**: only needed for multi-instance deploys.
-- [~] **ML MediScore weighting**: needs labelled training data; deterministic weights are correct for now.
-- [~] **Federal DNC registry direct access**: $15K/yr tier. Use a vendor API (already wired) instead.
-
-## Status
-
-All tractable items shipped. CI green: tsc, lint (0 errors), 21 tests, drizzle
-schema check. 9 iterations, 9 commits on `claude/laughing-cannon-xgMYi`. Loop ends.
+- [~] **Sentry/OTEL**: needs project DSN
+- [~] **Real PG integration tests**: testcontainers not available in this env
+- [~] **License doc upload**: needs object storage SDK
+- [~] **17 Dependabot CVEs**: per-package review
