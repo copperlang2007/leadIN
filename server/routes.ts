@@ -19,6 +19,7 @@ import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
+import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
@@ -78,6 +79,7 @@ export async function registerRoutes(
   startSeoSignalCron();
   startCmsSignalCron();
   startDncRecheckCron();
+  startEmailDigestCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -1239,6 +1241,17 @@ export async function registerRoutes(
       res.json(data);
     } catch (err: any) {
       console.error("Lead analytics error:", err);
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.post("/api/admin/digest/run", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runDailyDigest();
+      res.json(result);
+    } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed" });
     }
   });
