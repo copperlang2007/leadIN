@@ -13,7 +13,7 @@ import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone,
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { setTrackerLeadId } from "@/lib/tracker";
+import { setTrackerLeadId, trackEvent } from "@/lib/tracker";
 
 interface LeadDetailsDialogProps {
   lead: Lead | null;
@@ -89,10 +89,16 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
     enabled: !!lead?.id && open,
   });
 
-  // Scope behavioral events to this lead while the dialog is open.
+  // Scope behavioral events to this lead while the dialog is open, and
+  // fire a one-time "tool_interaction" so the MediScore behavior signals
+  // pick up the deep-engagement view.
   useEffect(() => {
     if (open && lead?.id) {
       setTrackerLeadId(lead.id);
+      trackEvent("tool_interaction", {
+        leadId: lead.id,
+        metadata: { label: "lead-details-open", id: lead.id },
+      });
       return () => setTrackerLeadId(undefined);
     }
   }, [open, lead?.id]);
