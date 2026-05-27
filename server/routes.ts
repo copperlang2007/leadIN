@@ -918,6 +918,31 @@ export async function registerRoutes(
     }
   });
 
+  // Org admin updates an agent's historical conversion rate. This feeds into
+  // both the routing engine (conv bonus) and the agent dashboard's
+  // estimated-commission display.
+  app.patch("/api/agent/:userId/conversion-rate", isAuthenticated, async (req: any, res) => {
+    try {
+      const actorId = req.user.claims.sub;
+      const targetUserId = req.params.userId;
+      const rate = Number(req.body?.rate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        return res.status(400).json({ message: "rate must be a number between 0 and 1" });
+      }
+      const target = await storage.getAgentProfile(targetUserId);
+      if (!target) return res.status(404).json({ message: "Agent profile not found" });
+      const role = await storage.getUserOrgRole(actorId, target.orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const updated = await storage.setAgentConversionRate(targetUserId, rate);
+      res.json(updated);
+    } catch (err) {
+      console.error("Error setting conversion rate:", err);
+      res.status(500).json({ message: "Failed to update conversion rate" });
+    }
+  });
+
   // Admin verifies / rejects an agent within their own org
   app.patch("/api/agent/:userId/verification", isAuthenticated, async (req: any, res) => {
     try {

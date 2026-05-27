@@ -29,6 +29,7 @@ interface OrgAgent {
   capacityLimit: number;
   verificationStatus: string;
   acceptingLeads: boolean;
+  conversionRate: string;
   licenseNumber: string | null;
   licenseDocumentUrl: string | null;
   openLeads: number;
@@ -91,6 +92,24 @@ export default function OrgAdmin() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/orgs/${orgs?.activeOrgId}/agents`] });
       toast({ title: "Agent updated" });
+    },
+    onError: (e: Error) => toast({ title: "Update failed", description: e.message, variant: "destructive" }),
+  });
+
+  const convRateMutation = useMutation({
+    mutationFn: async ({ userId, rate }: { userId: string; rate: number }) => {
+      const res = await fetch(`/api/agent/${userId}/conversion-rate`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rate }),
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Failed");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orgs/${orgs?.activeOrgId}/agents`] });
+      toast({ title: "Conversion rate updated" });
     },
     onError: (e: Error) => toast({ title: "Update failed", description: e.message, variant: "destructive" }),
   });
@@ -158,14 +177,16 @@ export default function OrgAdmin() {
               <p className="text-sm text-muted-foreground py-6 text-center">No agents in this organization yet.</p>
             ) : (
               <div className="space-y-2">
-                {agents.map(a => (
-                  <div key={a.userId} className="border rounded-lg p-3 flex items-center justify-between gap-3">
+                {agents.map(a => {
+                  const convPct = Math.round(parseFloat(a.conversionRate ?? "0") * 100);
+                  return (
+                  <div key={a.userId} className="border rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
                       <div className="font-medium truncate">
                         {a.user.firstName} {a.user.lastName} · {a.user.email}
                       </div>
                       <div className="text-xs text-muted-foreground truncate">
-                        {a.licensedStates.length} states · {a.appointedCarriers.length} carriers · capacity {a.openLeads}/{a.capacityLimit} · {a.licenseNumber || "no license #"}
+                        {a.licensedStates.length} states · {a.appointedCarriers.length} carriers · capacity {a.openLeads}/{a.capacityLimit} · conv {convPct}% · {a.licenseNumber || "no license #"}
                       </div>
                       {a.licenseDocumentUrl && (
                         <a href={a.licenseDocumentUrl} target="_blank" rel="noreferrer noopener" className="text-xs text-primary underline">
@@ -173,7 +194,21 @@ export default function OrgAdmin() {
                         </a>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1 text-xs">
+                        <span className="text-muted-foreground">Conv%</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          defaultValue={convPct}
+                          onBlur={(e) => {
+                            const pct = Math.max(0, Math.min(100, Number(e.target.value)));
+                            if (pct !== convPct) convRateMutation.mutate({ userId: a.userId, rate: pct / 100 });
+                          }}
+                          className="w-14 h-7 rounded border bg-background px-1 text-right"
+                        />
+                      </div>
                       <Badge
                         variant={a.verificationStatus === "verified" ? "default" : "outline"}
                         className={
@@ -201,7 +236,8 @@ export default function OrgAdmin() {
                       </Button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             {verifyMutation.isPending && (

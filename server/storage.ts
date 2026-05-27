@@ -141,6 +141,7 @@ export interface IStorage {
   getAgentProfile(userId: string): Promise<AgentProfile | undefined>;
   upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile>;
   setAgentVerificationStatus(userId: string, status: string): Promise<AgentProfile>;
+  setAgentConversionRate(userId: string, rate: number): Promise<AgentProfile>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
@@ -861,6 +862,16 @@ export class DatabaseStorage implements IStorage {
     const [p] = await db
       .update(agentProfiles)
       .set({ verificationStatus: status, updatedAt: new Date() })
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    return p;
+  }
+
+  async setAgentConversionRate(userId: string, rate: number): Promise<AgentProfile> {
+    const clamped = Math.max(0, Math.min(1, rate));
+    const [p] = await db
+      .update(agentProfiles)
+      .set({ conversionRate: clamped.toFixed(4), updatedAt: new Date() })
       .where(eq(agentProfiles.userId, userId))
       .returning();
     return p;
