@@ -17,6 +17,8 @@ import {
   behavioralEvents,
   savedLists,
   savedListItems,
+  vendorBalances,
+  vendorPayouts,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -41,6 +43,7 @@ import {
   type BehavioralEvent,
   type SavedList,
   type InsertSavedList,
+  type VendorPayout,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -48,6 +51,7 @@ import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
 import { withTxAdvisoryLock } from "./lib/lock";
+import { splitRevenue } from "./vendorPayouts";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -174,6 +178,23 @@ export interface IStorage {
   recordBehavioralEvent(data: InsertBehavioralEvent): Promise<BehavioralEvent>;
   getEventCountsForSession(sessionId: string): Promise<{ total: number; byType: Record<string, number> }>;
   attachSessionToLeadIfMatch(sessionId: string, phone: string | undefined, email: string | undefined): Promise<number | null>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 2: vendor payouts (revenue share + sweep ledger)
+  // ──────────────────────────────────────────────────────
+  creditVendorOnSale(
+    orderId: number,
+    leadId: number,
+    vendorId: number,
+    salePriceCents: number,
+  ): Promise<{ credited: boolean; vendorCents: number }>;
+  getVendorBalances(): Promise<{ vendor: Vendor; pendingCents: number; paidCents: number }[]>;
+  sweepVendorPayouts(thresholdCents?: number): Promise<{
+    vendorsPaid: number;
+    totalCentsSwept: number;
+    entries: { vendorId: number; amountCents: number; payoutId: number }[];
+  }>;
+  getVendorPayoutLog(vendorId: number, limit?: number): Promise<VendorPayout[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -414,6 +435,11 @@ export class DatabaseStorage implements IStorage {
         .insert(orders)
         .values({ userId, leadId, orgId: lead.orgId ?? null, price: lead.price, status: "completed" })
         .returning();
+
+      // Credit the vendor's pending balance with their revenue share.
+      // Use Decimal -> cents to avoid float drift; floor to whole cents.
+      const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+      await this.creditVendorOnSaleTx(tx, order.id, lead.id, lead.vendorId, salePriceCents);
 
       return order;
     });
@@ -1281,6 +1307,164 @@ export class DatabaseStorage implements IStorage {
     if (!match) return null;
     await db.update(leads).set({ sessionId }).where(eq(leads.id, match.id));
     return match.id;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 2: vendor payouts
+  //
+  // The lifecycle:
+  //   1. Buyer purchases a lead → `creditVendorOnSale` inserts a `sale`
+  //      payout row (positive) and bumps `vendor_balances.pendingCents`.
+  //   2. Admin runs `sweepVendorPayouts(threshold)` → for every vendor
+  //      at/over the threshold, insert a `payout` row (negative) that
+  //      zeroes pending and moves the amount into paid.
+  //   3. Future: refunds will use a similar `creditVendorOnSale`-shaped
+  //      method with a negative amount and `kind=refund` to back out a
+  //      vendor's pending balance.
+  //
+  // Idempotency: `creditVendorOnSale` is keyed by orderId — re-running
+  // a purchase webhook (or our own retry) MUST NOT double-credit.
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Internal: same as `creditVendorOnSale` but participates in the caller's
+   * transaction. Used by `purchaseLead` so the credit commits atomically
+   * with the order row.
+   */
+  // Drizzle's tx type from db.transaction varies per driver; typing as
+  // `any` keeps callers (including the existing `purchaseLead`) ergonomic.
+  async creditVendorOnSaleTx(
+    tx: any,
+    orderId: number,
+    leadId: number,
+    vendorId: number,
+    salePriceCents: number,
+  ): Promise<{ credited: boolean; vendorCents: number }> {
+    // Idempotency guard — bail if we've already recorded a `sale` for this order.
+    const [existing] = await tx
+      .select({ id: vendorPayouts.id })
+      .from(vendorPayouts)
+      .where(and(eq(vendorPayouts.orderId, orderId), eq(vendorPayouts.kind, "sale")))
+      .limit(1);
+    if (existing) {
+      return { credited: false, vendorCents: 0 };
+    }
+
+    const { vendorCents } = splitRevenue(salePriceCents);
+    if (vendorCents <= 0) {
+      return { credited: false, vendorCents: 0 };
+    }
+
+    await tx.insert(vendorPayouts).values({
+      vendorId,
+      amountCents: vendorCents,
+      kind: "sale",
+      orderId,
+      leadId,
+    });
+
+    // Upsert the running balance. ON CONFLICT updates pendingCents in place.
+    await tx
+      .insert(vendorBalances)
+      .values({ vendorId, pendingCents: vendorCents, paidCents: 0 })
+      .onConflictDoUpdate({
+        target: vendorBalances.vendorId,
+        set: {
+          pendingCents: sql`${vendorBalances.pendingCents} + ${vendorCents}`,
+          updatedAt: new Date(),
+        },
+      });
+
+    return { credited: true, vendorCents };
+  }
+
+  /**
+   * Public wrapper for callers outside the purchase transaction (refund
+   * processors, manual adjustments, etc). Opens its own short transaction
+   * so the ledger row + balance update commit together.
+   */
+  async creditVendorOnSale(
+    orderId: number,
+    leadId: number,
+    vendorId: number,
+    salePriceCents: number,
+  ): Promise<{ credited: boolean; vendorCents: number }> {
+    return await db.transaction(async (tx) => {
+      return await this.creditVendorOnSaleTx(tx, orderId, leadId, vendorId, salePriceCents);
+    });
+  }
+
+  async getVendorBalances(): Promise<{ vendor: Vendor; pendingCents: number; paidCents: number }[]> {
+    // LEFT JOIN from vendors so vendors with no activity still show 0/0.
+    const rows = await db
+      .select()
+      .from(vendors)
+      .leftJoin(vendorBalances, eq(vendorBalances.vendorId, vendors.id))
+      .orderBy(desc(vendorBalances.pendingCents));
+    return rows.map(r => ({
+      vendor: r.vendors,
+      pendingCents: r.vendor_balances?.pendingCents ?? 0,
+      paidCents: r.vendor_balances?.paidCents ?? 0,
+    }));
+  }
+
+  async sweepVendorPayouts(thresholdCents: number = 5000): Promise<{
+    vendorsPaid: number;
+    totalCentsSwept: number;
+    entries: { vendorId: number; amountCents: number; payoutId: number }[];
+  }> {
+    return await db.transaction(async (tx) => {
+      // Find every vendor at/over the threshold. SELECT … FOR UPDATE so
+      // a concurrent sweep can't double-pay the same balance row.
+      const eligible = await tx
+        .select()
+        .from(vendorBalances)
+        .where(gte(vendorBalances.pendingCents, thresholdCents))
+        .for("update");
+
+      const entries: { vendorId: number; amountCents: number; payoutId: number }[] = [];
+      let totalCentsSwept = 0;
+
+      for (const bal of eligible) {
+        const amount = bal.pendingCents;
+        if (amount <= 0) continue;
+
+        // TODO(stripe): when Stripe Connect is wired, replace this with a
+        // real Transfer call and persist `stripeTransferId` here.
+        const [payoutRow] = await tx
+          .insert(vendorPayouts)
+          .values({
+            vendorId: bal.vendorId,
+            amountCents: -amount, // debit from vendor side of the ledger
+            kind: "payout",
+            note: `Sweep at threshold ${thresholdCents}c`,
+          })
+          .returning();
+
+        await tx
+          .update(vendorBalances)
+          .set({
+            pendingCents: 0,
+            paidCents: sql`${vendorBalances.paidCents} + ${amount}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(vendorBalances.id, bal.id));
+
+        entries.push({ vendorId: bal.vendorId, amountCents: amount, payoutId: payoutRow.id });
+        totalCentsSwept += amount;
+      }
+
+      return { vendorsPaid: entries.length, totalCentsSwept, entries };
+    });
+  }
+
+  async getVendorPayoutLog(vendorId: number, limit: number = 50): Promise<VendorPayout[]> {
+    return await db
+      .select()
+      .from(vendorPayouts)
+      .where(eq(vendorPayouts.vendorId, vendorId))
+      .orderBy(desc(vendorPayouts.createdAt))
+      .limit(limit);
   }
 }
 
