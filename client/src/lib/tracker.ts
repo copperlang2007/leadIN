@@ -33,7 +33,11 @@ function getSessionId(): string {
 
 function postEvent(e: QueuedEvent) {
   try {
-    const body = JSON.stringify(e);
+    // Attach the active lead id if the SDK consumer has set one (e.g. when a
+    // lead detail dialog is open). This is what links behavioral signals
+    // back to a specific lead so MediScore can fold them in.
+    const payload = { leadId: activeLeadId, ...e };
+    const body = JSON.stringify(payload);
     fetch(ENDPOINT, {
       method: "POST",
       credentials: "include",
@@ -44,10 +48,15 @@ function postEvent(e: QueuedEvent) {
   } catch {}
 }
 
+export function setTrackerLeadId(leadId: number | undefined): void {
+  activeLeadId = leadId;
+}
+
 let pageEnteredAt = Date.now();
 let lastPath = "";
 let firedScrollMilestones = new Set<number>();
 let dwellPosted = false;
+let activeLeadId: number | undefined;
 
 function trackPageView() {
   const path = window.location.pathname + window.location.search;

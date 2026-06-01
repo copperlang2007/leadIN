@@ -25,14 +25,39 @@ const FALLBACK_SEED = [
   { planId: "H7890-005", carrier: "Anthem BCBS", state: "NC", county: "Mecklenburg", signalType: "termination", starRating: null, effectiveDate: new Date("2026-01-01") },
 ];
 
+// RFC-4180-style quote-aware CSV parser. Handles quoted fields with embedded
+// commas, newlines, and escaped double quotes ("").
+export function parseCsvText(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        cur += ch;
+      }
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === ",") { row.push(cur); cur = ""; }
+      else if (ch === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+      else if (ch === "\r") { /* swallow */ }
+      else cur += ch;
+    }
+  }
+  if (cur.length > 0 || row.length > 0) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(c => c.length > 0));
+}
+
 async function parseCsv(url: string): Promise<string[][]> {
   const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`CMS download ${url} → ${res.status}`);
   const text = await res.text();
-  return text
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map(line => line.split(","));
+  return parseCsvText(text);
 }
 
 async function ingestTerminations(url: string) {

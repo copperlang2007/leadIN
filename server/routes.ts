@@ -10,7 +10,7 @@ import {
   subscriptionCheckoutSchema,
 } from "@shared/schema";
 import { fromError } from "zod-validation-error";
-import { setupWebSocket, broadcastNewLead, getActiveConnections } from "./websocket";
+import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections } from "./websocket";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
@@ -18,7 +18,11 @@ import { checkDnc } from "./dncCompliance";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
+import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
+import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
+import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
+import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -35,6 +39,16 @@ function computeCompatibilityScore(
     score = Math.min(100, score + 12);
   }
   return score;
+}
+
+// Gate: an org can use SaaS features when either on per_lead billing OR an
+// active subscription. cancelled/past_due subscriptions are blocked.
+async function requireActiveBilling(orgId: string): Promise<{ ok: boolean; reason?: string }> {
+  const org = await storage.getOrganization(orgId);
+  if (!org) return { ok: false, reason: "org not found" };
+  if (org.billingMode === "per_lead") return { ok: true };
+  if (org.subscriptionStatus === "active") return { ok: true };
+  return { ok: false, reason: `subscription ${org.subscriptionStatus}` };
 }
 
 function stripPII(lead: any) {
@@ -64,6 +78,8 @@ export async function registerRoutes(
   // Phase 4 – signal enrichment cron jobs
   startSeoSignalCron();
   startCmsSignalCron();
+  startDncRecheckCron();
+  startEmailDigestCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -112,20 +128,53 @@ export async function registerRoutes(
 
       if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.updated") {
         const sub = event.data.object as any;
-        // Look up org by stripe subscription id and update status
-        // (Simple impl: we rely on the org table having the matching id.)
         try {
-          const status = sub.status === "active" ? "active" : "inactive";
-          // We don't have a lookup by sub id in storage yet, so just log;
-          // a follow-on hook can sync this when needed.
-          console.log(`Subscription ${sub.id} → ${status}`);
-        } catch {}
+          const org = await storage.getOrgByStripeSubscription(sub.id);
+          if (org) {
+            const isCancelled = event.type === "customer.subscription.deleted" || sub.status === "canceled" || sub.status === "unpaid";
+            const isActive = sub.status === "active" || sub.status === "trialing";
+            await storage.updateOrgSubscription(org.id, {
+              subscriptionStatus: isCancelled ? "cancelled" : isActive ? "active" : "past_due",
+              ...(isCancelled ? { billingMode: "per_lead" as const } : {}),
+            });
+            console.log(`Org ${org.id} subscription ${sub.id} → ${sub.status}`);
+          }
+        } catch (e: any) {
+          console.error("Subscription sync failed:", e?.message);
+        }
       }
 
       res.json({ received: true });
     } catch (err: any) {
       console.error("Stripe webhook error:", err.message);
       res.status(400).json({ error: "Webhook processing failed" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Health (unauthenticated, fast). Returns 503 when the DB is unreachable
+  // so load balancers / uptime probes flip correctly. Don't include any
+  // secrets or counts that an attacker could fingerprint.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/health", async (_req, res) => {
+    const start = Date.now();
+    try {
+      const { db } = await import("./db");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`SELECT 1`);
+      const latencyMs = Date.now() - start;
+      res.json({
+        status: "ok",
+        uptimeSec: Math.round(process.uptime()),
+        dbLatencyMs: latencyMs,
+        wsConnections: getActiveConnections(),
+      });
+    } catch (err: any) {
+      res.status(503).json({
+        status: "degraded",
+        uptimeSec: Math.round(process.uptime()),
+        error: "db_unreachable",
+      });
     }
   });
 
@@ -215,7 +264,10 @@ export async function registerRoutes(
         filters.orgId = null;
       }
 
+      const includeDnc = String(req.query.includeDnc ?? "") === "true";
       const allLeads = await storage.getLeads(filters);
+      const filtered = includeDnc ? allLeads : allLeads.filter(l => !l.dncFlagged);
+      const finalLeads = filtered;
 
       let licensedStates: string[] = [];
       let preferredTypes: string[] = [];
@@ -227,7 +279,7 @@ export async function registerRoutes(
         }
       }
 
-      const enrichedLeads = allLeads.map((lead) => {
+      const enrichedLeads = finalLeads.map((lead) => {
         const withScore = (licensedStates.length > 0 || preferredTypes.length > 0)
           ? { ...lead, compatibilityScore: computeCompatibilityScore(lead.state, lead.type, licensedStates, preferredTypes) }
           : lead;
@@ -292,6 +344,15 @@ export async function registerRoutes(
 
       const lead = await storage.getLead(leadId);
       if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org scope: an order in org A must not unlock a lead from org B even
+      // if a race / migration accidentally created such a row.
+      if (lead.orgId) {
+        const me = await storage.getUser(userId);
+        if (me?.activeOrgId !== lead.orgId) {
+          return res.status(403).json({ message: "Lead not available to your organization" });
+        }
+      }
 
       // Return full lead with PII
       res.json(lead);
@@ -409,6 +470,10 @@ export async function registerRoutes(
   app.post("/api/stripe/create-checkout", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
+      // 5 checkout creations per user per minute.
+      if (!takeToken(`checkout:${userId}`, 5, 5 / 60)) {
+        return res.status(429).json({ message: "Too many checkout attempts" });
+      }
       const { amount } = req.body;
 
       if (!amount || amount < 10 || amount > 10000) {
@@ -417,7 +482,10 @@ export async function registerRoutes(
 
       const stripe = await getUncachableStripeClient();
 
-      const baseUrl = `https://${req.hostname}`;
+      // Prefer a trusted env-configured URL to avoid Host-header spoofing in
+      // success/cancel redirects. Falls back to the request hostname only
+      // when APP_URL is not set (dev / first-deploy).
+      const baseUrl = process.env.APP_URL || `https://${req.hostname}`;
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
         line_items: [
@@ -487,6 +555,11 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid or inactive API key" });
       }
 
+      // 600 leads / vendor / minute (10/sec sustained, 100/sec burst).
+      if (!takeToken(`ingest:${vendor.id}`, 100, 10)) {
+        return res.status(429).json({ message: "Vendor rate limit exceeded" });
+      }
+
       const validation = vendorLeadIngestSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({ message: fromError(validation.error).toString() });
@@ -528,6 +601,8 @@ export async function registerRoutes(
 
       const lead = await storage.createLead({
         vendorId: vendor.id,
+        // Phase 3: route the lead to the org tied to the API key (if any)
+        orgId: vendor.orgId ?? null,
         type: data.type,
         source: data.source,
         exclusivity: data.exclusivity,
@@ -579,7 +654,17 @@ export async function registerRoutes(
       }).catch(err => console.error("Notification error:", err));
 
       // Fire the routing engine (no-op if lead has no org, or score below threshold)
-      storage.routeLeadToBestAgent(lead.id).catch(err => console.error("Routing error:", err));
+      storage.routeLeadToBestAgent(lead.id)
+        .then(assignment => {
+          if (assignment) {
+            broadcastLeadAssignment({
+              agentUserId: assignment.agentUserId,
+              leadId: assignment.leadId,
+              matchScore: assignment.matchScore,
+            });
+          }
+        })
+        .catch(err => console.error("Routing error:", err));
 
       res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
     } catch (error: any) {
@@ -642,6 +727,43 @@ export async function registerRoutes(
     }
   });
 
+  // List vendors so the org-admin UI can pick one when minting a key.
+  app.get("/api/vendors", isAuthenticated, async (_req, res) => {
+    try {
+      const vendors = await storage.getVendors();
+      res.json(vendors);
+    } catch (err) {
+      console.error("Error listing vendors:", err);
+      res.status(500).json({ message: "Failed to list vendors" });
+    }
+  });
+
+  // Mint a vendor API key bound to a vendor and (optionally) to the caller's
+  // active org. Org owners/admins only. Returns the raw key ONCE.
+  app.post("/api/orgs/:orgId/vendor-keys", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const billing = await requireActiveBilling(orgId);
+      if (!billing.ok) {
+        return res.status(402).json({ message: `Billing inactive: ${billing.reason}` });
+      }
+      const vendorId = parseInt(req.body?.vendorId, 10);
+      if (!Number.isFinite(vendorId)) {
+        return res.status(400).json({ message: "vendorId is required" });
+      }
+      const { key, record } = await storage.createVendorApiKey(vendorId, orgId);
+      res.status(201).json({ apiKey: key, keyId: record.id, keyPrefix: record.keyPrefix });
+    } catch (err) {
+      console.error("Error creating vendor API key:", err);
+      res.status(500).json({ message: "Failed to create API key" });
+    }
+  });
+
   app.patch("/api/orgs/:orgId/routing-threshold", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
@@ -690,6 +812,8 @@ export async function registerRoutes(
       }
       const d = validation.data;
 
+      // Preserve existing verification status on re-edit; first onboarding starts "pending".
+      const existing = await storage.getAgentProfile(userId);
       const profile = await storage.upsertAgentProfile({
         userId,
         orgId: me.activeOrgId,
@@ -700,8 +824,8 @@ export async function registerRoutes(
         licenseNumber: d.licenseNumber,
         licenseDocumentUrl: d.licenseDocumentUrl || null,
         capacityLimit: d.capacityLimit,
-        // Verification stays "pending" on first onboard; admins move to "verified".
-        verificationStatus: "pending",
+        acceptingLeads: d.acceptingLeads,
+        verificationStatus: existing?.verificationStatus ?? "pending",
       });
 
       res.json(profile);
@@ -747,6 +871,80 @@ export async function registerRoutes(
     }
   });
 
+  // Agent accepts or declines an assignment. On decline the engine re-routes.
+  app.patch("/api/agent/assignments/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const assignmentId = parseInt(req.params.id, 10);
+      const status = req.body?.status;
+      if (status !== "accepted" && status !== "declined") {
+        return res.status(400).json({ message: "status must be accepted|declined" });
+      }
+      const updated = await storage.setAssignmentStatus(assignmentId, userId, status);
+      if (!updated) return res.status(404).json({ message: "Assignment not found" });
+
+      if (status === "declined") {
+        storage.routeLeadToBestAgent(updated.leadId)
+          .then(next => {
+            if (next) {
+              broadcastLeadAssignment({
+                agentUserId: next.agentUserId,
+                leadId: next.leadId,
+                matchScore: next.matchScore,
+              });
+            }
+          })
+          .catch(err => console.error("Re-route error:", err));
+      }
+      res.json(updated);
+    } catch (err) {
+      console.error("Error updating assignment:", err);
+      res.status(500).json({ message: "Failed to update assignment" });
+    }
+  });
+
+  // List agents in the caller's active org (owner/admin only)
+  app.get("/api/orgs/:orgId/agents", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) return res.status(403).json({ message: "Not a member" });
+      const agents = await storage.listOrgAgents(orgId);
+      // Strip the document URL for non-admins (PII-ish)
+      const safe = (role === "owner" || role === "admin") ? agents : agents.map(a => ({ ...a, licenseDocumentUrl: null, licenseNumber: null }));
+      res.json(safe);
+    } catch (err) {
+      console.error("Error listing org agents:", err);
+      res.status(500).json({ message: "Failed to list agents" });
+    }
+  });
+
+  // Org admin updates an agent's historical conversion rate. This feeds into
+  // both the routing engine (conv bonus) and the agent dashboard's
+  // estimated-commission display.
+  app.patch("/api/agent/:userId/conversion-rate", isAuthenticated, async (req: any, res) => {
+    try {
+      const actorId = req.user.claims.sub;
+      const targetUserId = req.params.userId;
+      const rate = Number(req.body?.rate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        return res.status(400).json({ message: "rate must be a number between 0 and 1" });
+      }
+      const target = await storage.getAgentProfile(targetUserId);
+      if (!target) return res.status(404).json({ message: "Agent profile not found" });
+      const role = await storage.getUserOrgRole(actorId, target.orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const updated = await storage.setAgentConversionRate(targetUserId, rate);
+      res.json(updated);
+    } catch (err) {
+      console.error("Error setting conversion rate:", err);
+      res.status(500).json({ message: "Failed to update conversion rate" });
+    }
+  });
+
   // Admin verifies / rejects an agent within their own org
   app.patch("/api/agent/:userId/verification", isAuthenticated, async (req: any, res) => {
     try {
@@ -774,10 +972,13 @@ export async function registerRoutes(
   // ──────────────────────────────────────────────────────
   // Phase 3 – Stripe subscription billing (per-org)
   // ──────────────────────────────────────────────────────
-  const SUBSCRIPTION_TIERS: Record<string, { name: string; monthlyCents: number }> = {
-    starter: { name: "Starter (up to 3 agents)", monthlyCents: 9900 },
-    growth: { name: "Growth (up to 15 agents)", monthlyCents: 29900 },
-    scale: { name: "Scale (unlimited agents)", monthlyCents: 79900 },
+  // Fallback inline pricing when STRIPE_PRICE_* env vars aren't configured.
+  // Production should set the env vars so each subscription reuses a single
+  // Stripe Product/Price instead of minting a new one per checkout.
+  const SUBSCRIPTION_TIERS: Record<string, { name: string; monthlyCents: number; priceIdEnv: string }> = {
+    starter: { name: "Starter (up to 3 agents)", monthlyCents: 9900, priceIdEnv: "STRIPE_PRICE_STARTER" },
+    growth: { name: "Growth (up to 15 agents)", monthlyCents: 29900, priceIdEnv: "STRIPE_PRICE_GROWTH" },
+    scale: { name: "Scale (unlimited agents)", monthlyCents: 79900, priceIdEnv: "STRIPE_PRICE_SCALE" },
   };
 
   app.post("/api/orgs/:orgId/subscription/checkout", isAuthenticated, async (req: any, res) => {
@@ -796,13 +997,17 @@ export async function registerRoutes(
       if (!tier) return res.status(400).json({ message: "Unknown tier" });
 
       const stripe = await getUncachableStripeClient();
-      const baseUrl = `https://${req.hostname}`;
+      // Prefer a trusted env-configured URL to avoid Host-header spoofing in
+      // success/cancel redirects. Falls back to the request hostname only
+      // when APP_URL is not set (dev / first-deploy).
+      const baseUrl = process.env.APP_URL || `https://${req.hostname}`;
 
-      const session = await stripe.checkout.sessions.create({
-        mode: "subscription",
-        payment_method_types: ["card"],
-        line_items: [
-          {
+      // Use the configured Stripe Price ID when available (recommended);
+      // otherwise create an inline price_data line item so dev still works.
+      const priceId = process.env[tier.priceIdEnv];
+      const lineItem: any = priceId
+        ? { price: priceId, quantity: 1 }
+        : {
             price_data: {
               currency: "usd",
               recurring: { interval: "month" },
@@ -810,17 +1015,100 @@ export async function registerRoutes(
               unit_amount: tier.monthlyCents,
             },
             quantity: 1,
-          },
-        ],
+          };
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        payment_method_types: ["card"],
+        line_items: [lineItem],
         success_url: `${baseUrl}/?stripe=sub_success&org=${orgId}`,
         cancel_url: `${baseUrl}/?stripe=sub_cancelled`,
         metadata: { orgId, tier: validation.data.tier, kind: "subscription" },
       });
 
-      res.json({ url: session.url });
+      res.json({ url: session.url, usedPriceId: !!priceId });
     } catch (err: any) {
       console.error("Error creating subscription checkout:", err);
       res.status(500).json({ message: err.message || "Failed to create subscription" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Saved lists — agents bookmark leads to revisit
+  // ──────────────────────────────────────────────────────
+  app.get("/api/saved-lists", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      const lists = await storage.listSavedLists(userId, me?.activeOrgId ?? null);
+      res.json(lists);
+    } catch (err) {
+      console.error("Error listing saved lists:", err);
+      res.status(500).json({ message: "Failed to list saved lists" });
+    }
+  });
+
+  app.post("/api/saved-lists", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const me = await storage.getUser(userId);
+      const name = String(req.body?.name ?? "").trim();
+      if (!name) return res.status(400).json({ message: "name required" });
+      if (name.length > 200) return res.status(400).json({ message: "name too long" });
+      const list = await storage.createSavedList({
+        name,
+        ownerUserId: userId,
+        orgId: me?.activeOrgId ?? null,
+      });
+      res.status(201).json(list);
+    } catch (err) {
+      console.error("Error creating saved list:", err);
+      res.status(500).json({ message: "Failed to create saved list" });
+    }
+  });
+
+  app.get("/api/saved-lists/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const result = await storage.getSavedListWithItems(id, req.user.claims.sub);
+      if (!result) return res.status(404).json({ message: "List not found" });
+      res.json(result);
+    } catch (err) {
+      console.error("Error fetching saved list:", err);
+      res.status(500).json({ message: "Failed to fetch saved list" });
+    }
+  });
+
+  app.post("/api/saved-lists/:id/items", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const leadId = parseInt(req.body?.leadId, 10);
+      if (!Number.isFinite(leadId)) return res.status(400).json({ message: "leadId required" });
+      await storage.addLeadToSavedList(id, leadId, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(err.message === "List not found" ? 404 : 500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.delete("/api/saved-lists/:id/items/:leadId", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const leadId = parseInt(req.params.leadId, 10);
+      await storage.removeLeadFromSavedList(id, leadId, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(err.message === "List not found" ? 404 : 500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.delete("/api/saved-lists/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      await storage.deleteSavedList(id, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed" });
     }
   });
 
@@ -834,23 +1122,65 @@ export async function registerRoutes(
         return res.status(400).json({ message: fromError(validation.error).toString() });
       }
       const d = validation.data;
+      const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+
+      // 1) Rate limit per (sessionId, ip): 30 events/min, burst 60.
+      if (!takeToken(`evt:${d.sessionId}:${ip}`, 60, 0.5)) {
+        return res.status(429).json({ message: "Too many events" });
+      }
+      // 2) Per-IP global limit so an attacker can't rotate sessionId.
+      if (!takeToken(`evt:ip:${ip}`, 300, 5)) {
+        return res.status(429).json({ message: "Too many events" });
+      }
+
+      // 3) Dedupe: scroll milestones / page views must not double-count.
+      // Key on (session, type, path, value) within 5s.
+      const dedupeKey = `evt:${d.sessionId}:${d.eventType}:${d.path ?? ""}:${d.value ?? ""}:${d.leadId ?? ""}`;
+      if (seenRecently(dedupeKey, 5_000)) {
+        return res.json({ ok: true, deduped: true });
+      }
+
+      // 4) Clamp numeric value so callers can't inject huge dwell times.
+      let value = d.value;
+      if (typeof value === "number") {
+        value = Math.max(0, Math.min(3600, Math.round(value)));
+      }
+
       const userId = req.user?.claims?.sub ?? null;
+
+      // 5) Verify the user has scope to attribute an event to a specific lead.
+      // For org-scoped leads, only members of the org may post events for it;
+      // global-pool leads accept events from anyone.
+      let leadId = d.leadId ?? null;
+      if (leadId != null) {
+        const targetLead = await storage.getLead(leadId);
+        if (!targetLead) {
+          leadId = null;
+        } else if (targetLead.orgId) {
+          const me = userId ? await storage.getUser(userId) : null;
+          if (me?.activeOrgId !== targetLead.orgId) {
+            // Strip the lead attribution rather than 403'ing — events are
+            // still useful as session telemetry, just unattributed.
+            leadId = null;
+          }
+        }
+      }
+
       await storage.recordBehavioralEvent({
         sessionId: d.sessionId,
-        leadId: d.leadId ?? null,
+        leadId,
         userId,
         eventType: d.eventType,
         path: d.path,
-        value: d.value,
+        value,
         metadata: d.metadata,
         userAgent: String(req.headers["user-agent"] ?? "").slice(0, 500),
-        ip: String(req.ip ?? req.socket?.remoteAddress ?? "").slice(0, 64),
+        ip,
       });
 
-      // If the event is tied to a lead, recompute that lead's score so the
-      // marketplace surfaces fresh signals. Non-blocking.
-      if (d.leadId) {
-        recomputeAndPersistMediScore(d.leadId).catch(() => {});
+      // 6) Throttle MediScore recomputes to at most once every 30s per lead.
+      if (leadId && throttleFire(`mediscore:${leadId}`, 30_000)) {
+        recomputeAndPersistMediScore(leadId).catch(() => {});
       }
       res.json({ ok: true });
     } catch (err: any) {
@@ -886,6 +1216,54 @@ export async function registerRoutes(
       res.json(rows);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch keyword signals" });
+    }
+  });
+
+  // PM + Growth funnel snapshot. Admin-only because it's aggregated PII-adjacent.
+  app.get("/api/admin/analytics/funnel", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const days = Math.max(1, Math.min(90, parseInt(String(req.query.days ?? "7"), 10)));
+      const snapshot = await getFunnelSnapshot(days);
+      res.json(snapshot);
+    } catch (err: any) {
+      console.error("Funnel error:", err);
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.get("/api/admin/analytics/leads", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const data = await getLeadAnalytics();
+      res.json(data);
+    } catch (err: any) {
+      console.error("Lead analytics error:", err);
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.post("/api/admin/digest/run", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runDailyDigest();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  app.post("/api/admin/dnc/recheck", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runDncRecheck();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Recheck failed" });
     }
   });
 
@@ -1148,12 +1526,14 @@ export async function registerRoutes(
       const articles = await storage.getContentArticles(true);
       const baseUrl = process.env.APP_URL || "https://leadmarket.replit.app";
 
-      const staticUrls = [
+      type SitemapUrl = { loc: string; priority: string; changefreq: string; lastmod?: string };
+      const staticUrls: SitemapUrl[] = [
         { loc: baseUrl, priority: "1.0", changefreq: "daily" },
+        { loc: `${baseUrl}/pricing`, priority: "0.9", changefreq: "weekly" },
         { loc: `${baseUrl}/blog`, priority: "0.9", changefreq: "daily" },
       ];
 
-      const articleUrls = articles.map((a) => ({
+      const articleUrls: SitemapUrl[] = articles.map((a) => ({
         loc: `${baseUrl}/blog/${a.slug}`,
         priority: "0.7",
         changefreq: "monthly",

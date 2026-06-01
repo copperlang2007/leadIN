@@ -116,11 +116,16 @@ export const vendors = pgTable("vendors", {
 export const vendorApiKeys = pgTable("vendor_api_keys", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  // Org that ingested leads are routed to. Null = legacy global-pool key.
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
   keyHash: varchar("key_hash", { length: 255 }).notNull().unique(),
   keyPrefix: varchar("key_prefix", { length: 20 }).notNull(),
   active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [
+  index("idx_vendor_keys_prefix").on(table.keyPrefix),
+]);
 
 export const leads = pgTable("leads", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -316,6 +321,36 @@ export const ordersRelations = relations(orders, ({ one }) => ({
 }));
 
 // ──────────────────────────────────────────────────────
+// Saved lists — agents bookmark leads to revisit / share with a teammate.
+// Org-scoped: a list belongs to an org so members of that org can see it.
+// ──────────────────────────────────────────────────────
+export const savedLists = pgTable("saved_lists", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_saved_lists_org").on(table.orgId),
+  index("idx_saved_lists_owner").on(table.ownerUserId),
+]);
+
+export const savedListItems = pgTable("saved_list_items", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  listId: integer("list_id").notNull().references(() => savedLists.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  addedAt: timestamp("added_at").defaultNow(),
+}, (table) => [
+  unique("uniq_saved_list_lead").on(table.listId, table.leadId),
+  index("idx_saved_list_items_list").on(table.listId),
+]);
+
+export type InsertSavedList = typeof savedLists.$inferInsert;
+export type SavedList = typeof savedLists.$inferSelect;
+export type SavedListItem = typeof savedListItems.$inferSelect;
+
+// ──────────────────────────────────────────────────────
 // Phase 4 – Signal enrichment
 // ──────────────────────────────────────────────────────
 
@@ -397,7 +432,7 @@ export const contentArticles = pgTable("content_articles", {
 export type InsertContentArticle = typeof contentArticles.$inferInsert;
 export type ContentArticle = typeof contentArticles.$inferSelect;
 
-export const insertContentArticleSchema = createInsertSchema(contentArticles).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertContentArticleSchema = createInsertSchema(contentArticles);
 
 // Types
 export type UpsertUser = typeof users.$inferInsert;
@@ -455,8 +490,12 @@ export const agentOnboardingSchema = z.object({
   territoryZips: z.array(z.string().min(3).max(10)).default([]),
   territoryCounties: z.array(z.string().min(1)).default([]),
   licenseNumber: z.string().min(1).max(100).optional(),
-  licenseDocumentUrl: z.string().url().optional().or(z.literal("")),
+  licenseDocumentUrl: z.string().url().refine(
+    u => u.startsWith("http://") || u.startsWith("https://"),
+    "Must be an http(s) URL",
+  ).optional().or(z.literal("")),
   capacityLimit: z.number().int().min(1).max(500).default(25),
+  acceptingLeads: z.boolean().default(true),
 });
 
 export const subscriptionCheckoutSchema = z.object({
