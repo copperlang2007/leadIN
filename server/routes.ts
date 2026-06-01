@@ -23,6 +23,7 @@ import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
+import { recordAudit, listAudit } from "./audit";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -757,6 +758,14 @@ export async function registerRoutes(
         return res.status(400).json({ message: "vendorId is required" });
       }
       const { key, record } = await storage.createVendorApiKey(vendorId, orgId);
+      recordAudit({
+        actorUserId: userId,
+        orgId,
+        action: "vendor_key.mint",
+        targetKind: "vendor",
+        targetId: String(vendorId),
+        metadata: { keyPrefix: record.keyPrefix },
+      }).catch(err => console.error("[audit] failed:", err));
       res.status(201).json({ apiKey: key, keyId: record.id, keyPrefix: record.keyPrefix });
     } catch (err) {
       console.error("Error creating vendor API key:", err);
@@ -938,6 +947,14 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Owner or admin role required" });
       }
       const updated = await storage.setAgentConversionRate(targetUserId, rate);
+      recordAudit({
+        actorUserId: actorId,
+        orgId: target.orgId,
+        action: "agent.conversion_rate",
+        targetKind: "user",
+        targetId: targetUserId,
+        metadata: { rate },
+      }).catch(err => console.error("[audit] failed:", err));
       res.json(updated);
     } catch (err) {
       console.error("Error setting conversion rate:", err);
@@ -962,6 +979,14 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Owner or admin role required" });
       }
       const updated = await storage.setAgentVerificationStatus(targetUserId, status);
+      recordAudit({
+        actorUserId: actorId,
+        orgId: target.orgId,
+        action: "agent.verification",
+        targetKind: "user",
+        targetId: targetUserId,
+        metadata: { status },
+      }).catch(err => console.error("[audit] failed:", err));
       res.json(updated);
     } catch (err) {
       console.error("Error setting verification:", err);
@@ -1337,7 +1362,15 @@ export async function registerRoutes(
 
       const leadId = parseInt(req.params.id);
       const { flagged } = req.body;
-      const lead = await storage.flagLead(leadId, flagged ?? true);
+      const flaggedValue = flagged ?? true;
+      const lead = await storage.flagLead(leadId, flaggedValue);
+      recordAudit({
+        actorUserId: userId,
+        action: "lead.flag",
+        targetKind: "lead",
+        targetId: String(leadId),
+        metadata: { flagged: flaggedValue },
+      }).catch(err => console.error("[audit] failed:", err));
       res.json(lead);
     } catch (error) {
       console.error("Error flagging lead:", error);
@@ -1355,6 +1388,12 @@ export async function registerRoutes(
 
       const leadId = parseInt(req.params.id);
       const lead = await storage.removeLead(leadId);
+      recordAudit({
+        actorUserId: userId,
+        action: "lead.remove",
+        targetKind: "lead",
+        targetId: String(leadId),
+      }).catch(err => console.error("[audit] failed:", err));
       res.json(lead);
     } catch (error) {
       console.error("Error removing lead:", error);
@@ -1411,10 +1450,38 @@ export async function registerRoutes(
       if (!user) return res.status(404).json({ message: "User not found" });
 
       const updatedUser = await storage.setUserRole(userId, "admin");
+      recordAudit({
+        actorUserId: userId,
+        action: "user.role_set",
+        targetKind: "user",
+        targetId: userId,
+        metadata: { role: "admin" },
+      }).catch(err => console.error("[audit] failed:", err));
       res.json({ message: "Admin role assigned", user: updatedUser });
     } catch (error) {
       console.error("Error seeding admin:", error);
       res.status(500).json({ message: "Failed to seed admin" });
+    }
+  });
+
+  // Admin-only: read the privileged-action audit log.
+  app.get("/api/admin/audit", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (!user || user.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const action = typeof req.query.action === "string" ? req.query.action : undefined;
+      const actorUserId =
+        typeof req.query.actorUserId === "string" ? req.query.actorUserId : undefined;
+      const limitRaw = req.query.limit;
+      const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+      const entries = await listAudit({ action, actorUserId, limit });
+      res.json(entries);
+    } catch (error) {
+      console.error("Error listing audit log:", error);
+      res.status(500).json({ message: "Failed to list audit log" });
     }
   });
 
