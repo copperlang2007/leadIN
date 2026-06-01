@@ -168,3 +168,21 @@ export function broadcastLeadAssignment(payload: {
 export function getActiveConnections(): number {
   return activeConnections;
 }
+
+// Iterate every tracked client and request a graceful close with code 1001
+// ("going away"). Used by the shutdown handler in server/index.ts so
+// in-flight WebSockets are drained before the process exits.
+type ClosableClient = { close: (code?: number, reason?: string) => void };
+export function closeAllSockets(
+  server: { clients: Iterable<ClosableClient> | ArrayLike<ClosableClient> } | null = wss,
+): void {
+  if (!server) return;
+  const clients = Array.from(server.clients as Iterable<ClosableClient>);
+  for (const client of clients) {
+    try {
+      client.close(1001, "shutdown");
+    } catch {
+      // ignore — best-effort during shutdown
+    }
+  }
+}

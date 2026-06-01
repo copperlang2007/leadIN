@@ -4,9 +4,13 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { storage } from "./storage";
-import { broadcastNewLead } from "./websocket";
+import { broadcastNewLead, closeAllSockets } from "./websocket";
 import { csrfMiddleware } from "./csrf";
 import { log as logger, newRequestId } from "./logger";
+import { closePool } from "./db";
+import { createShutdownHandler } from "./shutdown";
+export { createShutdownHandler } from "./shutdown";
+export type { ShutdownDeps } from "./shutdown";
 
 const app = express();
 const httpServer = createServer(app);
@@ -35,8 +39,13 @@ declare module "http" {
   }
 }
 
+// 256 KB request body cap. The `verify` callback captures the raw bytes so
+// the Stripe webhook can recompute its signature against the unparsed body.
+// Oversized requests are rejected by express with HTTP 413 before the
+// verify callback runs, so we don't risk holding huge payloads in memory.
 app.use(
   express.json({
+    limit: "256kb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
@@ -100,6 +109,22 @@ app.use((req, res, next) => {
   next();
 });
 
+// Graceful shutdown. On SIGTERM / SIGINT we stop accepting new connections,
+// close any open WebSockets, then close the PG pool. We give ourselves at
+// most 15 seconds before forcing exit so a stuck connection cannot keep the
+// process alive indefinitely. A second signal short-circuits to exit(1).
+function installShutdownHandlers(): void {
+  const handler = createShutdownHandler({
+    httpServer,
+    closeAllSockets: () => closeAllSockets(),
+    closePool,
+    exit: (code) => process.exit(code),
+    log: (m) => log(m),
+  });
+  process.on("SIGTERM", () => { void handler(); });
+  process.on("SIGINT", () => { void handler(); });
+}
+
 (async () => {
   await registerRoutes(httpServer, app);
 
@@ -120,6 +145,8 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
+
+  installShutdownHandlers();
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
