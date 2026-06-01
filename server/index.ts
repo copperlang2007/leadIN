@@ -9,6 +9,7 @@ import { csrfMiddleware } from "./csrf";
 import { log as logger, newRequestId } from "./logger";
 import { closePool } from "./db";
 import { createShutdownHandler } from "./shutdown";
+import { redactPii } from "@shared/pii";
 export { createShutdownHandler } from "./shutdown";
 export type { ShutdownDeps } from "./shutdown";
 
@@ -63,19 +64,44 @@ export function log(message: string, source = "express") {
   logger.info(message, { source });
 }
 
-// Recursively redact PII keys from any nested JSON structure before logging
-function redactPII(obj: any, piiKeys: Set<string>): any {
-  if (Array.isArray(obj)) {
-    return obj.map(item => redactPII(item, piiKeys));
-  }
-  if (obj !== null && typeof obj === "object") {
-    const redacted: Record<string, any> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      redacted[k] = piiKeys.has(k) ? "[REDACTED]" : redactPII(v, piiKeys);
-    }
-    return redacted;
-  }
-  return obj;
+// Shape the access-log payload for an /api response. Extracted so the
+// redaction wiring can be unit-tested without standing up express.
+export interface AccessLogInput {
+  reqId: string;
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  capturedJsonResponse: Record<string, any> | undefined;
+}
+
+export interface AccessLogPayload {
+  level: "info" | "warn" | "error";
+  fields: {
+    reqId: string;
+    method: string;
+    path: string;
+    status: number;
+    durationMs: number;
+    body?: any;
+  };
+}
+
+export function buildAccessLog(input: AccessLogInput): AccessLogPayload {
+  const body = input.capturedJsonResponse ? redactPii(input.capturedJsonResponse) : undefined;
+  const level: AccessLogPayload["level"] =
+    input.status >= 500 ? "error" : input.status >= 400 ? "warn" : "info";
+  return {
+    level,
+    fields: {
+      reqId: input.reqId,
+      method: input.method,
+      path: input.path,
+      status: input.status,
+      durationMs: input.durationMs,
+      ...(body ? { body } : {}),
+    },
+  };
 }
 
 app.use((req, res, next) => {
@@ -92,17 +118,15 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      const PII_KEYS = new Set(["consumerName", "consumerPhone", "consumerEmail", "consumerAddress"]);
-      const body = capturedJsonResponse ? redactPII(capturedJsonResponse, PII_KEYS) : undefined;
-      const level = res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info";
-      logger[level]("http", {
+      const { level, fields } = buildAccessLog({
         reqId: (req as any).reqId,
         method: req.method,
         path,
         status: res.statusCode,
         durationMs: duration,
-        ...(body ? { body } : {}),
+        capturedJsonResponse,
       });
+      logger[level]("http", fields);
     }
   });
 
