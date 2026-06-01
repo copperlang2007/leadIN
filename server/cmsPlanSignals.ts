@@ -12,10 +12,11 @@
 // data to consume. Real production use should point those env vars at the
 // official CMS file URLs (or a mirror) and the parser will populate the table.
 
-import cron from "node-cron";
 import { db } from "./db";
 import { cmsPlanSignals } from "@shared/schema";
 import { sql } from "drizzle-orm";
+import { registerCron } from "./lib/cronRegistry";
+import { withAdvisoryLock } from "./lib/lock";
 
 const FALLBACK_SEED = [
   { planId: "H1234-001", carrier: "Humana", state: "FL", county: "Miami-Dade", signalType: "termination", starRating: null,  effectiveDate: new Date("2026-01-01") },
@@ -155,11 +156,17 @@ export async function refreshCmsPlanSignals(): Promise<{ rowsLoaded: number; use
 
 export function startCmsSignalCron(): void {
   // Refresh once a week (Sunday at 04:00). CMS file cadence is monthly at best.
-  cron.schedule("0 4 * * 0", async () => {
-    try { await refreshCmsPlanSignals(); }
-    catch (err) { console.error("[cms] cron failed:", err); }
+  registerCron({
+    name: "cms-plan-signals",
+    schedule: "0 4 * * 0",
+    fn: async () => { await refreshCmsPlanSignals(); },
   });
-  console.log("[cms] plan-signal refresh scheduled (Sun 04:00)");
 
-  refreshCmsPlanSignals().catch(err => console.error("[cms] startup load failed:", err));
+  // Bootstrap load on startup — gated behind an advisory lock so only one
+  // instance does the seed when multi-process deploys boot together.
+  (async () => {
+    await withAdvisoryLock("cms-bootstrap", async () => {
+      await refreshCmsPlanSignals().catch(err => console.error("[cms] startup load failed:", err));
+    });
+  })();
 }

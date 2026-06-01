@@ -3,10 +3,11 @@
 // integration is configured the module seeds a deterministic baseline set so
 // the content engine still has data to drive topic prioritization.
 
-import cron from "node-cron";
 import { db } from "./db";
 import { keywordSignals } from "@shared/schema";
 import { eq, sql, desc } from "drizzle-orm";
+import { registerCron } from "./lib/cronRegistry";
+import { withAdvisoryLock } from "./lib/lock";
 
 const SEED_KEYWORDS = [
   { keyword: "medicare advantage 2026", category: "Medicare Advantage" },
@@ -164,17 +165,20 @@ export async function getTopOpportunityKeywords(limit = 10) {
 
 export function startSeoSignalCron(): void {
   // Refresh once a day at 03:00 to keep signals fresh for the content engine.
-  cron.schedule("0 3 * * *", async () => {
-    try { await refreshKeywordSignals(); }
-    catch (err) { console.error("[seo] cron failed:", err); }
+  registerCron({
+    name: "seo-keyword-refresh",
+    schedule: "0 3 * * *",
+    fn: async () => { await refreshKeywordSignals(); },
   });
-  console.log("[seo] keyword signal refresh scheduled (daily 03:00)");
 
-  // Warm the table on startup if it's empty.
+  // Warm the table on startup if it's empty. Wrap in an advisory lock so only
+  // one instance does the seed when multi-process deploys boot together.
   (async () => {
-    const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(keywordSignals);
-    if (!row || Number(row.c ?? 0) === 0) {
-      await refreshKeywordSignals().catch(err => console.error("[seo] warm failed:", err));
-    }
+    await withAdvisoryLock("seo-bootstrap", async () => {
+      const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(keywordSignals);
+      if (!row || Number(row.c ?? 0) === 0) {
+        await refreshKeywordSignals().catch(err => console.error("[seo] warm failed:", err));
+      }
+    });
   })();
 }

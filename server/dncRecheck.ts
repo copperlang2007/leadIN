@@ -2,12 +2,12 @@
 // against the DNC list. Phones can be added to the DNC registry after a
 // lead is ingested; this keeps the marketplace honest.
 
-import cron from "node-cron";
 import { db } from "./db";
 import { leads } from "@shared/schema";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { checkDnc } from "./dncCompliance";
 import { recomputeAndPersistMediScore } from "./mediscore";
+import { registerCron } from "./lib/cronRegistry";
 
 const RECHECK_AGE_HOURS = 24;
 const BATCH_LIMIT = 500;
@@ -53,9 +53,9 @@ export async function runDncRecheck(): Promise<{ scanned: number; flipped: numbe
 
 export function startDncRecheckCron(): void {
   // 02:30 every day — outside the SEO (03:00) and CMS (Sun 04:00) windows.
-  cron.schedule("30 2 * * *", async () => {
-    try { await runDncRecheck(); }
-    catch (err) { console.error("[dnc-recheck] cron error:", err); }
+  registerCron({
+    name: "dnc-recheck",
+    schedule: "30 2 * * *",
+    fn: async () => { await runDncRecheck(); },
   });
-  console.log("[dnc-recheck] scheduled daily 02:30");
 }
