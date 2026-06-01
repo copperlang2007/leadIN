@@ -165,6 +165,10 @@ export const leads = pgTable("leads", {
   // DNC compliance: result of the DNC registry check on ingest
   dncFlagged: boolean("dnc_flagged").notNull().default(false),
   dncCheckedAt: timestamp("dnc_checked_at"),
+  // TrustedForm/Jornaya server-side verification (Wave 0)
+  tcpaVerifiedAt: timestamp("tcpa_verified_at"),
+  tcpaCertId: varchar("tcpa_cert_id", { length: 200 }),
+  tcpaVerifiedSource: varchar("tcpa_verified_source", { length: 50 }),
   // MediScore = aggregated signal score (0-100), recomputed when signals change
   mediscore: integer("mediscore").notNull().default(0),
   mediscoreSignals: jsonb("mediscore_signals"),
@@ -527,6 +531,87 @@ export const trackEventSchema = z.object({
 });
 
 export type TrackEventInput = z.infer<typeof trackEventSchema>;
+
+// ──────────────────────────────────────────────────────
+// Wave 0: marketplace economics + audit + disputes
+// ──────────────────────────────────────────────────────
+
+// Running balance per vendor in pending and paid states.
+export const vendorBalances = pgTable("vendor_balances", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  vendorId: integer("vendor_id").notNull().unique().references(() => vendors.id, { onDelete: "cascade" }),
+  pendingCents: integer("pending_cents").notNull().default(0),
+  paidCents: integer("paid_cents").notNull().default(0),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// One row per credit (lead sale) or debit (refund / payout). Append-only ledger.
+export const vendorPayouts = pgTable("vendor_payouts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  // Positive = credit (a sale earned this vendor money). Negative = debit (refund, payout, adjustment).
+  amountCents: integer("amount_cents").notNull(),
+  kind: varchar("kind", { length: 30 }).notNull(), // 'sale' | 'refund' | 'payout' | 'adjustment'
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  stripeTransferId: varchar("stripe_transfer_id", { length: 200 }),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_vendor_payouts_vendor").on(table.vendorId),
+  index("idx_vendor_payouts_kind").on(table.kind),
+  index("idx_vendor_payouts_created").on(table.createdAt),
+]);
+
+// Append-only log of privileged admin actions (verify agent, mint key, flag lead, etc.)
+export const adminAuditLog = pgTable("admin_audit_log", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  actorUserId: varchar("actor_user_id").notNull().references(() => users.id),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  action: varchar("action", { length: 80 }).notNull(),
+  targetKind: varchar("target_kind", { length: 40 }),
+  targetId: varchar("target_id", { length: 100 }),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_audit_actor").on(table.actorUserId),
+  index("idx_audit_action").on(table.action),
+  index("idx_audit_created").on(table.createdAt),
+]);
+
+// Buyer-filed dispute on a purchased lead.
+export const leadDisputes = pgTable("lead_disputes", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orderId: integer("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  reason: varchar("reason", { length: 80 }).notNull(), // 'bad_contact' | 'duplicate' | 'fraud' | 'not_as_described' | 'other'
+  notes: text("notes"),
+  status: varchar("status", { length: 20 }).notNull().default("open"), // 'open' | 'approved' | 'denied'
+  resolverUserId: varchar("resolver_user_id").references(() => users.id),
+  resolvedAt: timestamp("resolved_at"),
+  refundCents: integer("refund_cents"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_disputes_status").on(table.status),
+  index("idx_disputes_order").on(table.orderId),
+  unique("uniq_dispute_per_order").on(table.orderId),
+]);
+
+export type VendorBalance = typeof vendorBalances.$inferSelect;
+export type VendorPayout = typeof vendorPayouts.$inferSelect;
+export type InsertVendorPayout = typeof vendorPayouts.$inferInsert;
+export type AdminAuditEntry = typeof adminAuditLog.$inferSelect;
+export type InsertAdminAuditEntry = typeof adminAuditLog.$inferInsert;
+export type LeadDispute = typeof leadDisputes.$inferSelect;
+export type InsertLeadDispute = typeof leadDisputes.$inferInsert;
+
+export const disputeReasonSchema = z.enum(["bad_contact", "duplicate", "fraud", "not_as_described", "other"]);
+export const createDisputeSchema = z.object({
+  orderId: z.number().int().positive(),
+  reason: disputeReasonSchema,
+  notes: z.string().max(2000).optional(),
+});
 
 // Vendor ingestion payload schema
 export const vendorLeadIngestSchema = z.object({
