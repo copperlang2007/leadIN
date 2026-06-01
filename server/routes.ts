@@ -471,7 +471,7 @@ export async function registerRoutes(
     try {
       const userId = req.user.claims.sub;
       // 5 checkout creations per user per minute.
-      if (!takeToken(`checkout:${userId}`, 5, 5 / 60)) {
+      if (!(await takeToken(`checkout:${userId}`, 5, 5 / 60))) {
         return res.status(429).json({ message: "Too many checkout attempts" });
       }
       const { amount } = req.body;
@@ -556,7 +556,7 @@ export async function registerRoutes(
       }
 
       // 600 leads / vendor / minute (10/sec sustained, 100/sec burst).
-      if (!takeToken(`ingest:${vendor.id}`, 100, 10)) {
+      if (!(await takeToken(`ingest:${vendor.id}`, 100, 10))) {
         return res.status(429).json({ message: "Vendor rate limit exceeded" });
       }
 
@@ -1125,18 +1125,18 @@ export async function registerRoutes(
       const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
 
       // 1) Rate limit per (sessionId, ip): 30 events/min, burst 60.
-      if (!takeToken(`evt:${d.sessionId}:${ip}`, 60, 0.5)) {
+      if (!(await takeToken(`evt:${d.sessionId}:${ip}`, 60, 0.5))) {
         return res.status(429).json({ message: "Too many events" });
       }
       // 2) Per-IP global limit so an attacker can't rotate sessionId.
-      if (!takeToken(`evt:ip:${ip}`, 300, 5)) {
+      if (!(await takeToken(`evt:ip:${ip}`, 300, 5))) {
         return res.status(429).json({ message: "Too many events" });
       }
 
       // 3) Dedupe: scroll milestones / page views must not double-count.
       // Key on (session, type, path, value) within 5s.
       const dedupeKey = `evt:${d.sessionId}:${d.eventType}:${d.path ?? ""}:${d.value ?? ""}:${d.leadId ?? ""}`;
-      if (seenRecently(dedupeKey, 5_000)) {
+      if (await seenRecently(dedupeKey, 5_000)) {
         return res.json({ ok: true, deduped: true });
       }
 
@@ -1179,7 +1179,7 @@ export async function registerRoutes(
       });
 
       // 6) Throttle MediScore recomputes to at most once every 30s per lead.
-      if (leadId && throttleFire(`mediscore:${leadId}`, 30_000)) {
+      if (leadId && (await throttleFire(`mediscore:${leadId}`, 30_000))) {
         recomputeAndPersistMediScore(leadId).catch(() => {});
       }
       res.json({ ok: true });
