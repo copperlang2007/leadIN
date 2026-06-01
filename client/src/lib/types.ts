@@ -52,6 +52,10 @@ export interface Lead {
   piiGated?: boolean;
   // Phase 4 signal enrichment
   dncFlagged?: boolean;
+  // Wave 2: TrustedForm / Jornaya server-side verification
+  tcpaVerifiedAt: string | null;
+  tcpaCertId: string | null;
+  tcpaVerifiedSource: string | null;
   mediscore?: number;
   mediscoreSignals?: {
     score: number;

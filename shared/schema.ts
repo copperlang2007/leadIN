@@ -632,6 +632,7 @@ export const vendorLeadIngestSchema = z.object({
   gender: z.enum(["M", "F"]).optional(),
   smoker: z.boolean().optional(),
   verified: z.boolean().optional(),
+  trustedFormCertUrl: z.string().url().optional(),
 });
 
 export type VendorLeadIngest = z.infer<typeof vendorLeadIngestSchema>;
