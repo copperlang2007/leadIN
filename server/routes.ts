@@ -15,6 +15,7 @@ import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
 import { checkDnc } from "./dncCompliance";
+import { verifyTrustedFormCert } from "./trustedForm";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
@@ -599,6 +600,25 @@ export async function registerRoutes(
       // Phase 4: run DNC check before listing
       const dnc = await checkDnc(data.consumerPhone);
 
+      // Wave 2: verify TrustedForm cert (when supplied by the vendor).
+      // If verification fails or no key is configured the lead is listed as
+      // "vendor-claimed" rather than "verified".
+      let tcpa: {
+        tcpaVerifiedAt: Date | null;
+        tcpaCertId: string | null;
+        tcpaVerifiedSource: string | null;
+      } = { tcpaVerifiedAt: null, tcpaCertId: null, tcpaVerifiedSource: null };
+      if (data.trustedFormCertUrl) {
+        const result = await verifyTrustedFormCert(data.trustedFormCertUrl);
+        if (result.ok && result.certId) {
+          tcpa = {
+            tcpaVerifiedAt: new Date(),
+            tcpaCertId: result.certId,
+            tcpaVerifiedSource: "trustedform",
+          };
+        }
+      }
+
       const lead = await storage.createLead({
         vendorId: vendor.id,
         // Phase 3: route the lead to the org tied to the API key (if any)
@@ -624,6 +644,7 @@ export async function registerRoutes(
         sold: false,
         dncFlagged: dnc.flagged,
         dncCheckedAt: new Date(),
+        ...tcpa,
       });
 
       // Compute initial MediScore and persist (non-blocking would also be fine,

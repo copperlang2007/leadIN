@@ -114,11 +114,15 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
         <DialogHeader>
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <Badge variant="outline">{lead.type}</Badge>
-            {lead.verified && (
+            {lead.tcpaVerifiedAt ? (
               <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 border-emerald-500/20">
-                <CheckCircle2 className="h-3 w-3 mr-1" /> Verified & Compliant
+                <CheckCircle2 className="h-3 w-3 mr-1" /> TrustedForm verified
               </Badge>
-            )}
+            ) : lead.verified ? (
+              <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/25 border-amber-500/20">
+                <CheckCircle2 className="h-3 w-3 mr-1" /> Vendor-claimed (unverified)
+              </Badge>
+            ) : null}
             {isPurchased && (
               <Badge className="bg-blue-500/15 text-blue-700 border-blue-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> Purchased
