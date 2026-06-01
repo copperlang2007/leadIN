@@ -2,11 +2,12 @@ import * as client from "openid-client";
 import { Strategy, type VerifyFunction } from "openid-client/passport";
 
 import passport from "passport";
-import session from "express-session";
+import session, { type Store } from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 import { storage } from "./storage";
+import { pool } from "./db";
 
 const getOidcConfig = memoize(
   async () => {
@@ -18,18 +19,27 @@ const getOidcConfig = memoize(
   { maxAge: 3600 * 1000 }
 );
 
-export function getSession() {
+// Lazily-built session store. Exported so the WebSocket upgrade handler can
+// look sessions up directly by sid without re-creating its own store.
+let cachedSessionStore: Store | null = null;
+export function getSessionStore(): Store {
+  if (cachedSessionStore) return cachedSessionStore;
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
+  cachedSessionStore = new pgStore({
+    pool,
     createTableIfMissing: false,
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  return cachedSessionStore;
+}
+
+export function getSession() {
+  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   return session({
     secret: process.env.SESSION_SECRET!,
-    store: sessionStore,
+    store: getSessionStore(),
     resave: false,
     saveUninitialized: false,
     cookie: {
