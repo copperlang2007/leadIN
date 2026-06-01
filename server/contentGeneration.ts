@@ -1,6 +1,6 @@
-import cron from "node-cron";
 import { storage } from "./storage";
 import { getTopOpportunityKeywords } from "./seoSignals";
+import { registerCron } from "./lib/cronRegistry";
 
 const ARTICLE_TOPICS = [
   {
@@ -276,15 +276,14 @@ async function pingSitemapToGoogle(): Promise<void> {
 }
 
 export function startContentEngine(): void {
-  cron.schedule("0 9 * * *", async () => {
-    console.log("[content-engine] Daily cron triggered.");
-    try {
+  registerCron({
+    name: "content-generation-daily",
+    schedule: "0 9 * * *",
+    fn: async () => {
+      console.log("[content-engine] Daily cron triggered.");
       await generateAndPublishArticle();
-    } catch (err) {
-      console.error("[content-engine] Cron error:", err);
-    }
+    },
   });
-  console.log("[content-engine] Scheduled daily article generation at 09:00.");
 }
 
 export { generateAndPublishArticle, slugify };

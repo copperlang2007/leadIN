@@ -3,11 +3,11 @@
 // No-op when neither SENDGRID_API_KEY nor RESEND_API_KEY is configured —
 // keeps dev/CI quiet.
 
-import cron from "node-cron";
 import { db } from "./db";
 import { and, eq, gte, sql, count, inArray } from "drizzle-orm";
 import { leads, orders, leadAssignments, orgMembers, users, organizations } from "@shared/schema";
 import { sendEmail } from "./emailNotifications";
+import { registerCron } from "./lib/cronRegistry";
 
 interface OrgDigest {
   orgName: string;
@@ -93,9 +93,9 @@ export async function runDailyDigest(): Promise<{ orgsScanned: number; emailsSen
 
 export function startEmailDigestCron(): void {
   // 08:00 UTC — late evening US, fresh data for the next morning's stand-up.
-  cron.schedule("0 8 * * *", async () => {
-    try { await runDailyDigest(); }
-    catch (err) { console.error("[email-digest] cron error:", err); }
+  registerCron({
+    name: "email-digest",
+    schedule: "0 8 * * *",
+    fn: async () => { await runDailyDigest(); },
   });
-  console.log("[email-digest] scheduled daily 08:00 UTC");
 }

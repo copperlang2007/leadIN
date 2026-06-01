@@ -47,6 +47,7 @@ import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "dr
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import { withTxAdvisoryLock } from "./lib/lock";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -916,97 +917,124 @@ export class DatabaseStorage implements IStorage {
   // Returns the assignment record, or null if no agent qualifies.
   // ──────────────────────────────────────────────────────
   async routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null> {
-    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
-    if (!lead || lead.sold || lead.removed) return null;
-    if (lead.assignedToUserId) return null; // already routed
-    if (!lead.orgId) return null; // global pool leads aren't auto-routed
+    // Pre-check outside the transaction. These reads are advisory — the
+    // authoritative checks happen inside the lock below. Keeping them here
+    // is a cheap fast-path that avoids opening a tx for obvious no-ops.
+    const [preLead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!preLead || preLead.sold || preLead.removed) return null;
+    if (preLead.assignedToUserId) return null; // already routed
+    if (!preLead.orgId) return null; // global pool leads aren't auto-routed
 
-    const [org] = await db.select().from(organizations).where(eq(organizations.id, lead.orgId));
-    if (!org) return null;
-
-    // Gate: orgs without active billing don't get auto-routing.
-    if (org.billingMode !== "per_lead" && org.subscriptionStatus !== "active") return null;
-
-    if ((lead.compatibilityScore ?? 0) < org.routingScoreThreshold) return null;
-
-    // Find eligible agents for this org
-    const candidates = await db
-      .select()
-      .from(agentProfiles)
-      .leftJoin(users, eq(agentProfiles.userId, users.id))
-      .where(
-        and(
-          eq(agentProfiles.orgId, lead.orgId),
-          eq(agentProfiles.acceptingLeads, true),
-          eq(agentProfiles.verificationStatus, "verified"),
-        ),
-      );
-
-    // Hydrate candidates with their open-lead count, then delegate to the
-    // pure ranker. The N+1 here is intentional and bounded by org size.
-    const hydrated: AgentCandidate[] = [];
-    for (const row of candidates) {
-      if (!row.users) continue;
-      const ap = row.agent_profiles;
-      const [openCountRow] = await db
-        .select({ count: count() })
-        .from(leads)
-        .where(
-          and(
-            eq(leads.assignedToUserId, row.users.id),
-            eq(leads.sold, false),
-            eq(leads.removed, false),
-          ),
-        );
-      hydrated.push({
-        userId: row.users.id,
-        licensedStates: ap.licensedStates,
-        appointedCarriers: ap.appointedCarriers,
-        territoryZips: ap.territoryZips,
-        territoryCounties: ap.territoryCounties,
-        capacityLimit: ap.capacityLimit,
-        openLeadCount: Number(openCountRow?.count ?? 0),
-        conversionRate: parseFloat(ap.conversionRate ?? "0"),
-        acceptingLeads: ap.acceptingLeads,
-        verified: ap.verificationStatus === "verified",
-      });
-    }
-
-    const best = rankCandidates(
-      {
-        state: lead.state,
-        zipCode: lead.zipCode,
-        source: lead.source,
-        compatibilityScore: lead.compatibilityScore ?? 50,
-      },
-      hydrated,
-    );
-
-    if (!best) return null;
-
+    // Serialize assignment per-org. Two concurrent ingests in the same
+    // org used to be able to read identical open-lead counts and both
+    // pick the same agent, blowing through capacity. We now take a
+    // transaction-scoped advisory lock keyed on the org so the entire
+    // enumerate → rank → assign cycle runs sequentially per org.
     return await db.transaction(async (tx) => {
-      // Re-check assignment status under transaction to avoid double-assign races
-      const [fresh] = await tx.select().from(leads).where(eq(leads.id, leadId)).for("update");
-      if (!fresh || fresh.assignedToUserId || fresh.sold || fresh.removed) return null;
+      return await withTxAdvisoryLock(tx, `route:${preLead.orgId}`, async () => {
+        // Re-fetch the lead under FOR UPDATE inside the lock. State may
+        // have changed between the pre-check and lock acquisition.
+        const [lead] = await tx
+          .select()
+          .from(leads)
+          .where(eq(leads.id, leadId))
+          .for("update");
+        if (!lead || lead.sold || lead.removed) return null;
+        if (lead.assignedToUserId) return null;
+        if (!lead.orgId) return null;
 
-      await tx
-        .update(leads)
-        .set({ assignedToUserId: best.userId, assignedAt: new Date() })
-        .where(eq(leads.id, leadId));
+        const [org] = await tx
+          .select()
+          .from(organizations)
+          .where(eq(organizations.id, lead.orgId));
+        if (!org) return null;
 
-      const [assignment] = await tx
-        .insert(leadAssignments)
-        .values({
-          leadId,
-          orgId: lead.orgId!,
-          agentUserId: best.userId,
-          matchScore: best.score,
-          reason: best.reasons.join(", "),
-          status: "assigned",
-        })
-        .returning();
+        // Gate: orgs without active billing don't get auto-routing.
+        if (
+          org.billingMode !== "per_lead" &&
+          org.subscriptionStatus !== "active"
+        )
+          return null;
 
-      return assignment;
+        if ((lead.compatibilityScore ?? 0) < org.routingScoreThreshold)
+          return null;
+
+        // Find eligible agents for this org
+        const candidates = await tx
+          .select()
+          .from(agentProfiles)
+          .leftJoin(users, eq(agentProfiles.userId, users.id))
+          .where(
+            and(
+              eq(agentProfiles.orgId, lead.orgId),
+              eq(agentProfiles.acceptingLeads, true),
+              eq(agentProfiles.verificationStatus, "verified"),
+            ),
+          );
+
+        // Hydrate candidates with their open-lead count, then delegate to the
+        // pure ranker. The N+1 here is intentional and bounded by org size.
+        // Counts are read inside the same tx + advisory lock so concurrent
+        // assigners for this org cannot observe a stale view.
+        const hydrated: AgentCandidate[] = [];
+        for (const row of candidates) {
+          if (!row.users) continue;
+          const ap = row.agent_profiles;
+          const [openCountRow] = await tx
+            .select({ count: count() })
+            .from(leads)
+            .where(
+              and(
+                eq(leads.assignedToUserId, row.users.id),
+                eq(leads.sold, false),
+                eq(leads.removed, false),
+              ),
+            );
+          hydrated.push({
+            userId: row.users.id,
+            licensedStates: ap.licensedStates,
+            appointedCarriers: ap.appointedCarriers,
+            territoryZips: ap.territoryZips,
+            territoryCounties: ap.territoryCounties,
+            capacityLimit: ap.capacityLimit,
+            openLeadCount: Number(openCountRow?.count ?? 0),
+            conversionRate: parseFloat(ap.conversionRate ?? "0"),
+            acceptingLeads: ap.acceptingLeads,
+            verified: ap.verificationStatus === "verified",
+          });
+        }
+
+        const best = rankCandidates(
+          {
+            state: lead.state,
+            zipCode: lead.zipCode,
+            source: lead.source,
+            compatibilityScore: lead.compatibilityScore ?? 50,
+          },
+          hydrated,
+        );
+
+        if (!best) return null;
+
+        await tx
+          .update(leads)
+          .set({ assignedToUserId: best.userId, assignedAt: new Date() })
+          .where(eq(leads.id, leadId));
+
+        const [assignment] = await tx
+          .insert(leadAssignments)
+          .values({
+            leadId,
+            orgId: lead.orgId!,
+            agentUserId: best.userId,
+            matchScore: best.score,
+            reason: best.reasons.join(", "),
+            status: "assigned",
+          })
+          .returning();
+
+        return assignment;
+      });
     });
   }
 
