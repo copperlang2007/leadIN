@@ -12,3 +12,13 @@ if (!process.env.DATABASE_URL) {
 
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool, { schema });
+
+// Close the PG pool during graceful shutdown. Resolves even if the underlying
+// pool throws — we never want a stuck pool to block process exit.
+export async function closePool(): Promise<void> {
+  try {
+    await pool.end();
+  } catch {
+    // ignore — best-effort during shutdown
+  }
+}
