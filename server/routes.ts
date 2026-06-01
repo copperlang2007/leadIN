@@ -1463,6 +1463,56 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
+  // Vendor payouts (admin)
+  // ──────────────────────────────────────────────────────
+
+  // Snapshot of every vendor's running pending + paid balances.
+  app.get("/api/admin/vendor-balances", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const balances = await storage.getVendorBalances();
+      res.json(balances);
+    } catch (err: any) {
+      console.error("Vendor balances error:", err);
+      res.status(500).json({ message: err.message || "Failed to fetch vendor balances" });
+    }
+  });
+
+  // Sweep all vendors above the threshold into a payout (marks paid).
+  // Real Stripe Connect transfer is TODO — this just moves pending → paid
+  // and writes a debit row to `vendor_payouts`.
+  app.post("/api/admin/vendor-payouts/sweep", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const raw = req.body?.thresholdCents;
+      const threshold = Number.isFinite(Number(raw)) ? Math.max(0, Math.floor(Number(raw))) : 5000;
+      const result = await storage.sweepVendorPayouts(threshold);
+      res.json(result);
+    } catch (err: any) {
+      console.error("Vendor payout sweep error:", err);
+      res.status(500).json({ message: err.message || "Sweep failed" });
+    }
+  });
+
+  // Per-vendor ledger view (recent payouts).
+  app.get("/api/admin/vendor-payouts/:vendorId", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const vendorId = parseInt(req.params.vendorId, 10);
+      if (!Number.isFinite(vendorId)) return res.status(400).json({ message: "Invalid vendorId" });
+      const limit = Math.max(1, Math.min(200, parseInt(String(req.query.limit ?? "50"), 10) || 50));
+      const log = await storage.getVendorPayoutLog(vendorId, limit);
+      res.json(log);
+    } catch (err: any) {
+      console.error("Vendor payout log error:", err);
+      res.status(500).json({ message: err.message || "Failed to fetch payout log" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
   // Content Engine API
   // ──────────────────────────────────────────────────────
 

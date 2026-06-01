@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy } from "lucide-react";
+import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy, Banknote } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -21,6 +21,12 @@ interface Vendor {
   verified: boolean;
 }
 
+interface VendorBalanceRow {
+  vendor: { id: number; name: string; verified: boolean };
+  pendingCents: number;
+  paidCents: number;
+}
+
 interface OrgAgent {
   userId: string;
   orgId: string;
@@ -34,6 +40,11 @@ interface OrgAgent {
   licenseDocumentUrl: string | null;
   openLeads: number;
   user: { id: string; email: string | null; firstName: string | null; lastName: string | null };
+}
+
+function formatCents(cents: number): string {
+  const dollars = (cents || 0) / 100;
+  return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
 export default function OrgAdmin() {
@@ -57,6 +68,34 @@ export default function OrgAdmin() {
 
   const [selectedVendor, setSelectedVendor] = useState<string>("");
   const [mintedKey, setMintedKey] = useState<string | null>(null);
+
+  const isPlatformAdmin = user?.role === "admin";
+
+  const { data: vendorBalances = [], isLoading: balancesLoading } = useQuery<VendorBalanceRow[]>({
+    queryKey: ["/api/admin/vendor-balances"],
+    enabled: isPlatformAdmin,
+  });
+
+  const sweepMutation = useMutation({
+    mutationFn: async (thresholdCents: number) => {
+      const res = await fetch("/api/admin/vendor-payouts/sweep", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thresholdCents }),
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Sweep failed");
+      return res.json() as Promise<{ vendorsPaid: number; totalCentsSwept: number }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/vendor-balances"] });
+      toast({
+        title: "Sweep complete",
+        description: `Paid out ${data.vendorsPaid} vendor${data.vendorsPaid === 1 ? "" : "s"} (${formatCents(data.totalCentsSwept)}).`,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Sweep failed", description: e.message, variant: "destructive" }),
+  });
 
   const mintKeyMutation = useMutation({
     mutationFn: async () => {
@@ -298,6 +337,68 @@ export default function OrgAdmin() {
             </p>
           </CardContent>
         </Card>
+
+        {isPlatformAdmin && (
+          <Card data-testid="card-vendor-payouts">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Banknote className="h-5 w-5" /> Vendor payouts
+              </CardTitle>
+              <CardDescription>
+                Pending revenue share owed to each vendor. The Sweep button marks balances at or above $50 as paid
+                (real Stripe Connect transfers will land here later).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() => sweepMutation.mutate(5000)}
+                  disabled={sweepMutation.isPending}
+                  data-testid="button-sweep-vendor-payouts"
+                >
+                  {sweepMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Banknote className="h-4 w-4 mr-2" />
+                  )}
+                  Sweep ≥ $50
+                </Button>
+              </div>
+              {balancesLoading ? (
+                <Skeleton className="h-32" />
+              ) : vendorBalances.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-6 text-center">No vendors yet.</p>
+              ) : (
+                <div className="space-y-1">
+                  <div className="grid grid-cols-12 gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
+                    <div className="col-span-6">Vendor</div>
+                    <div className="col-span-3 text-right">Pending</div>
+                    <div className="col-span-3 text-right">Paid</div>
+                  </div>
+                  {vendorBalances.map((row) => (
+                    <div
+                      key={row.vendor.id}
+                      className="grid grid-cols-12 gap-2 items-center border rounded-md px-2 py-2 text-sm"
+                      data-testid={`row-vendor-balance-${row.vendor.id}`}
+                    >
+                      <div className="col-span-6 truncate">
+                        {row.vendor.name}
+                        {row.vendor.verified && <span className="ml-1 text-emerald-600">✓</span>}
+                      </div>
+                      <div className="col-span-3 text-right font-mono" data-testid={`text-pending-${row.vendor.id}`}>
+                        {formatCents(row.pendingCents)}
+                      </div>
+                      <div className="col-span-3 text-right font-mono text-muted-foreground">
+                        {formatCents(row.paidCents)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </Layout>
   );
