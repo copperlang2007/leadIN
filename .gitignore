@@ -11,3 +11,5 @@ vite.config.ts.*
 .vite
 .cache
 coverage
+.claude/
+.ci-migrations/
