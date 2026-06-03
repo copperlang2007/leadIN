@@ -111,7 +111,7 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-3xl w-[95vw] md:w-full max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <Badge variant="outline">{lead.type}</Badge>
