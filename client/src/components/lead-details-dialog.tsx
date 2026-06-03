@@ -14,6 +14,7 @@ import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { setTrackerLeadId, trackEvent } from "@/lib/tracker";
+import { SaveToListPopover } from "@/components/save-to-list-popover";
 
 interface LeadDetailsDialogProps {
   lead: Lead | null;
@@ -143,6 +144,9 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
                 <AlertTriangle className="h-3 w-3 mr-1" /> DNC flagged
               </Badge>
             )}
+            <div className="ml-auto">
+              <SaveToListPopover leadId={lead.id} />
+            </div>
           </div>
           <DialogTitle className="text-2xl font-display font-bold flex items-center justify-between">
             <span>Lead #{lead.id}</span>

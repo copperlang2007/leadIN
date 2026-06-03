@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import { WebSocketProvider } from "@/hooks/useWebSocketContext";
+import { ErrorBoundary } from "@/components/error-boundary";
 import NotFound from "@/pages/not-found";
 import Marketplace from "@/pages/marketplace";
 import Landing from "@/pages/landing";
@@ -63,9 +64,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <WebSocketProvider>
-          <Router />
-        </WebSocketProvider>
+        <ErrorBoundary>
+          <WebSocketProvider>
+            <Router />
+          </WebSocketProvider>
+        </ErrorBoundary>
       </TooltipProvider>
     </QueryClientProvider>
   );
