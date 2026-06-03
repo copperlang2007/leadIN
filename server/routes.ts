@@ -934,6 +934,35 @@ export async function registerRoutes(
     }
   });
 
+  // Agent self-service: update capacity and accepting-leads toggle without
+  // re-running the full onboarding flow.
+  app.patch("/api/agent/me", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const profile = await storage.getAgentProfile(userId);
+      if (!profile) return res.status(404).json({ message: "No agent profile" });
+
+      const schema = z.object({
+        capacityLimit: z.number().int().min(1).max(500).optional(),
+        acceptingLeads: z.boolean().optional(),
+      }).refine(
+        (v) => v.capacityLimit !== undefined || v.acceptingLeads !== undefined,
+        { message: "Provide capacityLimit and/or acceptingLeads" },
+      );
+
+      const validation = schema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+
+      const updated = await storage.updateAgentCapacity(userId, validation.data);
+      res.json(updated);
+    } catch (err) {
+      console.error("Error updating agent capacity:", err);
+      res.status(500).json({ message: "Failed to update agent settings" });
+    }
+  });
+
   // Agent accepts or declines an assignment. On decline the engine re-routes.
   app.patch("/api/agent/assignments/:id", isAuthenticated, async (req: any, res) => {
     try {
