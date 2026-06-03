@@ -18,8 +18,11 @@
 //      the org (its members, agent_profiles, leads.orgId → set null, etc.
 //      cascade via FK). If there are other owners, just remove this user's
 //      org_members row.
-//   7. Delete the user row last. FK cascades handle anything else still
-//      pointing at the user (orders, lead_assignments, etc.).
+//   7. Delete the user row last. FK behaviour on remaining audit-trail
+//      tables (orders, lead_assignments, notifications,
+//      stripe_checkout_sessions, lead_disputes) is ON DELETE SET NULL —
+//      the rows survive with their user_id nulled out so revenue and
+//      audit history stay intact.
 //
 // The DB layer is injected via `GdprStore` so the unit test can run
 // without a live Postgres.
@@ -159,7 +162,10 @@ export async function deleteAccount(userId: string): Promise<DeleteAccountResult
       .returning({ id: orgMembers.id });
     deletedRows.orgMemberships = memberRows.length;
 
-    // 7. The user row last. FK cascades on remaining tables fire here.
+    // 7. The user row last. Remaining audit-trail tables (orders,
+    // lead_assignments, notifications, stripe_checkout_sessions,
+    // lead_disputes, admin_audit_log) have ON DELETE SET NULL on the
+    // user FK, so their rows persist with user_id = NULL.
     const userRows = await tx
       .delete(users)
       .where(eq(users.id, userId))

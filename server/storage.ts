@@ -1760,18 +1760,23 @@ export class DatabaseStorage implements IStorage {
         .returning();
 
       // 2) Credit buyer's wallet — Decimal math, no float drift.
+      // If buyerUserId is null (the buyer was GDPR-deleted), skip the wallet
+      // credit; the vendor is still debited so the ledger stays consistent.
       if (finalRefundCents > 0) {
-        const [buyer] = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, dispute.buyerUserId))
-          .for("update");
-        if (buyer) {
-          const newBalance = addRefundToBalance(buyer.balance, finalRefundCents);
-          await tx
-            .update(users)
-            .set({ balance: newBalance, updatedAt: new Date() })
-            .where(eq(users.id, dispute.buyerUserId));
+        const buyerUserId = dispute.buyerUserId;
+        if (buyerUserId) {
+          const [buyer] = await tx
+            .select()
+            .from(users)
+            .where(eq(users.id, buyerUserId))
+            .for("update");
+          if (buyer) {
+            const newBalance = addRefundToBalance(buyer.balance, finalRefundCents);
+            await tx
+              .update(users)
+              .set({ balance: newBalance, updatedAt: new Date() })
+              .where(eq(users.id, buyerUserId));
+          }
         }
 
         // 3) Debit the vendor at rev-share fraction; remainder is platform write-off.

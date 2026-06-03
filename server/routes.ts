@@ -124,7 +124,7 @@ export async function registerRoutes(
           // Wallet top-up
           const amountPaid = session.amount_total / 100;
           const ourSession = await storage.getStripeSession(stripeSessionId);
-          if (ourSession && ourSession.status === "pending") {
+          if (ourSession && ourSession.status === "pending" && ourSession.userId) {
             await storage.creditUserFromStripe(ourSession.userId, stripeSessionId, amountPaid);
             console.log(`Credited $${amountPaid} to user ${ourSession.userId} via Stripe session ${stripeSessionId}`);
           }
@@ -901,7 +901,7 @@ export async function registerRoutes(
       // Fire the routing engine (no-op if lead has no org, or score below threshold)
       storage.routeLeadToBestAgent(lead.id)
         .then(assignment => {
-          if (assignment) {
+          if (assignment && assignment.agentUserId) {
             broadcastLeadAssignment({
               agentUserId: assignment.agentUserId,
               leadId: assignment.leadId,
@@ -1200,7 +1200,7 @@ export async function registerRoutes(
       if (status === "declined") {
         storage.routeLeadToBestAgent(updated.leadId)
           .then(next => {
-            if (next) {
+            if (next && next.agentUserId) {
               broadcastLeadAssignment({
                 agentUserId: next.agentUserId,
                 leadId: next.leadId,
