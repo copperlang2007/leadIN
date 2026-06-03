@@ -40,6 +40,7 @@ export default function Marketplace() {
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [selectedStates, setSelectedStates] = useState<string[]>([]);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [newLeadIds, setNewLeadIds] = useState<Set<number>>(new Set());
   const [includeDnc, setIncludeDnc] = useState(false);
   const [sortBy, setSortBy] = useState<"relevance" | "mediscore" | "price_asc" | "price_desc" | "newest">("relevance");
@@ -192,12 +193,110 @@ export default function Marketplace() {
 
   const isPurchased = detailsLead ? purchasedLeadIds.has(detailsLead.id) : false;
 
+  // Shared filter rail content — rendered both in the desktop sidebar and the
+  // mobile Drawer so the two stay in lockstep.
+  const FilterRailContent = ({ onApply }: { onApply?: () => void }) => (
+    <>
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-lg flex items-center gap-2">
+          <Filter className="h-4 w-4" /> Filters
+        </h3>
+        {(selectedTypes.length > 0 || selectedStates.length > 0) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-auto p-0 text-muted-foreground hover:text-foreground"
+            onClick={() => { setSelectedTypes([]); setSelectedStates([]); }}
+          >
+            Clear all
+          </Button>
+        )}
+      </div>
+
+      <Accordion type="multiple" defaultValue={["type", "state", "price"]} className="w-full">
+
+        <AccordionItem value="type" className="border-b-0 mb-4">
+          <AccordionTrigger className="hover:no-underline py-2 font-medium">Lead Type</AccordionTrigger>
+          <AccordionContent>
+            <div className="space-y-3 pt-1">
+              {["Medicare Advantage", "Medicare Supplement", "Final Expense"].map((type) => (
+                <div key={type} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`type-${type}`}
+                    checked={selectedTypes.includes(type)}
+                    onCheckedChange={() => toggleType(type)}
+                  />
+                  <Label htmlFor={`type-${type}`} className="text-sm font-normal cursor-pointer">
+                    {type}
+                  </Label>
+                </div>
+              ))}
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem value="state" className="border-b-0 mb-4">
+          <AccordionTrigger className="hover:no-underline py-2 font-medium">State</AccordionTrigger>
+          <AccordionContent>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              {["FL", "TX", "CA", "AZ", "NC", "SC", "OH", "MI"].map((state) => {
+                const isLicensed = licensedStates.includes(state);
+                return (
+                  <div key={state} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`state-${state}`}
+                      checked={selectedStates.includes(state)}
+                      onCheckedChange={() => toggleState(state)}
+                    />
+                    <Label
+                      htmlFor={`state-${state}`}
+                      className={`text-sm font-normal cursor-pointer flex items-center gap-1 ${isLicensed ? "text-success font-medium" : ""}`}
+                    >
+                      {state} {isLicensed && <span className="w-1.5 h-1.5 rounded-full bg-success"></span>}
+                    </Label>
+                  </div>
+                );
+              })}
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        <AccordionItem value="price" className="border-b-0">
+          <AccordionTrigger className="hover:no-underline py-2 font-medium">Price Range</AccordionTrigger>
+          <AccordionContent>
+            <div className="pt-4 px-2">
+              <Slider
+                defaultValue={[0, 100]}
+                max={150}
+                step={5}
+                value={priceRange}
+                onValueChange={setPriceRange}
+                className="mb-4"
+              />
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <span>${priceRange[0]}</span>
+                <span>${priceRange[1]}</span>
+              </div>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+      </Accordion>
+
+      {onApply && (
+        <Button className="w-full mt-2" onClick={onApply} data-testid="button-apply-mobile-filters">
+          Apply filters
+        </Button>
+      )}
+    </>
+  );
+
   return (
     <Layout>
       <div className="flex flex-col gap-6">
 
         {/* Hero / Promo Section */}
-        <div className="relative rounded-xl overflow-hidden min-h-[160px] flex items-center px-8 shadow-sm">
+        <div className="relative rounded-xl overflow-hidden min-h-[160px] flex items-center px-4 sm:px-8 py-6 shadow-sm">
           <div
             className="absolute inset-0 z-0"
             style={{
@@ -208,11 +307,11 @@ export default function Marketplace() {
             }}
           />
           <div className="relative z-10 text-white max-w-2xl">
-            <h1 className="text-3xl font-display font-bold mb-2">Verified High-Intent Leads</h1>
-            <p className="text-white/80 text-lg">
+            <h1 className="text-2xl sm:text-3xl font-display font-bold mb-2 break-words">Verified High-Intent Leads</h1>
+            <p className="text-white/80 text-base sm:text-lg">
               Access real-time Medicare Advantage shoppers. Validated by TrustedForm™.
             </p>
-            <div className="mt-4 flex gap-3">
+            <div className="mt-4 flex gap-2 flex-wrap">
               <Badge className="bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 border-emerald-500/50 backdrop-blur-sm">
                 98% Contact Rate
               </Badge>
@@ -248,98 +347,50 @@ export default function Marketplace() {
 
         <div className="flex flex-col md:flex-row gap-6 items-start">
 
-          {/* Filters Sidebar */}
-          <div className="w-full md:w-64 flex-shrink-0 space-y-6 sticky top-24">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-lg flex items-center gap-2">
-                <Filter className="h-4 w-4" /> Filters
-              </h3>
-              {(selectedTypes.length > 0 || selectedStates.length > 0) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-auto p-0 text-muted-foreground hover:text-foreground"
-                  onClick={() => { setSelectedTypes([]); setSelectedStates([]); }}
-                >
-                  Clear all
-                </Button>
-              )}
-            </div>
-
-            <Accordion type="multiple" defaultValue={["type", "state", "price"]} className="w-full">
-
-              <AccordionItem value="type" className="border-b-0 mb-4">
-                <AccordionTrigger className="hover:no-underline py-2 font-medium">Lead Type</AccordionTrigger>
-                <AccordionContent>
-                  <div className="space-y-3 pt-1">
-                    {["Medicare Advantage", "Medicare Supplement", "Final Expense"].map((type) => (
-                      <div key={type} className="flex items-center space-x-2">
-                        <Checkbox
-                          id={`type-${type}`}
-                          checked={selectedTypes.includes(type)}
-                          onCheckedChange={() => toggleType(type)}
-                        />
-                        <Label htmlFor={`type-${type}`} className="text-sm font-normal cursor-pointer">
-                          {type}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-              <AccordionItem value="state" className="border-b-0 mb-4">
-                <AccordionTrigger className="hover:no-underline py-2 font-medium">State</AccordionTrigger>
-                <AccordionContent>
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    {["FL", "TX", "CA", "AZ", "NC", "SC", "OH", "MI"].map((state) => {
-                      const isLicensed = licensedStates.includes(state);
-                      return (
-                        <div key={state} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={`state-${state}`}
-                            checked={selectedStates.includes(state)}
-                            onCheckedChange={() => toggleState(state)}
-                          />
-                          <Label
-                            htmlFor={`state-${state}`}
-                            className={`text-sm font-normal cursor-pointer flex items-center gap-1 ${isLicensed ? "text-success font-medium" : ""}`}
-                          >
-                            {state} {isLicensed && <span className="w-1.5 h-1.5 rounded-full bg-success"></span>}
-                          </Label>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-              <AccordionItem value="price" className="border-b-0">
-                <AccordionTrigger className="hover:no-underline py-2 font-medium">Price Range</AccordionTrigger>
-                <AccordionContent>
-                  <div className="pt-4 px-2">
-                    <Slider
-                      defaultValue={[0, 100]}
-                      max={150}
-                      step={5}
-                      value={priceRange}
-                      onValueChange={setPriceRange}
-                      className="mb-4"
-                    />
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>${priceRange[0]}</span>
-                      <span>${priceRange[1]}</span>
-                    </div>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-
-            </Accordion>
+          {/* Filters Sidebar — desktop only. Mobile uses the Drawer below. */}
+          <div className="hidden md:block w-full md:w-64 flex-shrink-0 space-y-6 sticky top-24">
+            <FilterRailContent />
           </div>
 
           {/* Listings Grid */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-4">
+          <div className="flex-1 min-w-0 w-full">
+            {/* Mobile filter trigger */}
+            <div className="md:hidden mb-3">
+              <Drawer open={isFiltersOpen} onOpenChange={setIsFiltersOpen}>
+                <DrawerTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-full gap-2 h-11"
+                    data-testid="button-mobile-filters"
+                  >
+                    <Filter className="h-4 w-4" /> Filters
+                    {(selectedTypes.length + selectedStates.length) > 0 && (
+                      <Badge variant="secondary" className="ml-1">
+                        {selectedTypes.length + selectedStates.length}
+                      </Badge>
+                    )}
+                  </Button>
+                </DrawerTrigger>
+                <DrawerContent className="max-h-[85vh]">
+                  <DrawerHeader className="text-left">
+                    <DrawerTitle>Filters</DrawerTitle>
+                    <DrawerDescription>
+                      Narrow the marketplace to leads that match your book.
+                    </DrawerDescription>
+                  </DrawerHeader>
+                  <div className="px-4 pb-2 overflow-y-auto space-y-4">
+                    <FilterRailContent onApply={() => setIsFiltersOpen(false)} />
+                  </div>
+                  <DrawerFooter>
+                    <DrawerClose asChild>
+                      <Button variant="ghost">Close</Button>
+                    </DrawerClose>
+                  </DrawerFooter>
+                </DrawerContent>
+              </Drawer>
+            </div>
+
+            <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
               <div className="text-sm text-muted-foreground">
                 {isLoading ? (
                   <span>Loading...</span>

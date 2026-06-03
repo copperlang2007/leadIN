@@ -67,7 +67,10 @@ function AddFundsDialog({ open, onOpenChange }: AddFundsDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      {/* w-[95vw] keeps the dialog inside the viewport on 320px-wide phones;
+          max-h-[90vh]+overflow-y-auto ensures the "Proceed to Checkout" CTA
+          remains reachable when the iOS keyboard pushes the input upward. */}
+      <DialogContent className="max-w-md w-[95vw] sm:w-full max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <DollarSign className="h-5 w-5 text-primary" /> Add Funds to Wallet
@@ -373,7 +376,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <Sheet open={isMobileOpen} onOpenChange={setIsMobileOpen}>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="icon" className="md:hidden">
+                {/* iOS Safari + accessibility: tap targets should be >= 44x44px.
+                    size="icon" is 36px which fails Apple HIG; bump to h-11 w-11
+                    (44px) on the mobile-only trigger. */}
+                <Button variant="ghost" size="icon" className="md:hidden h-11 w-11">
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
