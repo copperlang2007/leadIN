@@ -8,6 +8,7 @@ import {
   createOrgSchema,
   agentOnboardingSchema,
   subscriptionCheckoutSchema,
+  createDisputeSchema,
 } from "@shared/schema";
 import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections } from "./websocket";
@@ -458,6 +459,173 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error exporting orders:", error);
       res.status(500).json({ message: "Failed to export orders" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Dispute Routes (Wave 4)
+  //
+  // Buyers file disputes on purchased leads. Admins approve (refunds the
+  // buyer wallet, debits the vendor proportionally) or deny.
+  // ──────────────────────────────────────────────────────
+  app.post("/api/orders/:orderId/dispute", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+
+      // Validate body. The orderId on the path is the source of truth — we
+      // pass it into the schema so the zod shape stays a single contract.
+      const parsed = createDisputeSchema.safeParse({
+        orderId,
+        reason: req.body?.reason,
+        notes: req.body?.notes,
+      });
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromError(parsed.error).toString() });
+      }
+
+      // Cheap rate limit — one dispute filing per order is the only sane
+      // shape, but throttle the path anyway in case of UI retry storms.
+      if (!(await takeToken(`dispute:${userId}`, 10, 5 / 60))) {
+        return res.status(429).json({ message: "Too many dispute attempts" });
+      }
+
+      const dispute = await storage.createDispute({
+        orderId: parsed.data.orderId,
+        buyerUserId: userId,
+        reason: parsed.data.reason,
+        notes: parsed.data.notes,
+      });
+      res.status(201).json(dispute);
+    } catch (err: any) {
+      if (/does not belong/i.test(err?.message ?? "")) {
+        return res.status(403).json({ message: err.message });
+      }
+      if (/not found/i.test(err?.message ?? "")) {
+        return res.status(404).json({ message: err.message });
+      }
+      console.error("Error creating dispute:", err);
+      res.status(500).json({ message: err?.message || "Failed to create dispute" });
+    }
+  });
+
+  app.get("/api/orders/:orderId/dispute", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+      const dispute = await storage.getDisputeByOrderId(orderId);
+      if (!dispute) return res.status(404).json({ message: "No dispute found" });
+
+      const user = await storage.getUser(userId);
+      const isAdminUser = user?.role === "admin";
+      if (!isAdminUser && dispute.buyerUserId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      res.json(dispute);
+    } catch (err: any) {
+      console.error("Error fetching dispute:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch dispute" });
+    }
+  });
+
+  app.get("/api/admin/disputes", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
+      const disputes = await storage.listDisputes({ status, limit });
+      res.json(disputes);
+    } catch (err: any) {
+      console.error("Error listing disputes:", err);
+      res.status(500).json({ message: err?.message || "Failed to list disputes" });
+    }
+  });
+
+  app.post("/api/admin/disputes/:id/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const disputeId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(disputeId) || disputeId <= 0) {
+        return res.status(400).json({ message: "Invalid dispute id" });
+      }
+      const refundCentsRaw = Number(req.body?.refundCents);
+      if (!Number.isFinite(refundCentsRaw) || refundCentsRaw < 0) {
+        return res.status(400).json({ message: "refundCents must be a non-negative integer" });
+      }
+      const refundCents = Math.floor(refundCentsRaw);
+
+      const updated = await storage.approveDispute(disputeId, userId, refundCents);
+
+      recordAudit({
+        actorUserId: userId,
+        action: "dispute.approve",
+        targetKind: "dispute",
+        targetId: String(disputeId),
+        metadata: {
+          orderId: updated.orderId,
+          refundCents: updated.refundCents,
+          requestedRefundCents: refundCents,
+        },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.json(updated);
+    } catch (err: any) {
+      if (/not found/i.test(err?.message ?? "")) {
+        return res.status(404).json({ message: err.message });
+      }
+      if (/cannot be approved|already/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      console.error("Error approving dispute:", err);
+      res.status(500).json({ message: err?.message || "Failed to approve dispute" });
+    }
+  });
+
+  app.post("/api/admin/disputes/:id/deny", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const disputeId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(disputeId) || disputeId <= 0) {
+        return res.status(400).json({ message: "Invalid dispute id" });
+      }
+
+      const updated = await storage.denyDispute(disputeId, userId);
+
+      recordAudit({
+        actorUserId: userId,
+        action: "dispute.deny",
+        targetKind: "dispute",
+        targetId: String(disputeId),
+        metadata: { orderId: updated.orderId },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.json(updated);
+    } catch (err: any) {
+      if (/not found/i.test(err?.message ?? "")) {
+        return res.status(404).json({ message: err.message });
+      }
+      if (/cannot be denied|already/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      console.error("Error denying dispute:", err);
+      res.status(500).json({ message: err?.message || "Failed to deny dispute" });
     }
   });
 
