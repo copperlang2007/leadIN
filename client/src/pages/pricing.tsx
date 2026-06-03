@@ -1,12 +1,23 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Check, ShieldCheck, Zap } from "lucide-react";
+import { Check, Loader2, ShieldCheck, Zap } from "lucide-react";
 import { Link } from "wouter";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
+
+type SubscriptionTier = "starter" | "growth" | "scale";
+
+interface OrgsResponse {
+  activeOrgId: string | null;
+  memberships: Array<{ orgId: string; role: string; org: unknown }>;
+}
 
 const TIERS = [
   {
-    id: "per_lead",
+    id: "per_lead" as const,
     name: "Pay per lead",
     price: "Wallet",
     cadence: "no monthly fee",
@@ -17,11 +28,10 @@ const TIERS = [
       "PII gated until purchase",
       "Multi-tenant org scoping",
     ],
-    cta: { label: "Add funds", href: "/" },
     highlight: false,
   },
   {
-    id: "starter",
+    id: "starter" as const,
     name: "Starter",
     price: "$99",
     cadence: "/ month",
@@ -32,11 +42,10 @@ const TIERS = [
       "WebSocket lead-arrival notifications",
       "Full per-lead wallet still active",
     ],
-    cta: { label: "Subscribe", href: "/org-admin" },
     highlight: false,
   },
   {
-    id: "growth",
+    id: "growth" as const,
     name: "Growth",
     price: "$299",
     cadence: "/ month",
@@ -47,11 +56,10 @@ const TIERS = [
       "MediScore signal breakdown per lead",
       "Vendor API key minting",
     ],
-    cta: { label: "Subscribe", href: "/org-admin" },
     highlight: true,
   },
   {
-    id: "scale",
+    id: "scale" as const,
     name: "Scale",
     price: "$799",
     cadence: "/ month",
@@ -62,12 +70,140 @@ const TIERS = [
       "Dedicated success contact",
       "Everything in Growth",
     ],
-    cta: { label: "Subscribe", href: "/org-admin" },
     highlight: false,
   },
 ];
 
 export default function Pricing() {
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { toast } = useToast();
+
+  const orgsQuery = useQuery<OrgsResponse>({
+    queryKey: ["/api/orgs"],
+    enabled: isAuthenticated,
+  });
+
+  const activeOrgId = orgsQuery.data?.activeOrgId ?? null;
+
+  const subscribe = useMutation({
+    mutationFn: async (tier: SubscriptionTier) => {
+      if (!activeOrgId) throw new Error("No active organization");
+      const res = await apiRequest(
+        "POST",
+        `/api/orgs/${activeOrgId}/subscription/checkout`,
+        { tier },
+      );
+      return (await res.json()) as { url: string };
+    },
+    onSuccess: (data) => {
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        toast({
+          title: "Subscription error",
+          description: "Stripe did not return a checkout URL.",
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Subscription error",
+        description: e.message || "Failed to start checkout",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Compute CTA per tier given the auth/org state.
+  const renderTierCta = (tierId: "per_lead" | SubscriptionTier, highlight: boolean) => {
+    const variant = highlight ? "default" : "outline";
+
+    // Pay-per-lead tier always routes to the wallet page; never a subscription.
+    if (tierId === "per_lead") {
+      return (
+        <Link href="/">
+          <Button className="w-full" variant={variant} data-track-cta={`pricing-${tierId}`}>
+            Add funds
+          </Button>
+        </Link>
+      );
+    }
+
+    // While we don't yet know if the user is signed in, render a disabled placeholder
+    // so the button doesn't flash through the wrong state.
+    if (authLoading) {
+      return (
+        <Button className="w-full" variant={variant} disabled data-track-cta={`pricing-${tierId}`}>
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading…
+        </Button>
+      );
+    }
+
+    // Not signed in → bounce to login, returning to /pricing afterwards.
+    if (!isAuthenticated) {
+      return (
+        <Button
+          className="w-full"
+          variant={variant}
+          data-track-cta={`pricing-${tierId}`}
+          data-testid={`button-signin-${tierId}`}
+          onClick={() => {
+            window.location.href = "/api/login?returnTo=/pricing";
+          }}
+        >
+          Sign in to subscribe
+        </Button>
+      );
+    }
+
+    // Signed in but no active org → push them through agent onboarding to create one.
+    if (orgsQuery.isLoading) {
+      return (
+        <Button className="w-full" variant={variant} disabled data-track-cta={`pricing-${tierId}`}>
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading…
+        </Button>
+      );
+    }
+
+    if (!activeOrgId) {
+      return (
+        <Link href="/agent/onboarding">
+          <Button
+            className="w-full"
+            variant={variant}
+            data-track-cta={`pricing-${tierId}`}
+            data-testid={`button-create-org-${tierId}`}
+          >
+            Create an organization
+          </Button>
+        </Link>
+      );
+    }
+
+    // Authenticated + active org → fire the Stripe checkout mutation.
+    const isThisTierPending =
+      subscribe.isPending && subscribe.variables === tierId;
+    const isAnyTierPending = subscribe.isPending;
+
+    return (
+      <Button
+        className="w-full"
+        variant={variant}
+        data-track-cta={`pricing-${tierId}`}
+        data-testid={`button-subscribe-${tierId}`}
+        disabled={isAnyTierPending}
+        onClick={() => subscribe.mutate(tierId)}
+      >
+        {isThisTierPending ? (
+          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting…</>
+        ) : (
+          <>Subscribe to {tierId.charAt(0).toUpperCase() + tierId.slice(1)}</>
+        )}
+      </Button>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
@@ -127,15 +263,7 @@ export default function Pricing() {
                     </li>
                   ))}
                 </ul>
-                <Link href={tier.cta.href}>
-                  <Button
-                    className="w-full"
-                    variant={tier.highlight ? "default" : "outline"}
-                    data-track-cta={`pricing-${tier.id}`}
-                  >
-                    {tier.cta.label}
-                  </Button>
-                </Link>
+                {renderTierCta(tier.id, tier.highlight)}
               </CardContent>
             </Card>
           ))}

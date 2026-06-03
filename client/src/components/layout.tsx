@@ -213,6 +213,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
       const url = new URL(window.location.href);
       url.searchParams.delete("stripe");
       window.history.replaceState({}, "", url.toString());
+    } else if (stripeStatus === "sub_success") {
+      toast({
+        title: "Subscription active!",
+        description: "Your organization is now on the new tier.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/orgs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe");
+      url.searchParams.delete("org");
+      window.history.replaceState({}, "", url.toString());
+    } else if (stripeStatus === "sub_cancelled") {
+      toast({
+        title: "Subscription cancelled",
+        description: "No charge was made.",
+        variant: "destructive",
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe");
+      window.history.replaceState({}, "", url.toString());
     }
   }, []);
 
