@@ -160,6 +160,10 @@ export interface IStorage {
   upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile>;
   setAgentVerificationStatus(userId: string, status: string): Promise<AgentProfile>;
   setAgentConversionRate(userId: string, rate: number): Promise<AgentProfile>;
+  updateAgentCapacity(
+    userId: string,
+    fields: { capacityLimit?: number; acceptingLeads?: boolean },
+  ): Promise<AgentProfile>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
@@ -940,6 +944,29 @@ export class DatabaseStorage implements IStorage {
       .set({ conversionRate: clamped.toFixed(4), updatedAt: new Date() })
       .where(eq(agentProfiles.userId, userId))
       .returning();
+    return p;
+  }
+
+  async updateAgentCapacity(
+    userId: string,
+    fields: { capacityLimit?: number; acceptingLeads?: boolean },
+  ): Promise<AgentProfile> {
+    const patch: Partial<AgentProfile> = { updatedAt: new Date() };
+    if (typeof fields.capacityLimit === "number") {
+      if (!Number.isInteger(fields.capacityLimit) || fields.capacityLimit < 1 || fields.capacityLimit > 500) {
+        throw new Error("capacityLimit must be an integer between 1 and 500");
+      }
+      patch.capacityLimit = fields.capacityLimit;
+    }
+    if (typeof fields.acceptingLeads === "boolean") {
+      patch.acceptingLeads = fields.acceptingLeads;
+    }
+    const [p] = await db
+      .update(agentProfiles)
+      .set(patch)
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    if (!p) throw new Error("Agent profile not found");
     return p;
   }
 
