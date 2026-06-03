@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy, Banknote } from "lucide-react";
+import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { PermissionRequired } from "@/components/permission-required";
 
 interface OrgList {
   activeOrgId: string | null;
@@ -56,10 +57,11 @@ export default function OrgAdmin() {
   const activeMembership = orgs?.memberships.find(m => m.orgId === orgs.activeOrgId);
   const canManage = activeMembership && (activeMembership.role === "owner" || activeMembership.role === "admin");
 
-  const { data: agents = [], isLoading } = useQuery<OrgAgent[]>({
+  const { data: agents = [], isLoading, error: agentsError } = useQuery<OrgAgent[]>({
     queryKey: [`/api/orgs/${orgs?.activeOrgId}/agents`],
     enabled: !!orgs?.activeOrgId,
   });
+  const agentsForbidden = agentsError?.message?.startsWith("403:");
 
   const { data: vendors = [] } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
@@ -169,14 +171,12 @@ export default function OrgAdmin() {
     );
   }
 
-  if (!canManage) {
+  if (!canManage || agentsForbidden) {
     return (
-      <Layout>
-        <div className="max-w-2xl mx-auto py-12 text-center">
-          <ShieldX className="h-10 w-10 mx-auto text-destructive" />
-          <h1 className="text-xl font-bold mt-3">Owner or admin role required</h1>
-        </div>
-      </Layout>
+      <PermissionRequired
+        title="Owner or admin role required"
+        description="Only organization owners or admins can manage agents, vendor keys, and payouts."
+      />
     );
   }
 
@@ -212,6 +212,10 @@ export default function OrgAdmin() {
           <CardContent>
             {isLoading ? (
               <Skeleton className="h-32" />
+            ) : agentsError ? (
+              <p className="text-sm text-destructive py-6 text-center">
+                Couldn't load agents: {agentsError.message}
+              </p>
             ) : agents.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">No agents in this organization yet.</p>
             ) : (

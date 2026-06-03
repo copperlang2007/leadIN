@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BarChart3, Funnel, Users, MousePointerClick, ShoppingCart, AlertTriangle } from "lucide-react";
 import { useState } from "react";
+import { PermissionRequired } from "@/components/permission-required";
 
 interface FunnelSnapshot {
   windowStart: string;
@@ -54,13 +55,25 @@ function FunnelStep({ label, value, pct, icon: Icon }: { label: string; value: n
 export default function Analytics() {
   const [days, setDays] = useState(7);
 
-  const { data: funnel, isLoading: fl } = useQuery<FunnelSnapshot>({
+  const { data: funnel, isLoading: fl, error: funnelError } = useQuery<FunnelSnapshot>({
     queryKey: [`/api/admin/analytics/funnel?days=${days}`],
   });
 
-  const { data: leadStats, isLoading: ll } = useQuery<LeadAnalytics>({
+  const { data: leadStats, isLoading: ll, error: leadStatsError } = useQuery<LeadAnalytics>({
     queryKey: ["/api/admin/analytics/leads"],
   });
+
+  const is403 =
+    funnelError?.message?.startsWith("403:") ||
+    leadStatsError?.message?.startsWith("403:");
+
+  if (is403) {
+    return (
+      <PermissionRequired
+        description="Product analytics are restricted to platform administrators. Please contact your organization owner if you believe this is a mistake."
+      />
+    );
+  }
 
   return (
     <Layout>
