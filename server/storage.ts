@@ -19,6 +19,7 @@ import {
   savedListItems,
   vendorBalances,
   vendorPayouts,
+  leadDisputes,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -44,6 +45,7 @@ import {
   type SavedList,
   type InsertSavedList,
   type VendorPayout,
+  type LeadDispute,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -52,6 +54,14 @@ import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { splitRevenue } from "./vendorPayouts";
+import {
+  addRefundToBalance,
+  clampRefundCents,
+  computeRefundSplit,
+  planVendorDebit,
+  priceStringToCents,
+  type DisputeReason,
+} from "./disputes";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -160,6 +170,10 @@ export interface IStorage {
   upsertAgentProfile(data: InsertAgentProfile): Promise<AgentProfile>;
   setAgentVerificationStatus(userId: string, status: string): Promise<AgentProfile>;
   setAgentConversionRate(userId: string, rate: number): Promise<AgentProfile>;
+  updateAgentCapacity(
+    userId: string,
+    fields: { capacityLimit?: number; acceptingLeads?: boolean },
+  ): Promise<AgentProfile>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
@@ -204,6 +218,29 @@ export interface IStorage {
     entries: { vendorId: number; amountCents: number; payoutId: number }[];
   }>;
   getVendorPayoutLog(vendorId: number, limit?: number): Promise<VendorPayout[]>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 4: buyer-filed disputes + refunds
+  // ──────────────────────────────────────────────────────
+  createDispute(input: {
+    orderId: number;
+    buyerUserId: string;
+    reason: DisputeReason;
+    notes?: string;
+  }): Promise<LeadDispute>;
+  getDispute(id: number): Promise<LeadDispute | undefined>;
+  getDisputeByOrderId(orderId: number): Promise<LeadDispute | undefined>;
+  listDisputes(filters?: {
+    status?: string;
+    buyerUserId?: string;
+    limit?: number;
+  }): Promise<LeadDispute[]>;
+  approveDispute(
+    disputeId: number,
+    resolverUserId: string,
+    refundCents: number,
+  ): Promise<LeadDispute>;
+  denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -943,6 +980,29 @@ export class DatabaseStorage implements IStorage {
     return p;
   }
 
+  async updateAgentCapacity(
+    userId: string,
+    fields: { capacityLimit?: number; acceptingLeads?: boolean },
+  ): Promise<AgentProfile> {
+    const patch: Partial<AgentProfile> = { updatedAt: new Date() };
+    if (typeof fields.capacityLimit === "number") {
+      if (!Number.isInteger(fields.capacityLimit) || fields.capacityLimit < 1 || fields.capacityLimit > 500) {
+        throw new Error("capacityLimit must be an integer between 1 and 500");
+      }
+      patch.capacityLimit = fields.capacityLimit;
+    }
+    if (typeof fields.acceptingLeads === "boolean") {
+      patch.acceptingLeads = fields.acceptingLeads;
+    }
+    const [p] = await db
+      .update(agentProfiles)
+      .set(patch)
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    if (!p) throw new Error("Agent profile not found");
+    return p;
+  }
+
   async listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]> {
     const rows = await db
       .select()
@@ -1500,6 +1560,263 @@ export class DatabaseStorage implements IStorage {
       .where(eq(vendorPayouts.vendorId, vendorId))
       .orderBy(desc(vendorPayouts.createdAt))
       .limit(limit);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 4: buyer-filed disputes + refunds
+  //
+  // Lifecycle:
+  //   1. Buyer files dispute on their order — `createDispute` inserts a row
+  //      (idempotent on the `uniq_dispute_per_order` constraint).
+  //   2. Admin approves → `approveDispute` credits the buyer wallet, debits
+  //      the vendor (pending first, then paid), and writes one negative
+  //      `vendor_payouts` row with kind="refund".
+  //   3. Admin denies → `denyDispute` just marks the row.
+  //
+  // Money math goes through the pure helpers in `./disputes.ts` so the
+  // arithmetic stays unit-testable without a live DB.
+  // ──────────────────────────────────────────────────────
+
+  async createDispute(input: {
+    orderId: number;
+    buyerUserId: string;
+    reason: DisputeReason;
+    notes?: string;
+  }): Promise<LeadDispute> {
+    return await db.transaction(async (tx) => {
+      // Verify the order belongs to the buyer.
+      const [order] = await tx
+        .select()
+        .from(orders)
+        .where(eq(orders.id, input.orderId));
+      if (!order) throw new Error("Order not found");
+      if (order.userId !== input.buyerUserId) {
+        throw new Error("Order does not belong to this buyer");
+      }
+
+      // Idempotency: if a dispute already exists for this order, return it
+      // rather than throwing. The `uniq_dispute_per_order` constraint makes
+      // the upsert safe even under a race.
+      const [existing] = await tx
+        .select()
+        .from(leadDisputes)
+        .where(eq(leadDisputes.orderId, input.orderId));
+      if (existing) return existing;
+
+      const [dispute] = await tx
+        .insert(leadDisputes)
+        .values({
+          orderId: input.orderId,
+          leadId: order.leadId,
+          buyerUserId: input.buyerUserId,
+          reason: input.reason,
+          notes: input.notes ?? null,
+          status: "open",
+        })
+        .onConflictDoNothing({ target: leadDisputes.orderId })
+        .returning();
+
+      if (dispute) return dispute;
+
+      // Conflict race — read the row that won.
+      const [winner] = await tx
+        .select()
+        .from(leadDisputes)
+        .where(eq(leadDisputes.orderId, input.orderId));
+      if (!winner) throw new Error("Failed to create or read dispute");
+      return winner;
+    });
+  }
+
+  async getDispute(id: number): Promise<LeadDispute | undefined> {
+    const [d] = await db.select().from(leadDisputes).where(eq(leadDisputes.id, id));
+    return d;
+  }
+
+  async getDisputeByOrderId(orderId: number): Promise<LeadDispute | undefined> {
+    const [d] = await db.select().from(leadDisputes).where(eq(leadDisputes.orderId, orderId));
+    return d;
+  }
+
+  async listDisputes(filters: {
+    status?: string;
+    buyerUserId?: string;
+    limit?: number;
+  } = {}): Promise<LeadDispute[]> {
+    const conditions: any[] = [];
+    if (filters.status) conditions.push(eq(leadDisputes.status, filters.status));
+    if (filters.buyerUserId) conditions.push(eq(leadDisputes.buyerUserId, filters.buyerUserId));
+    const limit = Math.max(1, Math.min(100, filters.limit ?? 100));
+    const q = db.select().from(leadDisputes);
+    const filtered = conditions.length === 0 ? q : q.where(and(...conditions));
+    return await filtered.orderBy(desc(leadDisputes.createdAt)).limit(limit);
+  }
+
+  /**
+   * Debit a vendor for a refund: pull from `pendingCents` first, then from
+   * `paidCents` if pending is insufficient. Insert one `vendor_payouts` row
+   * with the total debit so the ledger stays single-source-of-truth.
+   *
+   * Runs inside the caller's transaction.
+   */
+  async debitVendorForRefundTx(
+    tx: any,
+    vendorId: number,
+    vendorDebitCents: number,
+    orderId: number,
+    leadId: number,
+  ): Promise<void> {
+    if (vendorDebitCents <= 0) return;
+
+    // Lock the balance row (or create it at zero so the plan still works).
+    const [bal] = await tx
+      .select()
+      .from(vendorBalances)
+      .where(eq(vendorBalances.vendorId, vendorId))
+      .for("update");
+
+    const pending = bal?.pendingCents ?? 0;
+    const paid = bal?.paidCents ?? 0;
+
+    const plan = planVendorDebit(vendorDebitCents, pending, paid);
+
+    if (bal) {
+      await tx
+        .update(vendorBalances)
+        .set({
+          pendingCents: plan.newPendingCents,
+          paidCents: plan.newPaidCents,
+          updatedAt: new Date(),
+        })
+        .where(eq(vendorBalances.id, bal.id));
+    } else {
+      // No prior activity — create a zero row and drive paid negative.
+      await tx.insert(vendorBalances).values({
+        vendorId,
+        pendingCents: plan.newPendingCents,
+        paidCents: plan.newPaidCents,
+      });
+    }
+
+    // One negative ledger row per refund.
+    await tx.insert(vendorPayouts).values({
+      vendorId,
+      amountCents: -vendorDebitCents,
+      kind: "refund",
+      orderId,
+      leadId,
+      note: `Refund debit: -${(vendorDebitCents / 100).toFixed(2)} (pending ${plan.pendingDelta}, paid ${plan.paidDelta})`,
+    });
+  }
+
+  async approveDispute(
+    disputeId: number,
+    resolverUserId: string,
+    refundCents: number,
+  ): Promise<LeadDispute> {
+    return await db.transaction(async (tx) => {
+      const [dispute] = await tx
+        .select()
+        .from(leadDisputes)
+        .where(eq(leadDisputes.id, disputeId))
+        .for("update");
+      if (!dispute) throw new Error("Dispute not found");
+      if (dispute.status !== "open") {
+        // Idempotent: re-approving an already-approved dispute returns the
+        // existing row. Deny -> approve transition is rejected to keep the
+        // ledger one-way.
+        if (dispute.status === "approved") return dispute;
+        throw new Error(`Dispute is ${dispute.status} and cannot be approved`);
+      }
+
+      const [order] = await tx
+        .select()
+        .from(orders)
+        .where(eq(orders.id, dispute.orderId))
+        .for("update");
+      if (!order) throw new Error("Order not found");
+
+      const [lead] = await tx
+        .select()
+        .from(leads)
+        .where(eq(leads.id, dispute.leadId));
+      if (!lead) throw new Error("Lead not found");
+
+      // Clamp refund to the order price so we never refund more than was
+      // paid. Caller may request more; we silently floor it.
+      const orderPriceCents = priceStringToCents(order.price);
+      const finalRefundCents = clampRefundCents(refundCents, orderPriceCents);
+
+      // 1) Mark the dispute resolved.
+      const [updated] = await tx
+        .update(leadDisputes)
+        .set({
+          status: "approved",
+          resolverUserId,
+          resolvedAt: new Date(),
+          refundCents: finalRefundCents,
+        })
+        .where(eq(leadDisputes.id, disputeId))
+        .returning();
+
+      // 2) Credit buyer's wallet — Decimal math, no float drift.
+      if (finalRefundCents > 0) {
+        const [buyer] = await tx
+          .select()
+          .from(users)
+          .where(eq(users.id, dispute.buyerUserId))
+          .for("update");
+        if (buyer) {
+          const newBalance = addRefundToBalance(buyer.balance, finalRefundCents);
+          await tx
+            .update(users)
+            .set({ balance: newBalance, updatedAt: new Date() })
+            .where(eq(users.id, dispute.buyerUserId));
+        }
+
+        // 3) Debit the vendor at rev-share fraction; remainder is platform write-off.
+        const { vendorDebitCents } = computeRefundSplit(finalRefundCents);
+        if (vendorDebitCents > 0) {
+          await this.debitVendorForRefundTx(
+            tx,
+            lead.vendorId,
+            vendorDebitCents,
+            order.id,
+            lead.id,
+          );
+        }
+      }
+
+      return updated;
+    });
+  }
+
+  async denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute> {
+    return await db.transaction(async (tx) => {
+      const [dispute] = await tx
+        .select()
+        .from(leadDisputes)
+        .where(eq(leadDisputes.id, disputeId))
+        .for("update");
+      if (!dispute) throw new Error("Dispute not found");
+      // Idempotent: re-denying a denied dispute returns it unchanged. Approved
+      // disputes can't transition back to denied.
+      if (dispute.status === "denied") return dispute;
+      if (dispute.status === "approved") {
+        throw new Error("Dispute is already approved and cannot be denied");
+      }
+
+      const [updated] = await tx
+        .update(leadDisputes)
+        .set({
+          status: "denied",
+          resolverUserId,
+          resolvedAt: new Date(),
+        })
+        .where(eq(leadDisputes.id, disputeId))
+        .returning();
+      return updated;
+    });
   }
 }
 

@@ -1,10 +1,16 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Link } from "wouter";
-import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox } from "lucide-react";
+import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import type { Lead } from "@/lib/types";
 
 interface DashboardResponse {
@@ -12,6 +18,7 @@ interface DashboardResponse {
     verificationStatus: string;
     licensedStates: string[];
     capacityLimit: number;
+    acceptingLeads: boolean;
   } | null;
   stats: {
     openLeads: number;
@@ -41,6 +48,120 @@ function StatCard({ icon: Icon, label, value, sub }: { icon: any; label: string;
         </div>
         <div className="text-2xl font-bold mt-2">{value}</div>
         {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AgentSettingsCard({
+  capacityLimit,
+  acceptingLeads,
+  openLeads,
+}: {
+  capacityLimit: number;
+  acceptingLeads: boolean;
+  openLeads: number;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [capacityDraft, setCapacityDraft] = useState<string>(String(capacityLimit));
+
+  // Keep local draft in sync if the server value changes (e.g. after refetch).
+  useEffect(() => {
+    setCapacityDraft(String(capacityLimit));
+  }, [capacityLimit]);
+
+  const mutation = useMutation({
+    mutationFn: async (patch: { capacityLimit?: number; acceptingLeads?: boolean }) => {
+      const res = await apiRequest("PATCH", "/api/agent/me", patch);
+      return res.json();
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent/dashboard"] });
+      toast({
+        title: "Settings updated",
+        description:
+          variables.acceptingLeads !== undefined
+            ? `You are ${variables.acceptingLeads ? "now accepting" : "paused on"} new leads.`
+            : `Capacity set to ${variables.capacityLimit}.`,
+      });
+    },
+    onError: (err: Error) => {
+      // Revert capacity draft on failure so the input matches reality.
+      setCapacityDraft(String(capacityLimit));
+      toast({
+        title: "Update failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const commitCapacity = () => {
+    const parsed = Number(capacityDraft);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) {
+      toast({
+        title: "Invalid capacity",
+        description: "Capacity must be a whole number between 1 and 500.",
+        variant: "destructive",
+      });
+      setCapacityDraft(String(capacityLimit));
+      return;
+    }
+    if (parsed === capacityLimit) return;
+    mutation.mutate({ capacityLimit: parsed });
+  };
+
+  return (
+    <Card data-testid="agent-settings-card">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <SettingsIcon className="h-5 w-5" /> Agent settings
+        </CardTitle>
+        <CardDescription>
+          Adjust your capacity and pause new leads without re-running onboarding.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-1.5">
+          <Label htmlFor="agent-capacity">Capacity limit</Label>
+          <Input
+            id="agent-capacity"
+            type="number"
+            min={1}
+            max={500}
+            step={1}
+            value={capacityDraft}
+            disabled={mutation.isPending}
+            onChange={(e) => setCapacityDraft(e.target.value)}
+            onBlur={commitCapacity}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+            }}
+            data-testid="input-capacity-limit"
+          />
+          <p className="text-xs text-muted-foreground">
+            {openLeads} of {capacityLimit} slots used
+          </p>
+        </div>
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="agent-accepting">Accepting new leads</Label>
+            <p className="text-xs text-muted-foreground">
+              Turn off to temporarily stop the routing engine from assigning you new leads.
+            </p>
+          </div>
+          <Switch
+            id="agent-accepting"
+            checked={acceptingLeads}
+            disabled={mutation.isPending}
+            onCheckedChange={(checked) => mutation.mutate({ acceptingLeads: checked })}
+            data-testid="switch-accepting-leads"
+          />
+        </div>
       </CardContent>
     </Card>
   );
@@ -113,6 +234,14 @@ export default function AgentDashboard() {
           <StatCard icon={DollarSign} label="Total spend" value={`$${data.stats.totalSpent}`} sub={`Avg CPL $${data.stats.averageCpl}`} />
           <StatCard icon={TrendingUp} label="Est. commissions" value={`$${data.stats.estimatedCommissions}`} sub={`${data.stats.conversionRate}% conv.`} />
         </div>
+
+        {data.profile && (
+          <AgentSettingsCard
+            capacityLimit={data.profile.capacityLimit}
+            acceptingLeads={data.profile.acceptingLeads}
+            openLeads={data.stats.openLeads}
+          />
+        )}
 
         {data.orgStats && (
           <Card>

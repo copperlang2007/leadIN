@@ -1,11 +1,23 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -23,8 +35,8 @@ import {
   Mail,
   Calendar,
   BadgeCheck,
+  Trash2,
 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
 
 const FUND_AMOUNTS = [25, 50, 100, 250];
 
@@ -34,6 +46,8 @@ export default function SettingsPage() {
   const queryClient = useQueryClient();
   const [fundingAmount, setFundingAmount] = useState<number | null>(null);
   const [customAmount, setCustomAmount] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteConfirmEmail, setDeleteConfirmEmail] = useState("");
 
   const balance = parseFloat(user?.balance || "0");
 
@@ -85,6 +99,33 @@ export default function SettingsPage() {
     },
     onError: () => {
       toast({ title: "Failed to update", variant: "destructive" });
+    },
+  });
+
+  const deleteAccountMutation = useMutation({
+    mutationFn: async (confirmEmail: string) => {
+      const res = await fetch("/api/account", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmEmail }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Failed to delete account");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      // Server already destroyed the session; bounce through OIDC logout.
+      window.location.href = "/api/logout";
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Account deletion failed",
+        description: err.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -351,6 +392,91 @@ export default function SettingsPage() {
               <LogOut className="h-4 w-4" />
               Sign Out
             </a>
+          </CardContent>
+        </Card>
+
+        {/* Delete Account */}
+        <Card className="border-destructive/30" data-testid="card-delete-account">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2 text-destructive">
+              <Trash2 className="h-4 w-4" />
+              Delete account
+            </CardTitle>
+            <CardDescription>
+              Permanently delete your account, agent profile, saved lists, and behavioral data.
+              Purchased leads will be retained for audit but their consumer PII is wiped.
+              This cannot be undone.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <AlertDialog
+              open={deleteDialogOpen}
+              onOpenChange={(open) => {
+                setDeleteDialogOpen(open);
+                if (!open) setDeleteConfirmEmail("");
+              }}
+            >
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" data-testid="button-delete-account">
+                  Delete my account
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently removes your profile, saved lists, behavioral data, and
+                    organization memberships. Consumer PII on leads you purchased will be wiped
+                    while the order rows remain for audit. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <label
+                    htmlFor="delete-confirm-email"
+                    className="text-sm font-medium"
+                  >
+                    Type your email to confirm
+                  </label>
+                  <Input
+                    id="delete-confirm-email"
+                    type="email"
+                    autoComplete="off"
+                    placeholder={user?.email ?? ""}
+                    value={deleteConfirmEmail}
+                    onChange={(e) => setDeleteConfirmEmail(e.target.value)}
+                    data-testid="input-delete-confirm-email"
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel data-testid="button-delete-cancel">
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={
+                      deleteAccountMutation.isPending ||
+                      !user?.email ||
+                      deleteConfirmEmail.trim().toLowerCase() !==
+                        user.email.trim().toLowerCase()
+                    }
+                    onClick={(e) => {
+                      e.preventDefault();
+                      deleteAccountMutation.mutate(deleteConfirmEmail);
+                    }}
+                    data-testid="button-delete-confirm"
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    {deleteAccountMutation.isPending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        Deleting…
+                      </>
+                    ) : (
+                      "Permanently delete"
+                    )}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </CardContent>
         </Card>
       </div>
