@@ -193,7 +193,7 @@ export const leads = pgTable("leads", {
 
 export const orders = pgTable("orders", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
   leadId: integer("lead_id").notNull().references(() => leads.id),
   price: decimal("price", { precision: 10, scale: 2 }).notNull(),
@@ -210,7 +210,7 @@ export const leadAssignments = pgTable("lead_assignments", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
   matchScore: integer("match_score").notNull(),
   reason: text("reason"),
   status: varchar("status", { length: 20 }).notNull().default("assigned"), // 'assigned' | 'accepted' | 'declined' | 'expired'
@@ -224,7 +224,7 @@ export const leadAssignments = pgTable("lead_assignments", {
 // Stripe checkout sessions for wallet funding
 export const stripeCheckoutSessions = pgTable("stripe_checkout_sessions", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
   stripeSessionId: varchar("stripe_session_id", { length: 255 }).notNull().unique(),
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("pending"),
@@ -234,7 +234,7 @@ export const stripeCheckoutSessions = pgTable("stripe_checkout_sessions", {
 // Notifications log to prevent duplicates
 export const notifications = pgTable("notifications", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
   leadId: integer("lead_id").notNull().references(() => leads.id),
   type: varchar("type", { length: 50 }).notNull().default("new_lead"),
   sentAt: timestamp("sent_at").defaultNow(),
@@ -566,7 +566,7 @@ export const vendorPayouts = pgTable("vendor_payouts", {
 // Append-only log of privileged admin actions (verify agent, mint key, flag lead, etc.)
 export const adminAuditLog = pgTable("admin_audit_log", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  actorUserId: varchar("actor_user_id").notNull().references(() => users.id),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
   action: varchar("action", { length: 80 }).notNull(),
   targetKind: varchar("target_kind", { length: 40 }),
@@ -584,7 +584,7 @@ export const leadDisputes = pgTable("lead_disputes", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orderId: integer("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
   leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  buyerUserId: varchar("buyer_user_id").references(() => users.id, { onDelete: "set null" }),
   reason: varchar("reason", { length: 80 }).notNull(), // 'bad_contact' | 'duplicate' | 'fraud' | 'not_as_described' | 'other'
   notes: text("notes"),
   status: varchar("status", { length: 20 }).notNull().default("open"), // 'open' | 'approved' | 'denied'
