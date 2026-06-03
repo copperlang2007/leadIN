@@ -25,6 +25,7 @@ import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { recordAudit, listAudit } from "./audit";
+import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { z } from "zod";
 
@@ -243,6 +244,59 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating notification preference:", error);
       res.status(500).json({ message: "Failed to update notification preference" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Self-serve GDPR account deletion.
+  //
+  // The user must re-type their email address as confirmation. We write an
+  // audit row BEFORE cascading the delete so the actor reference still
+  // resolves (audit is append-only and lives outside the GDPR-delete tx).
+  // ──────────────────────────────────────────────────────
+  app.delete("/api/account", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { confirmEmail } = req.body ?? {};
+      if (typeof confirmEmail !== "string" || !confirmEmail.trim()) {
+        return res.status(400).json({ message: "confirmEmail is required" });
+      }
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      if (
+        !user.email ||
+        user.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()
+      ) {
+        return res.status(400).json({ message: "Confirmation email does not match" });
+      }
+
+      // Audit BEFORE the delete — once the tx commits the actorUserId points
+      // at a row that no longer exists, which is fine (audit is append-only)
+      // but we still want the row to make it to storage either way.
+      await recordAudit({
+        actorUserId: userId,
+        action: "account.delete",
+        targetKind: "user",
+        targetId: userId,
+        metadata: { email: user.email },
+      });
+
+      const result = await deleteAccount(userId);
+
+      // Destroy the session; the client redirects to /api/logout for the
+      // OIDC end-session leg.
+      req.logout((err: unknown) => {
+        if (err) {
+          console.error("Error destroying session after account delete:", err);
+        }
+        res.json({ ok: true, ...result });
+      });
+    } catch (error) {
+      console.error("Error deleting account:", error);
+      res.status(500).json({ message: "Failed to delete account" });
     }
   });
 
