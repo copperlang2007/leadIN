@@ -70,6 +70,15 @@ export interface IStorage {
   getVendorByApiKey(apiKey: string): Promise<(Vendor & { orgId: string | null }) | undefined>;
   createVendorApiKey(vendorId: number, orgId?: string | null): Promise<{ key: string; record: VendorApiKey }>;
   revokeVendorApiKey(keyId: number): Promise<void>;
+  listVendorApiKeys(orgId: string): Promise<Array<{
+    id: number;
+    vendorId: number;
+    vendorName: string | null;
+    keyPrefix: string;
+    active: boolean;
+    createdAt: Date | null;
+    revokedAt: Date | null;
+  }>>;
 
   // Lead operations
   getLeads(filters?: {
@@ -307,6 +316,32 @@ export class DatabaseStorage implements IStorage {
       .update(vendorApiKeys)
       .set({ active: false, revokedAt: new Date() })
       .where(eq(vendorApiKeys.id, keyId));
+  }
+
+  async listVendorApiKeys(orgId: string): Promise<Array<{
+    id: number;
+    vendorId: number;
+    vendorName: string | null;
+    keyPrefix: string;
+    active: boolean;
+    createdAt: Date | null;
+    revokedAt: Date | null;
+  }>> {
+    const rows = await db
+      .select({
+        id: vendorApiKeys.id,
+        vendorId: vendorApiKeys.vendorId,
+        vendorName: vendors.name,
+        keyPrefix: vendorApiKeys.keyPrefix,
+        active: vendorApiKeys.active,
+        createdAt: vendorApiKeys.createdAt,
+        revokedAt: vendorApiKeys.revokedAt,
+      })
+      .from(vendorApiKeys)
+      .leftJoin(vendors, eq(vendorApiKeys.vendorId, vendors.id))
+      .where(eq(vendorApiKeys.orgId, orgId))
+      .orderBy(desc(vendorApiKeys.createdAt));
+    return rows;
   }
 
   // Lead operations

@@ -5,9 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy, Banknote } from "lucide-react";
+import { Building2, ShieldCheck, ShieldX, Loader2, Key, Copy, Banknote, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface OrgList {
   activeOrgId: string | null;
@@ -25,6 +35,16 @@ interface VendorBalanceRow {
   vendor: { id: number; name: string; verified: boolean };
   pendingCents: number;
   paidCents: number;
+}
+
+interface VendorApiKeyRow {
+  id: number;
+  vendorId: number;
+  vendorName: string | null;
+  keyPrefix: string;
+  active: boolean;
+  createdAt: string | null;
+  revokedAt: string | null;
 }
 
 interface OrgAgent {
@@ -68,8 +88,14 @@ export default function OrgAdmin() {
 
   const [selectedVendor, setSelectedVendor] = useState<string>("");
   const [mintedKey, setMintedKey] = useState<string | null>(null);
+  const [keyToRevoke, setKeyToRevoke] = useState<VendorApiKeyRow | null>(null);
 
   const isPlatformAdmin = user?.role === "admin";
+
+  const { data: vendorKeys = [], isLoading: keysLoading } = useQuery<VendorApiKeyRow[]>({
+    queryKey: [`/api/orgs/${orgs?.activeOrgId}/vendor-keys`],
+    enabled: !!orgs?.activeOrgId,
+  });
 
   const { data: vendorBalances = [], isLoading: balancesLoading } = useQuery<VendorBalanceRow[]>({
     queryKey: ["/api/admin/vendor-balances"],
@@ -112,9 +138,30 @@ export default function OrgAdmin() {
     },
     onSuccess: (data) => {
       setMintedKey(data.apiKey);
+      queryClient.invalidateQueries({ queryKey: [`/api/orgs/${orgs?.activeOrgId}/vendor-keys`] });
       toast({ title: "Key minted", description: `Prefix: ${data.keyPrefix}. Copy it now — it won't be shown again.` });
     },
     onError: (e: Error) => toast({ title: "Mint failed", description: e.message, variant: "destructive" }),
+  });
+
+  const revokeKeyMutation = useMutation({
+    mutationFn: async (keyId: number) => {
+      const res = await fetch(`/api/orgs/${orgs!.activeOrgId}/vendor-keys/${keyId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Revoke failed");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orgs/${orgs?.activeOrgId}/vendor-keys`] });
+      toast({ title: "API key revoked" });
+      setKeyToRevoke(null);
+    },
+    onError: (e: Error) => {
+      toast({ title: "Revoke failed", description: e.message, variant: "destructive" });
+      setKeyToRevoke(null);
+    },
   });
 
   const verifyMutation = useMutation({
@@ -335,8 +382,93 @@ export default function OrgAdmin() {
             <p className="text-xs text-muted-foreground">
               Vendors send leads via <code>POST /api/v1/leads/ingest</code> with the <code>X-Api-Key</code> header.
             </p>
+
+            <div className="pt-3 border-t">
+              <h3 className="text-sm font-semibold mb-2">Active API keys</h3>
+              {keysLoading ? (
+                <Skeleton className="h-20" />
+              ) : vendorKeys.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center" data-testid="text-no-vendor-keys">
+                  No vendor API keys yet.
+                </p>
+              ) : (
+                <div className="space-y-1" data-testid="list-vendor-keys">
+                  <div className="grid grid-cols-12 gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
+                    <div className="col-span-4">Vendor</div>
+                    <div className="col-span-3">Prefix</div>
+                    <div className="col-span-2">Created</div>
+                    <div className="col-span-2">Status</div>
+                    <div className="col-span-1 text-right">Action</div>
+                  </div>
+                  {vendorKeys.map((k) => {
+                    const isRevoked = !k.active;
+                    return (
+                      <div
+                        key={k.id}
+                        className="grid grid-cols-12 gap-2 items-center border rounded-md px-2 py-2 text-sm"
+                        data-testid={`row-vendor-key-${k.id}`}
+                      >
+                        <div className="col-span-4 truncate">{k.vendorName ?? `Vendor #${k.vendorId}`}</div>
+                        <div className="col-span-3 font-mono text-xs truncate">{k.keyPrefix}</div>
+                        <div className="col-span-2 text-xs text-muted-foreground">
+                          {k.createdAt ? new Date(k.createdAt).toLocaleDateString() : "—"}
+                        </div>
+                        <div className="col-span-2">
+                          <Badge
+                            variant={isRevoked ? "outline" : "default"}
+                            className={isRevoked ? "" : "bg-emerald-600"}
+                          >
+                            {isRevoked ? "Revoked" : "Active"}
+                          </Badge>
+                        </div>
+                        <div className="col-span-1 text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setKeyToRevoke(k)}
+                            disabled={isRevoked || revokeKeyMutation.isPending}
+                            data-testid={`button-revoke-${k.id}`}
+                            aria-label="Revoke key"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
+
+        <AlertDialog open={!!keyToRevoke} onOpenChange={(open) => { if (!open) setKeyToRevoke(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Revoke this API key?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will immediately disable the key with prefix{" "}
+                <code className="font-mono">{keyToRevoke?.keyPrefix}</code>
+                {keyToRevoke?.vendorName ? <> for {keyToRevoke.vendorName}</> : null}.
+                Any vendor request using it will be rejected. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={revokeKeyMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (keyToRevoke) revokeKeyMutation.mutate(keyToRevoke.id);
+                }}
+                disabled={revokeKeyMutation.isPending}
+                data-testid="button-confirm-revoke"
+              >
+                {revokeKeyMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Revoke
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {isPlatformAdmin && (
           <Card data-testid="card-vendor-payouts">
