@@ -33,6 +33,8 @@ jobs:
         run: npm run check
       - name: Lint
         run: npm run lint
+      - name: .env.example coverage
+        run: npm run check:env
       - name: Unit tests
         run: npm run test
       - name: Validate Drizzle schema (regen check)
