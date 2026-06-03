@@ -25,6 +25,7 @@ import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { recordAudit, listAudit } from "./audit";
+import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -791,6 +792,38 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error creating vendor API key:", err);
       res.status(500).json({ message: "Failed to create API key" });
+    }
+  });
+
+  // List vendor API keys bound to this org. Owner/admin only.
+  app.get("/api/orgs/:orgId/vendor-keys", isAuthenticated, async (req: any, res) => {
+    try {
+      const result = await listVendorKeysHandler({
+        userId: req.user.claims.sub,
+        orgId: req.params.orgId,
+        storage,
+      });
+      res.status(result.status).json(result.body);
+    } catch (err) {
+      console.error("Error listing vendor API keys:", err);
+      res.status(500).json({ message: "Failed to list API keys" });
+    }
+  });
+
+  // Revoke a vendor API key. Owner/admin only. Key must belong to this org.
+  app.delete("/api/orgs/:orgId/vendor-keys/:keyId", isAuthenticated, async (req: any, res) => {
+    try {
+      const result = await revokeVendorKeyHandler({
+        userId: req.user.claims.sub,
+        orgId: req.params.orgId,
+        rawKeyId: req.params.keyId,
+        storage,
+        recordAudit,
+      });
+      res.status(result.status).json(result.body);
+    } catch (err) {
+      console.error("Error revoking vendor API key:", err);
+      res.status(500).json({ message: "Failed to revoke API key" });
     }
   });
 
