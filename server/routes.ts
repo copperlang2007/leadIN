@@ -56,6 +56,52 @@ async function requireActiveBilling(orgId: string): Promise<{ ok: boolean; reaso
   return { ok: false, reason: `subscription ${org.subscriptionStatus}` };
 }
 
+// ──────────────────────────────────────────────────────
+// Health handlers (exported for handler-level tests in routes.health.test.ts).
+// Public /api/health is rate-limited and only returns {status}; admin
+// /api/admin/health returns the detailed view (uptime / latency / ws count).
+// ──────────────────────────────────────────────────────
+export async function publicHealthHandler(req: any, res: any) {
+  const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+  if (!(await takeToken(`health:${ip}`, 60, 1))) {
+    return res.status(429).json({ status: "rate_limited" });
+  }
+  try {
+    const { db } = await import("./db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`SELECT 1`);
+    return res.json({ status: "ok" });
+  } catch {
+    return res.status(503).json({ status: "degraded" });
+  }
+}
+
+export async function adminHealthHandler(req: any, res: any) {
+  const user = await storage.getUser(req.user.claims.sub);
+  if (user?.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required" });
+  }
+  const start = Date.now();
+  try {
+    const { db } = await import("./db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`SELECT 1`);
+    return res.json({
+      status: "ok",
+      uptimeSec: Math.round(process.uptime()),
+      dbLatencyMs: Date.now() - start,
+      wsConnections: getActiveConnections(),
+      nodeVersion: process.version,
+    });
+  } catch {
+    return res.status(503).json({
+      status: "degraded",
+      uptimeSec: Math.round(process.uptime()),
+      error: "db_unreachable",
+    });
+  }
+}
+
 function stripPII(lead: any) {
   const { consumerName, consumerPhone, consumerEmail, consumerAddress, ...rest } = lead;
   return {
@@ -157,31 +203,18 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
-  // Health (unauthenticated, fast). Returns 503 when the DB is unreachable
-  // so load balancers / uptime probes flip correctly. Don't include any
-  // secrets or counts that an attacker could fingerprint.
+  // Public health (unauthenticated, rate-limited). Returns ONLY {status} so
+  // we don't leak deploy fingerprints (uptime) or active WS counts to
+  // unauthenticated callers. Still runs SELECT 1 so load balancers / uptime
+  // probes get a real liveness signal (200 healthy / 503 degraded).
   // ──────────────────────────────────────────────────────
-  app.get("/api/health", async (_req, res) => {
-    const start = Date.now();
-    try {
-      const { db } = await import("./db");
-      const { sql } = await import("drizzle-orm");
-      await db.execute(sql`SELECT 1`);
-      const latencyMs = Date.now() - start;
-      res.json({
-        status: "ok",
-        uptimeSec: Math.round(process.uptime()),
-        dbLatencyMs: latencyMs,
-        wsConnections: getActiveConnections(),
-      });
-    } catch (err: any) {
-      res.status(503).json({
-        status: "degraded",
-        uptimeSec: Math.round(process.uptime()),
-        error: "db_unreachable",
-      });
-    }
-  });
+  app.get("/api/health", publicHealthHandler);
+
+  // Admin health — the detailed view (uptime, db latency, ws count,
+  // node version). Behind isAuthenticated + admin role check so only
+  // operators see the deploy fingerprint.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/admin/health", isAuthenticated, adminHealthHandler);
 
   // ──────────────────────────────────────────────────────
   // Auth Routes
