@@ -89,6 +89,10 @@ export const agentProfiles = pgTable("agent_profiles", {
   capacityLimit: integer("capacity_limit").notNull().default(25),
   conversionRate: decimal("conversion_rate", { precision: 5, scale: 4 }).notNull().default("0.0000"),
   acceptingLeads: boolean("accepting_leads").notNull().default(true),
+  // Wave 6 (T4): NIPR / DOI auto-verification cache.
+  niprVerifiedAt: timestamp("nipr_verified_at"),
+  niprLicenseExpiry: timestamp("nipr_license_expiry"),
+  niprLastError: text("nipr_last_error"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
@@ -109,6 +113,9 @@ export const vendors = pgTable("vendors", {
   name: varchar("name", { length: 255 }).notNull(),
   rating: decimal("rating", { precision: 2, scale: 1 }).notNull().default("0.0"),
   verified: boolean("verified").notNull().default(false),
+  // Wave 6: exclusive vendor partnership program (M5)
+  isExclusive: boolean("is_exclusive").notNull().default(false),
+  revShareOverride: decimal("rev_share_override", { precision: 4, scale: 3 }),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -174,6 +181,11 @@ export const leads = pgTable("leads", {
   mediscoreSignals: jsonb("mediscore_signals"),
   // Server-assigned session id when the source form fired (links behavioral events)
   sessionId: varchar("session_id", { length: 64 }),
+
+  // ──── Wave 6: killer-feature caches (AI enrichment + NL explainers) ────
+  enrichmentJson: jsonb("enrichment_json"),
+  mediscoreExplanation: text("mediscore_explanation"),
+  bestCallWindowsJson: jsonb("best_call_windows_json"),
 
   // Status
   sold: boolean("sold").notNull().default(false),
@@ -591,6 +603,10 @@ export const leadDisputes = pgTable("lead_disputes", {
   resolverUserId: varchar("resolver_user_id").references(() => users.id),
   resolvedAt: timestamp("resolved_at"),
   refundCents: integer("refund_cents"),
+  // Wave 6 (T2): AI dispute pre-classification cache.
+  aiClassification: varchar("ai_classification", { length: 40 }), // 'likely_valid' | 'likely_invalid' | 'needs_review'
+  aiConfidence: decimal("ai_confidence", { precision: 3, scale: 2 }),
+  autoReplacementOrderId: integer("auto_replacement_order_id").references(() => orders.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_disputes_status").on(table.status),
@@ -636,3 +652,583 @@ export const vendorLeadIngestSchema = z.object({
 });
 
 export type VendorLeadIngest = z.infer<typeof vendorLeadIngestSchema>;
+
+// ──────────────────────────────────────────────────────
+// Wave 6 — Killer features (one big migration: 0004_killer_features.sql)
+// All new tables for K1-K5, T1-T8, M1-M5, A1-A6, D1-D6, N1-N3 live here.
+// ──────────────────────────────────────────────────────
+
+// K1 — Speed-to-lead live auction. One row per claim attempt; resolved row wins.
+export const leadClaims = pgTable("lead_claims", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  // The auction is opened at `auctionStartedAt`, closes after `windowMs`.
+  // Multiple claim rows may be created during the window; only the resolver
+  // picks one winner and writes resolvedAt + status='won'/'lost'.
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | won | lost | expired
+  bidAmountCents: integer("bid_amount_cents"),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_claims_lead").on(table.leadId),
+  index("idx_claims_agent").on(table.agentUserId),
+  index("idx_claims_status").on(table.status),
+]);
+
+// M1 — Surge pricing snapshot.
+export const leadPriceHistory = pgTable("lead_price_history", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  priceCents: integer("price_cents").notNull(),
+  reason: varchar("reason", { length: 50 }).notNull(), // 'initial' | 'surge' | 'cooldown' | 'manual'
+  surgeMultiplier: decimal("surge_multiplier", { precision: 4, scale: 2 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_price_history_lead").on(table.leadId),
+  index("idx_price_history_created").on(table.createdAt),
+]);
+
+// M2 — Lead bundles offered by vendor.
+export const leadBundles = pgTable("lead_bundles", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  priceCentsPerLead: integer("price_cents_per_lead").notNull(),
+  totalLeadCount: integer("total_lead_count").notNull(),
+  expiresAt: timestamp("expires_at"),
+  status: varchar("status", { length: 20 }).notNull().default("open"), // open | sold | expired
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_bundles_vendor").on(table.vendorId),
+  index("idx_bundles_status").on(table.status),
+]);
+
+export const leadBundleItems = pgTable("lead_bundle_items", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  bundleId: integer("bundle_id").notNull().references(() => leadBundles.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+}, (table) => [
+  unique("uniq_bundle_lead").on(table.bundleId, table.leadId),
+]);
+
+// K2 — TCPA insurance: per-org policy + per-claim eligibility.
+export const tcpaPolicies = pgTable("tcpa_policies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  carrierName: varchar("carrier_name", { length: 255 }),
+  perClaimLimitCents: integer("per_claim_limit_cents").notNull().default(2500000), // $25,000 default
+  aggregateLimitCents: integer("aggregate_limit_cents").notNull().default(10000000), // $100,000 default
+  startedAt: timestamp("started_at").defaultNow(),
+  endsAt: timestamp("ends_at"),
+  status: varchar("status", { length: 20 }).notNull().default("active"), // active | expired | cancelled
+});
+
+export const tcpaClaims = pgTable("tcpa_claims", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  policyId: integer("policy_id").notNull().references(() => tcpaPolicies.id),
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  claimReason: text("claim_reason"),
+  amountClaimedCents: integer("amount_claimed_cents").notNull(),
+  amountPaidCents: integer("amount_paid_cents"),
+  status: varchar("status", { length: 20 }).notNull().default("open"), // open | approved | denied | paid
+  filedAt: timestamp("filed_at").defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+}, (table) => [
+  index("idx_tcpa_claims_status").on(table.status),
+]);
+
+// K3 — Twilio call + sms logs.
+export const callLogs = pgTable("call_logs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  twilioSid: varchar("twilio_sid", { length: 100 }),
+  status: varchar("status", { length: 30 }).notNull(), // queued|ringing|in-progress|completed|busy|no-answer|failed
+  durationSec: integer("duration_sec"),
+  recordingUrl: text("recording_url"),
+  startedAt: timestamp("started_at").defaultNow(),
+  endedAt: timestamp("ended_at"),
+}, (table) => [
+  index("idx_calls_agent").on(table.agentUserId),
+  index("idx_calls_lead").on(table.leadId),
+]);
+
+export const smsLogs = pgTable("sms_logs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  twilioSid: varchar("twilio_sid", { length: 100 }),
+  direction: varchar("direction", { length: 10 }).notNull(), // 'out' | 'in'
+  body: text("body").notNull(),
+  status: varchar("status", { length: 30 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_sms_lead").on(table.leadId),
+]);
+
+// K3 — AI conversation assist: one row per assistant suggestion during a call.
+export const conversationAssists = pgTable("conversation_assists", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  callLogId: integer("call_log_id").notNull().references(() => callLogs.id, { onDelete: "cascade" }),
+  triggerPhrase: text("trigger_phrase"),
+  suggestion: text("suggestion").notNull(),
+  emittedAt: timestamp("emitted_at").defaultNow(),
+});
+
+// K3 — Stored call transcripts (also feeds training data).
+export const transcripts = pgTable("transcripts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  callLogId: integer("call_log_id").notNull().unique().references(() => callLogs.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  language: varchar("language", { length: 10 }).notNull().default("en"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// K4 — CRM connection + per-event sync log.
+export const crmConnections = pgTable("crm_connections", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 30 }).notNull(), // 'hubspot'|'salesforce'|'ghl'|'pipedrive'
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  tokenExpiresAt: timestamp("token_expires_at"),
+  scopes: text("scopes"),
+  externalAccountId: varchar("external_account_id", { length: 255 }),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_crm_org_provider").on(table.orgId, table.provider),
+]);
+
+export const crmSyncEvents = pgTable("crm_sync_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  connectionId: integer("connection_id").notNull().references(() => crmConnections.id, { onDelete: "cascade" }),
+  direction: varchar("direction", { length: 10 }).notNull(), // 'out' (lead→crm) | 'in' (disposition→here)
+  resourceType: varchar("resource_type", { length: 40 }).notNull(), // 'contact'|'deal'|'note'|'task'
+  resourceId: varchar("resource_id", { length: 255 }),
+  externalId: varchar("external_id", { length: 255 }),
+  status: varchar("status", { length: 20 }).notNull(),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_crm_events_conn").on(table.connectionId),
+]);
+
+// K5 — Agent reputation events (raw stream) — score is computed via SQL.
+export const agentReputationEvents = pgTable("agent_reputation_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  eventType: varchar("event_type", { length: 40 }).notNull(),
+  // accepted_assignment | declined_assignment | purchase | sale_closed | dispute_filed_against | dispute_approved | response_time_under_5m
+  weight: integer("weight").notNull(), // +/- points
+  relatedLeadId: integer("related_lead_id").references(() => leads.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_repu_agent").on(table.agentUserId),
+  index("idx_repu_created").on(table.createdAt),
+]);
+
+// T3 — Flat-rate smart-match subscription.
+export const smartMatchSubscriptions = pgTable("smart_match_subscriptions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  monthlyLeadQuota: integer("monthly_lead_quota").notNull(),
+  monthlyPriceCents: integer("monthly_price_cents").notNull(),
+  filterCriteria: jsonb("filter_criteria").notNull(), // { types, states, minMediscore, maxPriceCents, ... }
+  stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  cyclesDelivered: integer("cycles_delivered").notNull().default(0),
+  leadsDeliveredThisCycle: integer("leads_delivered_this_cycle").notNull().default(0),
+  cycleStartedAt: timestamp("cycle_started_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_smartmatch_agent").on(table.agentUserId),
+]);
+
+// A2 — Per-agent spend cap (agency tier).
+export const agentSpendCaps = pgTable("agent_spend_caps", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  monthlyLimitCents: integer("monthly_limit_cents").notNull(),
+  currentSpendCents: integer("current_spend_cents").notNull().default(0),
+  periodStartedAt: timestamp("period_started_at").defaultNow(),
+});
+
+// A3 — Bulk buy + smart fanout
+export const bulkOrders = pgTable("bulk_orders", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  requestedCount: integer("requested_count").notNull(),
+  filterCriteria: jsonb("filter_criteria").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("processing"),
+  fanoutCompletedAt: timestamp("fanout_completed_at"),
+  totalPriceCents: integer("total_price_cents"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_bulk_buyer").on(table.buyerUserId),
+]);
+
+export const bulkOrderItems = pgTable("bulk_order_items", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  bulkOrderId: integer("bulk_order_id").notNull().references(() => bulkOrders.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id),
+  assignedAgentUserId: varchar("assigned_agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+});
+
+// A4 — Custom routing rules DSL.
+export const routingRules = pgTable("routing_rules", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  priority: integer("priority").notNull().default(100),
+  conditions: jsonb("conditions").notNull(), // { allOf: [{ field, op, value }, ...] }
+  action: jsonb("action").notNull(), // { assignTo: userId } | { boostScore: int } | { reject: true }
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_rules_org").on(table.orgId),
+]);
+
+// A5 — White-label agency branding.
+export const orgBranding = pgTable("org_branding", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
+  customDomain: varchar("custom_domain", { length: 255 }),
+  logoUrl: text("logo_url"),
+  primaryColorHex: varchar("primary_color_hex", { length: 7 }),
+  productName: varchar("product_name", { length: 100 }),
+  supportEmail: varchar("support_email", { length: 255 }),
+  enabled: boolean("enabled").notNull().default(false),
+});
+
+// D6 / T6 — Lead persona cache
+export const leadPersonas = pgTable("lead_personas", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
+  persona: text("persona").notNull(),
+  predictedObjections: jsonb("predicted_objections"),
+  bestApproach: text("best_approach"),
+  generatedAt: timestamp("generated_at").defaultNow(),
+  modelUsed: varchar("model_used", { length: 100 }),
+});
+
+// D5 — AI-drafted outreach (email/SMS) cache
+export const outreachDrafts = pgTable("outreach_drafts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  channel: varchar("channel", { length: 10 }).notNull(), // 'email' | 'sms'
+  subject: text("subject"),
+  body: text("body").notNull(),
+  generatedAt: timestamp("generated_at").defaultNow(),
+}, (table) => [
+  index("idx_outreach_lead").on(table.leadId),
+]);
+
+// D3 — News-aware re-engagement events
+export const newsEvents = pgTable("news_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  category: varchar("category", { length: 50 }).notNull(), // 'cms_announcement'|'plan_change'|'state_regulation'
+  state: varchar("state", { length: 2 }),
+  county: varchar("county", { length: 100 }),
+  headline: text("headline").notNull(),
+  summary: text("summary"),
+  effectiveDate: timestamp("effective_date"),
+  source: varchar("source", { length: 200 }),
+  fetchedAt: timestamp("fetched_at").defaultNow(),
+}, (table) => [
+  index("idx_news_state").on(table.state),
+  index("idx_news_category").on(table.category),
+]);
+
+// N1 — Public agency directory profile.
+export const agencyProfiles = pgTable("agency_profiles", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  displayName: varchar("display_name", { length: 255 }).notNull(),
+  bio: text("bio"),
+  specialties: text("specialties").array().notNull().default(sql`ARRAY[]::text[]`),
+  carriers: text("carriers").array().notNull().default(sql`ARRAY[]::text[]`),
+  publicEmail: varchar("public_email", { length: 255 }),
+  publicPhone: varchar("public_phone", { length: 20 }),
+  websiteUrl: text("website_url"),
+  isPublic: boolean("is_public").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// N2 — Agent & vendor referral codes.
+export const referralCodes = pgTable("referral_codes", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  code: varchar("code", { length: 30 }).notNull().unique(),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  ownerKind: varchar("owner_kind", { length: 10 }).notNull(), // 'agent' | 'vendor'
+  rewardPct: decimal("reward_pct", { precision: 4, scale: 3 }).notNull(), // e.g., 0.100
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const referrals = pgTable("referrals", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  codeId: integer("code_id").notNull().references(() => referralCodes.id),
+  refereeUserId: varchar("referee_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending|qualified|paid
+  qualifiedAt: timestamp("qualified_at"),
+  rewardCents: integer("reward_cents"),
+  paidAt: timestamp("paid_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_referral_per_referee").on(table.refereeUserId),
+]);
+
+// N3 — Marketplace integrations directory.
+export const marketplaceIntegrations = pgTable("marketplace_integrations", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  slug: varchar("slug", { length: 80 }).notNull().unique(),
+  name: varchar("name", { length: 255 }).notNull(),
+  developer: varchar("developer", { length: 255 }),
+  category: varchar("category", { length: 40 }).notNull(),
+  description: text("description"),
+  logoUrl: text("logo_url"),
+  installCount: integer("install_count").notNull().default(0),
+  approved: boolean("approved").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const marketplaceIntegrationInstalls = pgTable("marketplace_integration_installs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  integrationId: integer("integration_id").notNull().references(() => marketplaceIntegrations.id),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  config: jsonb("config"),
+  installedAt: timestamp("installed_at").defaultNow(),
+}, (table) => [
+  unique("uniq_install").on(table.integrationId, table.orgId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Wave 6 — Relations
+// ──────────────────────────────────────────────────────
+export const leadClaimsRelations = relations(leadClaims, ({ one }) => ({
+  lead: one(leads, { fields: [leadClaims.leadId], references: [leads.id] }),
+  agent: one(users, { fields: [leadClaims.agentUserId], references: [users.id] }),
+  org: one(organizations, { fields: [leadClaims.orgId], references: [organizations.id] }),
+}));
+
+export const leadPriceHistoryRelations = relations(leadPriceHistory, ({ one }) => ({
+  lead: one(leads, { fields: [leadPriceHistory.leadId], references: [leads.id] }),
+}));
+
+export const leadBundlesRelations = relations(leadBundles, ({ one, many }) => ({
+  vendor: one(vendors, { fields: [leadBundles.vendorId], references: [vendors.id] }),
+  items: many(leadBundleItems),
+}));
+
+export const leadBundleItemsRelations = relations(leadBundleItems, ({ one }) => ({
+  bundle: one(leadBundles, { fields: [leadBundleItems.bundleId], references: [leadBundles.id] }),
+  lead: one(leads, { fields: [leadBundleItems.leadId], references: [leads.id] }),
+}));
+
+export const tcpaPoliciesRelations = relations(tcpaPolicies, ({ one, many }) => ({
+  org: one(organizations, { fields: [tcpaPolicies.orgId], references: [organizations.id] }),
+  claims: many(tcpaClaims),
+}));
+
+export const tcpaClaimsRelations = relations(tcpaClaims, ({ one }) => ({
+  policy: one(tcpaPolicies, { fields: [tcpaClaims.policyId], references: [tcpaPolicies.id] }),
+  order: one(orders, { fields: [tcpaClaims.orderId], references: [orders.id] }),
+  agent: one(users, { fields: [tcpaClaims.agentUserId], references: [users.id] }),
+}));
+
+export const callLogsRelations = relations(callLogs, ({ one, many }) => ({
+  agent: one(users, { fields: [callLogs.agentUserId], references: [users.id] }),
+  lead: one(leads, { fields: [callLogs.leadId], references: [leads.id] }),
+  transcript: one(transcripts, { fields: [callLogs.id], references: [transcripts.callLogId] }),
+  assists: many(conversationAssists),
+}));
+
+export const smsLogsRelations = relations(smsLogs, ({ one }) => ({
+  agent: one(users, { fields: [smsLogs.agentUserId], references: [users.id] }),
+  lead: one(leads, { fields: [smsLogs.leadId], references: [leads.id] }),
+}));
+
+export const conversationAssistsRelations = relations(conversationAssists, ({ one }) => ({
+  call: one(callLogs, { fields: [conversationAssists.callLogId], references: [callLogs.id] }),
+}));
+
+export const transcriptsRelations = relations(transcripts, ({ one }) => ({
+  call: one(callLogs, { fields: [transcripts.callLogId], references: [callLogs.id] }),
+}));
+
+export const crmConnectionsRelations = relations(crmConnections, ({ one, many }) => ({
+  org: one(organizations, { fields: [crmConnections.orgId], references: [organizations.id] }),
+  events: many(crmSyncEvents),
+}));
+
+export const crmSyncEventsRelations = relations(crmSyncEvents, ({ one }) => ({
+  connection: one(crmConnections, { fields: [crmSyncEvents.connectionId], references: [crmConnections.id] }),
+}));
+
+export const agentReputationEventsRelations = relations(agentReputationEvents, ({ one }) => ({
+  agent: one(users, { fields: [agentReputationEvents.agentUserId], references: [users.id] }),
+  lead: one(leads, { fields: [agentReputationEvents.relatedLeadId], references: [leads.id] }),
+}));
+
+export const smartMatchSubscriptionsRelations = relations(smartMatchSubscriptions, ({ one }) => ({
+  agent: one(users, { fields: [smartMatchSubscriptions.agentUserId], references: [users.id] }),
+  org: one(organizations, { fields: [smartMatchSubscriptions.orgId], references: [organizations.id] }),
+}));
+
+export const agentSpendCapsRelations = relations(agentSpendCaps, ({ one }) => ({
+  agent: one(users, { fields: [agentSpendCaps.agentUserId], references: [users.id] }),
+  org: one(organizations, { fields: [agentSpendCaps.orgId], references: [organizations.id] }),
+}));
+
+export const bulkOrdersRelations = relations(bulkOrders, ({ one, many }) => ({
+  buyer: one(users, { fields: [bulkOrders.buyerUserId], references: [users.id] }),
+  org: one(organizations, { fields: [bulkOrders.orgId], references: [organizations.id] }),
+  items: many(bulkOrderItems),
+}));
+
+export const bulkOrderItemsRelations = relations(bulkOrderItems, ({ one }) => ({
+  bulkOrder: one(bulkOrders, { fields: [bulkOrderItems.bulkOrderId], references: [bulkOrders.id] }),
+  lead: one(leads, { fields: [bulkOrderItems.leadId], references: [leads.id] }),
+  assignedAgent: one(users, { fields: [bulkOrderItems.assignedAgentUserId], references: [users.id] }),
+  order: one(orders, { fields: [bulkOrderItems.orderId], references: [orders.id] }),
+}));
+
+export const routingRulesRelations = relations(routingRules, ({ one }) => ({
+  org: one(organizations, { fields: [routingRules.orgId], references: [organizations.id] }),
+}));
+
+export const orgBrandingRelations = relations(orgBranding, ({ one }) => ({
+  org: one(organizations, { fields: [orgBranding.orgId], references: [organizations.id] }),
+}));
+
+export const leadPersonasRelations = relations(leadPersonas, ({ one }) => ({
+  lead: one(leads, { fields: [leadPersonas.leadId], references: [leads.id] }),
+}));
+
+export const outreachDraftsRelations = relations(outreachDrafts, ({ one }) => ({
+  lead: one(leads, { fields: [outreachDrafts.leadId], references: [leads.id] }),
+}));
+
+export const agencyProfilesRelations = relations(agencyProfiles, ({ one }) => ({
+  org: one(organizations, { fields: [agencyProfiles.orgId], references: [organizations.id] }),
+}));
+
+export const referralCodesRelations = relations(referralCodes, ({ one, many }) => ({
+  owner: one(users, { fields: [referralCodes.ownerUserId], references: [users.id] }),
+  referrals: many(referrals),
+}));
+
+export const referralsRelations = relations(referrals, ({ one }) => ({
+  code: one(referralCodes, { fields: [referrals.codeId], references: [referralCodes.id] }),
+  referee: one(users, { fields: [referrals.refereeUserId], references: [users.id] }),
+}));
+
+export const marketplaceIntegrationsRelations = relations(marketplaceIntegrations, ({ many }) => ({
+  installs: many(marketplaceIntegrationInstalls),
+}));
+
+export const marketplaceIntegrationInstallsRelations = relations(marketplaceIntegrationInstalls, ({ one }) => ({
+  integration: one(marketplaceIntegrations, {
+    fields: [marketplaceIntegrationInstalls.integrationId],
+    references: [marketplaceIntegrations.id],
+  }),
+  org: one(organizations, { fields: [marketplaceIntegrationInstalls.orgId], references: [organizations.id] }),
+}));
+
+// ──────────────────────────────────────────────────────
+// Wave 6 — Type exports + insert schemas
+// ──────────────────────────────────────────────────────
+export type InsertLeadClaim = typeof leadClaims.$inferInsert;
+export type LeadClaim = typeof leadClaims.$inferSelect;
+export type InsertLeadPriceHistory = typeof leadPriceHistory.$inferInsert;
+export type LeadPriceHistory = typeof leadPriceHistory.$inferSelect;
+export type InsertLeadBundle = typeof leadBundles.$inferInsert;
+export type LeadBundle = typeof leadBundles.$inferSelect;
+export type InsertLeadBundleItem = typeof leadBundleItems.$inferInsert;
+export type LeadBundleItem = typeof leadBundleItems.$inferSelect;
+export type InsertTcpaPolicy = typeof tcpaPolicies.$inferInsert;
+export type TcpaPolicy = typeof tcpaPolicies.$inferSelect;
+export type InsertTcpaClaim = typeof tcpaClaims.$inferInsert;
+export type TcpaClaim = typeof tcpaClaims.$inferSelect;
+export type InsertCallLog = typeof callLogs.$inferInsert;
+export type CallLog = typeof callLogs.$inferSelect;
+export type InsertSmsLog = typeof smsLogs.$inferInsert;
+export type SmsLog = typeof smsLogs.$inferSelect;
+export type InsertConversationAssist = typeof conversationAssists.$inferInsert;
+export type ConversationAssist = typeof conversationAssists.$inferSelect;
+export type InsertTranscript = typeof transcripts.$inferInsert;
+export type Transcript = typeof transcripts.$inferSelect;
+export type InsertCrmConnection = typeof crmConnections.$inferInsert;
+export type CrmConnection = typeof crmConnections.$inferSelect;
+export type InsertCrmSyncEvent = typeof crmSyncEvents.$inferInsert;
+export type CrmSyncEvent = typeof crmSyncEvents.$inferSelect;
+export type InsertAgentReputationEvent = typeof agentReputationEvents.$inferInsert;
+export type AgentReputationEvent = typeof agentReputationEvents.$inferSelect;
+export type InsertSmartMatchSubscription = typeof smartMatchSubscriptions.$inferInsert;
+export type SmartMatchSubscription = typeof smartMatchSubscriptions.$inferSelect;
+export type InsertAgentSpendCap = typeof agentSpendCaps.$inferInsert;
+export type AgentSpendCap = typeof agentSpendCaps.$inferSelect;
+export type InsertBulkOrder = typeof bulkOrders.$inferInsert;
+export type BulkOrder = typeof bulkOrders.$inferSelect;
+export type InsertBulkOrderItem = typeof bulkOrderItems.$inferInsert;
+export type BulkOrderItem = typeof bulkOrderItems.$inferSelect;
+export type InsertRoutingRule = typeof routingRules.$inferInsert;
+export type RoutingRule = typeof routingRules.$inferSelect;
+export type InsertOrgBranding = typeof orgBranding.$inferInsert;
+export type OrgBranding = typeof orgBranding.$inferSelect;
+export type InsertLeadPersona = typeof leadPersonas.$inferInsert;
+export type LeadPersona = typeof leadPersonas.$inferSelect;
+export type InsertOutreachDraft = typeof outreachDrafts.$inferInsert;
+export type OutreachDraft = typeof outreachDrafts.$inferSelect;
+export type InsertNewsEvent = typeof newsEvents.$inferInsert;
+export type NewsEvent = typeof newsEvents.$inferSelect;
+export type InsertAgencyProfile = typeof agencyProfiles.$inferInsert;
+export type AgencyProfile = typeof agencyProfiles.$inferSelect;
+export type InsertReferralCode = typeof referralCodes.$inferInsert;
+export type ReferralCode = typeof referralCodes.$inferSelect;
+export type InsertReferral = typeof referrals.$inferInsert;
+export type Referral = typeof referrals.$inferSelect;
+export type InsertMarketplaceIntegration = typeof marketplaceIntegrations.$inferInsert;
+export type MarketplaceIntegration = typeof marketplaceIntegrations.$inferSelect;
+export type InsertMarketplaceIntegrationInstall = typeof marketplaceIntegrationInstalls.$inferInsert;
+export type MarketplaceIntegrationInstall = typeof marketplaceIntegrationInstalls.$inferSelect;
+
+export const insertLeadClaimSchema = createInsertSchema(leadClaims);
+export const insertLeadPriceHistorySchema = createInsertSchema(leadPriceHistory);
+export const insertLeadBundleSchema = createInsertSchema(leadBundles);
+export const insertLeadBundleItemSchema = createInsertSchema(leadBundleItems);
+export const insertTcpaPolicySchema = createInsertSchema(tcpaPolicies);
+export const insertTcpaClaimSchema = createInsertSchema(tcpaClaims);
+export const insertCallLogSchema = createInsertSchema(callLogs);
+export const insertSmsLogSchema = createInsertSchema(smsLogs);
+export const insertConversationAssistSchema = createInsertSchema(conversationAssists);
+export const insertTranscriptSchema = createInsertSchema(transcripts);
+export const insertCrmConnectionSchema = createInsertSchema(crmConnections);
+export const insertCrmSyncEventSchema = createInsertSchema(crmSyncEvents);
+export const insertAgentReputationEventSchema = createInsertSchema(agentReputationEvents);
+export const insertSmartMatchSubscriptionSchema = createInsertSchema(smartMatchSubscriptions);
+export const insertAgentSpendCapSchema = createInsertSchema(agentSpendCaps);
+export const insertBulkOrderSchema = createInsertSchema(bulkOrders);
+export const insertBulkOrderItemSchema = createInsertSchema(bulkOrderItems);
+export const insertRoutingRuleSchema = createInsertSchema(routingRules);
+export const insertOrgBrandingSchema = createInsertSchema(orgBranding);
+export const insertLeadPersonaSchema = createInsertSchema(leadPersonas);
+export const insertOutreachDraftSchema = createInsertSchema(outreachDrafts);
+export const insertNewsEventSchema = createInsertSchema(newsEvents);
+export const insertAgencyProfileSchema = createInsertSchema(agencyProfiles);
+export const insertReferralCodeSchema = createInsertSchema(referralCodes);
+export const insertReferralSchema = createInsertSchema(referrals);
+export const insertMarketplaceIntegrationSchema = createInsertSchema(marketplaceIntegrations);
+export const insertMarketplaceIntegrationInstallSchema = createInsertSchema(marketplaceIntegrationInstalls);
