@@ -20,6 +20,7 @@ import {
   vendorBalances,
   vendorPayouts,
   leadDisputes,
+  agentReputationEvents,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -46,12 +47,20 @@ import {
   type InsertSavedList,
   type VendorPayout,
   type LeadDispute,
+  type AgentReputationEvent,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import {
+  recordEvent as recordReputationEventCore,
+  computeReputationScore as computeAgentReputationCore,
+  REPUTATION_WINDOW_DAYS,
+  clampReputationScore,
+  type ReputationEventType,
+} from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { splitRevenue } from "./vendorPayouts";
 import {
@@ -241,6 +250,19 @@ export interface IStorage {
     refundCents: number,
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: agent reputation (K5)
+  // ──────────────────────────────────────────────────────
+  recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: ReputationEventType;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+    weight?: number;
+  }): Promise<void>;
+  getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
+  computeAgentReputation(agentUserId: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -512,6 +534,14 @@ export class DatabaseStorage implements IStorage {
       // Use Decimal -> cents to avoid float drift; floor to whole cents.
       const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
       await this.creditVendorOnSaleTx(tx, order.id, lead.id, lead.vendorId, salePriceCents);
+
+      // Reputation: +5 for a purchase. Best-effort — recordReputationEvent
+      // swallows errors so a hiccup here can't roll back a paid order.
+      await recordReputationEventCore({
+        agentUserId: userId,
+        eventType: "purchase",
+        relatedLeadId: leadId,
+      });
 
       return order;
     });
@@ -1111,6 +1141,23 @@ export class DatabaseStorage implements IStorage {
                 eq(leads.removed, false),
               ),
             );
+          // Pull the agent's trailing-90d reputation aggregate so the ranker
+          // can include it. SQL aggregate inside the same tx so a freshly
+          // recorded event (e.g. just-declined assignment) is visible.
+          const cutoff = new Date(Date.now() - REPUTATION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+          const [repRow] = await tx
+            .select({
+              total: sql<number>`coalesce(sum(${agentReputationEvents.weight}), 0)`.as("total"),
+            })
+            .from(agentReputationEvents)
+            .where(
+              and(
+                eq(agentReputationEvents.agentUserId, row.users.id),
+                gte(agentReputationEvents.createdAt, cutoff),
+              ),
+            );
+          const reputationScore = clampReputationScore(Number(repRow?.total ?? 0));
+
           hydrated.push({
             userId: row.users.id,
             licensedStates: ap.licensedStates,
@@ -1122,6 +1169,7 @@ export class DatabaseStorage implements IStorage {
             conversionRate: parseFloat(ap.conversionRate ?? "0"),
             acceptingLeads: ap.acceptingLeads,
             verified: ap.verificationStatus === "verified",
+            reputationScore,
           });
         }
 
@@ -1186,6 +1234,15 @@ export class DatabaseStorage implements IStorage {
           .set({ assignedToUserId: null, assignedAt: null })
           .where(eq(leads.id, a.leadId));
       }
+
+      // Reputation: accept = +2, decline = -1.
+      await recordReputationEventCore({
+        agentUserId,
+        eventType: status === "accepted" ? "accepted_assignment" : "declined_assignment",
+        relatedLeadId: a.leadId,
+        metadata: { assignmentId: a.id },
+      });
+
       return updated;
     });
   }
@@ -1616,7 +1673,19 @@ export class DatabaseStorage implements IStorage {
         .onConflictDoNothing({ target: leadDisputes.orderId })
         .returning();
 
-      if (dispute) return dispute;
+      if (dispute) {
+        // Reputation: -3 against the agent who purchased the lead (here, the
+        // buyer filing the dispute — they bought it, found it bad, and the
+        // platform takes that as a negative signal on their judgment / the
+        // routed match). The bigger hit (-5) lands only if admin approves.
+        await recordReputationEventCore({
+          agentUserId: input.buyerUserId,
+          eventType: "dispute_filed_against",
+          relatedLeadId: order.leadId,
+          metadata: { orderId: input.orderId, disputeId: dispute.id },
+        });
+        return dispute;
+      }
 
       // Conflict race — read the row that won.
       const [winner] = await tx
@@ -1792,6 +1861,19 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // Reputation: -5 against the agent on the dispute (the buyer who
+      // purchased the lead). Stacks on top of the -3 from filing so a single
+      // approved dispute nets -8 over the trailing window. Only when the
+      // buyer id is still present (it can be null after GDPR delete).
+      if (dispute.buyerUserId) {
+        await recordReputationEventCore({
+          agentUserId: dispute.buyerUserId,
+          eventType: "dispute_approved",
+          relatedLeadId: dispute.leadId,
+          metadata: { orderId: dispute.orderId, disputeId },
+        });
+      }
+
       return updated;
     });
   }
@@ -1822,6 +1904,44 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return updated;
     });
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: agent reputation (K5)
+  //
+  // These wrap the pure helpers in ./reputation.ts. Storage methods that
+  // already do the heavy lifting (purchaseLead, setAssignmentStatus,
+  // createDispute, approveDispute) now fire-and-forget into recordReputation
+  // so the reputation stream is updated at every lifecycle inflection
+  // point. recordReputationEvent never throws, so adding it inside a tx is
+  // safe even when the surrounding action will commit.
+  // ──────────────────────────────────────────────────────
+
+  async recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: ReputationEventType;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+    weight?: number;
+  }): Promise<void> {
+    await recordReputationEventCore(input);
+  }
+
+  async getReputationEvents(
+    agentUserId: string,
+    limit: number = 100,
+  ): Promise<AgentReputationEvent[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 100));
+    return await db
+      .select()
+      .from(agentReputationEvents)
+      .where(eq(agentReputationEvents.agentUserId, agentUserId))
+      .orderBy(desc(agentReputationEvents.createdAt))
+      .limit(safeLimit);
+  }
+
+  async computeAgentReputation(agentUserId: string): Promise<number> {
+    return await computeAgentReputationCore(agentUserId);
   }
 }
 
