@@ -9,7 +9,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2, AlertTriangle, Sparkles } from "lucide-react";
+import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2, AlertTriangle, Sparkles, Brain } from "lucide-react";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -79,6 +79,19 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
   const { data: revealedLead, isLoading: isRevealing } = useQuery<Lead>({
     queryKey: [`/api/leads/${lead?.id}/reveal`],
     enabled: !!lead?.id && isPurchased,
+    retry: false,
+  });
+
+  // Wave 7 (T6) — AI persona lazy-loads when a purchaser opens the dialog.
+  const { data: persona, isLoading: personaLoading, isError: personaError } = useQuery<{
+    persona: string;
+    predictedObjections: string[];
+    bestApproach: string;
+    generatedAt: string | null;
+    modelUsed: string | null;
+  }>({
+    queryKey: [`/api/leads/${lead?.id}/persona`],
+    enabled: !!lead?.id && !!isPurchased && open,
     retry: false,
   });
 
@@ -268,6 +281,67 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
                         </li>
                       ))}
                     </ul>
+                  </div>
+                </div>
+              )}
+
+              {isPurchased && (
+                <div data-testid={`persona-section-${lead.id}`}>
+                  <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Brain className="h-4 w-4" /> AI Persona
+                  </h4>
+                  <div className="bg-violet-50/40 dark:bg-violet-950/20 rounded-lg p-4 border border-violet-100 dark:border-violet-900 space-y-3">
+                    {personaLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating persona…
+                      </div>
+                    ) : personaError ? (
+                      <p className="text-xs text-muted-foreground">
+                        Persona temporarily unavailable.
+                      </p>
+                    ) : persona ? (
+                      <>
+                        <p
+                          className="text-sm leading-relaxed text-foreground whitespace-pre-line"
+                          data-testid={`persona-text-${lead.id}`}
+                        >
+                          {persona.persona}
+                        </p>
+
+                        {persona.predictedObjections.length > 0 && (
+                          <div>
+                            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                              Predicted Objections
+                            </div>
+                            <ul
+                              className="space-y-1 text-xs"
+                              data-testid={`persona-objections-${lead.id}`}
+                            >
+                              {persona.predictedObjections.map((obj, i) => (
+                                <li key={i} className="flex items-start gap-1.5">
+                                  <AlertTriangle className="h-3 w-3 mt-0.5 text-amber-500 flex-shrink-0" />
+                                  <span>{obj}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {persona.bestApproach && (
+                          <div>
+                            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                              Best Approach
+                            </div>
+                            <p
+                              className="text-xs leading-relaxed text-foreground"
+                              data-testid={`persona-approach-${lead.id}`}
+                            >
+                              {persona.bestApproach}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    ) : null}
                   </div>
                 </div>
               )}

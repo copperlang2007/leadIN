@@ -45,6 +45,7 @@ import {
   proposeReplacementCredit,
   type ReplacementDeps,
 } from "./leadReplacement";
+import { getPersonaForLead } from "./leadPersona";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -470,6 +471,51 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error revealing lead PII:", error);
       res.status(500).json({ message: "Failed to reveal lead information" });
+    }
+  });
+
+  // Wave 7 (T6) — AI persona for a purchased lead. Gated to the purchaser of
+  // the lead or to admin users. Re-generates if the cached row is > 7 days old
+  // (or whenever `?force=true` is supplied).
+  app.get("/api/leads/:id/persona", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = parseInt(req.params.id);
+      if (!Number.isFinite(leadId)) {
+        return res.status(400).json({ message: "Invalid lead id" });
+      }
+
+      const user = await storage.getUser(userId);
+      const isAdminUser = user?.role === "admin";
+
+      if (!isAdminUser) {
+        // Must own a completed order for this lead.
+        const order = await storage.getOrderForLead(userId, leadId);
+        if (!order) {
+          return res
+            .status(403)
+            .json({ message: "Purchase this lead to view the AI persona" });
+        }
+      }
+
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org-scope guard: an admin from a different org should not see a
+      // persona for an org-scoped lead they don't belong to.
+      if (lead.orgId && !isAdminUser) {
+        if (user?.activeOrgId !== lead.orgId) {
+          return res.status(403).json({ message: "Lead not available to your organization" });
+        }
+      }
+
+      const force = req.query.force === "true" || req.query.force === "1";
+      const persona = await getPersonaForLead(leadId, force);
+      if (!persona) return res.status(404).json({ message: "Lead not found" });
+      res.json(persona);
+    } catch (error) {
+      console.error("Error generating lead persona:", error);
+      res.status(500).json({ message: "Failed to generate persona" });
     }
   });
 
