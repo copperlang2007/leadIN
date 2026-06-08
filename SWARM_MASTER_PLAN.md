@@ -1,111 +1,102 @@
-# Killer-features swarm master plan
+# Killer-features swarm master plan (extended)
 
-5 waves. Foundation lands first to avoid schema conflicts; feature waves then fan out 6-8 parallel agents each. Total ~33 features.
+102 total features across 11+ waves. Foundation (6a) merged in PR #12.
+Foundation extension (12a) covers the 69 second-batch features.
 
-## Wave 6a — Foundation (serial, one agent)
+## ✅ Wave 6a — Foundation (DONE, PR #12)
+28 tables, 11 column extensions, 5 shared libs.
 
-Single mega-PR. ALL new tables + ALL shared infra so feature agents don't fight migrations.
+## Wave 6b — The 5 killers (5 parallel agents)
+K1 Live Auction · K2 TCPA Bundle · K3 Dialer+AI Assist · K4 CRM Sync · K5 Reputation
 
-- **Schema additions** (one migration `0004_killer_features.sql`):
-  - `lead_claims`, `lead_price_history`, `lead_bundles`, `lead_bundle_items`
-  - `tcpa_policies`, `tcpa_claims`
-  - `call_logs`, `sms_logs`, `conversation_assists`, `transcripts`
-  - `crm_connections`, `crm_sync_events`
-  - `agent_reputation_events`
-  - `smart_match_subscriptions`
-  - `agent_spend_caps`, `bulk_orders`, `bulk_order_items`
-  - `routing_rules`
-  - `org_branding`
-  - `news_events`
-  - `lead_personas` (cache), `outreach_drafts` (cache)
-  - `agency_profiles`
-  - `referral_codes`, `referrals`
-  - `marketplace_integrations`, `marketplace_integration_installs`
-  - Column extensions on `leads`: `enrichmentJson`, `mediscoreExplanation`, `bestCallWindowsJson`
-  - Column extensions on `vendors`: `isExclusive`, `revShareOverride`
-  - Column extensions on `agent_profiles`: `niprVerifiedAt`, `niprLicenseExpiry`
-  - Column extensions on `lead_disputes`: `aiClassification`, `aiConfidence`, `autoReplacementOrderId`
+## Wave 7 — Tier 2 differentiators (8 agents)
+T1 Lead Replacement · T2 AI Dispute Classifier · T3 Smart Match Subscription · T4 NIPR Auto-Verify · T5 Vendor Scorecard · T6 AI Lead Persona · T7 SMS-First Outreach · T8 Auto-DNC at dial time
 
-- **Shared infra** (new files):
-  - `server/lib/llm.ts` — `chat({ system, user, schema? })` with OpenAI/Anthropic backends + deterministic stub
-  - `server/lib/twilio.ts` — `startCall`, `sendSms`, webhook signature verification + stub
-  - `server/lib/crm.ts` — adapter interface (`HubSpotAdapter`, `SalesforceAdapter`, `GhlAdapter`, `PipedriveAdapter`) + stub
-  - `server/lib/nipr.ts` — `verifyLicense(niprNumber, state)` + stub
-  - `shared/featureFlags.ts` — feature toggles read from env
+## Wave 8 — Marketplace dynamics (5 agents)
+M1 Surge Pricing · M2 Lead Bundles · M3 Coverage Heat Map · M4 Live Radar Map · M5 Exclusive Vendor
 
-## Wave 6b — The 5 killers (parallel)
+## Wave 9 — Agency tier (6 agents)
+A1 Shared Pipeline · A2 Spend Caps · A3 Bulk Buy · A4 Routing Rules DSL · A5 White-Label · A6 Forecast
 
-| Agent | Feature | Touches |
-|---|---|---|
-| K1 | Speed-to-Lead Live Auction (10s WebSocket window, claim race) | `server/auction.ts`, `server/routes.ts`, `client/.../live-auction.tsx` |
-| K2 | TCPA defense insurance bundled with every lead | `server/tcpa.ts`, lead detail UI, claim flow |
-| K3 | Inline Dialer + AI Conversation Assist | `server/dialer.ts`, `client/.../dialer-panel.tsx` |
-| K4 | CRM bidirectional sync | `server/crmSync.ts`, settings UI |
-| K5 | Agent Reputation System | `server/reputation.ts`, routing integration, vendor UI |
+## Wave 10 — AI/data compounding (6 agents)
+D1 MediScore NL Explainer · D2 Best-time-to-call · D3 News-Aware Re-engagement · D4 AI Enrichment · D5 AI Outreach · D6 Conversion Playbook
 
-## Wave 7 — Tier 2 differentiators (parallel)
+## Wave 11 — Network effects (3 agents)
+N1 Public Agent Directory · N2 Referral Codes · N3 API Marketplace
 
-| Agent | Feature |
-|---|---|
-| T1 | Lead Replacement Guarantee (auto-detect) |
-| T2 | AI Dispute Pre-Classifier |
-| T3 | Smart Match flat-rate subscription |
-| T4 | NIPR / DOI auto-verification |
-| T5 | Vendor Conversion Scorecard |
-| T6 | AI Lead Persona Generator |
-| T7 | SMS-First Outreach (TCPA-safe templates) |
-| T8 | Auto-DNC re-check at dial time |
+## Wave 12a — Foundation extension (1 agent)
+Schema for 69 new features:
+- Fintech: `credit_lines`, `credit_repayments`, `commission_escrows`, `pay_per_close_orders`, `refund_insurance`, `wallet_cards`
+- Compliance moat: `doi_complaints`, `defense_packets`, `compliance_certifications`, `cms_filings`, `pii_retention_policies`, `tcpa_watchdog_events`
+- Marketplace mechanics: `reverse_auctions`, `wishlists`, `wishlist_matches`, `lead_tradein_credits`, `lead_shares`, `lead_xray_stats`, `vendor_reviews`, `agent_streaks`, `daily_challenges`, `agent_achievements`, `wins_feed_posts`
+- Vertical expansion: `lead_verticals` (extension to leads.vertical column + auto/home/aca/mortgage/commercial/annuity/pet enum)
+- Voice/AR: `video_call_sessions`, `voice_clones`, `lead_audio_tours`, `sentiment_snapshots`
+- Embedded SaaS: `quote_widgets`, `landing_pages`, `provisioned_phone_numbers`
+- Data products: `mediscore_api_keys`, `mediscore_api_usage`, `data_products`, `data_product_subscriptions`
+- Owned media: `webinars`, `webinar_registrations`, `news_briefs`, `affiliates`, `affiliate_payouts`, `mentor_matches`, `agent_certifications`
+- Dev ecosystem: `public_webhooks`, `webhook_deliveries`, `sdk_install_metrics`
+- Out-there: `obituary_signals`, `lead_options` (futures), `lead_option_contracts`, `direct_mail_orders`, `carrier_direct_pipelines`, `language_packs` (i18n)
 
-## Wave 8 — Marketplace dynamics (parallel)
+## Wave 12b-17 — 69 feature agents (waves of 5-8)
 
-| Agent | Feature |
-|---|---|
-| M1 | Surge Pricing (sub-10s demand multiplier) |
-| M2 | Lead Bundles |
-| M3 | Coverage Heat Map |
-| M4 | Live Lead Radar Map |
-| M5 | Exclusive Vendor Partnership Program |
+### Wave 12b — Fintech (5)
+F1 Pay-Per-Close pricing · F2 Lead-backed credit line · F3 Commission escrow · F4 Refund insurance · F5 Wallet debit card
 
-## Wave 9 — Agency tier (parallel)
+### Wave 13a — Compliance moat (6)
+CM1 DOI complaint auto-defense packet · CM2 State-by-state compliance heatmap · CM3 CMS MIPPA filing automation · CM4 "Certified by LeadMarket" badge · CM5 Two-party-consent recording notice · CM6 GDPR/CCPA auto-deletion timer
 
-| Agent | Feature |
-|---|---|
-| A1 | Shared Pipeline Kanban |
-| A2 | Per-Agent Spend Caps |
-| A3 | Bulk Buy + Smart Fanout |
-| A4 | Custom Routing Rules DSL |
-| A5 | White-Label Agency Branding |
-| A6 | Pipeline Forecast |
+### Wave 13b — Marketplace mechanics from elsewhere (8)
+MM1 Reverse auction · MM2 Wishlist subscription · MM3 Trade-in credit · MM4 Lead "share" syndication · MM5 Lead X-ray stats · MM6 Verified review system · MM7 Streaks + daily challenges · MM8 "Won deals" feed
 
-## Wave 10 — Compounding AI/data (parallel)
+### Wave 14 — Vertical expansion (6)
+V1 Auto + home leads · V2 ACA leads · V3 Mortgage protection · V4 Commercial small biz · V5 Annuities · V6 Pet insurance
 
-| Agent | Feature |
-|---|---|
-| D1 | MediScore Natural-Language Explainer |
-| D2 | Best Time-to-Call Predictor |
-| D3 | News-Aware Re-engagement |
-| D4 | AI Lead Enrichment for Vendors |
-| D5 | AI-Drafted Outreach Email/SMS |
-| D6 | AI Conversion Playbook |
+### Wave 15a — Voice/video/AR (5)
+VR1 Video escalation from dialer · VR2 AR Medicare plan comparison · VR3 Voice clone for voicemail · VR4 Sentiment MediScore · VR5 AI-narrated lead tour
 
-## Wave 11 — Network effects (parallel)
+### Wave 15b — Embedded SaaS (4)
+ES1 Quote engine SDK · ES2 Landing-page builder · ES3 Insurance CRM · ES4 Phone number provisioning
 
-| Agent | Feature |
-|---|---|
-| N1 | Public Agent Directory (SEO + NIPR badge) |
-| N2 | Agent + Vendor Referral Codes |
-| N3 | API Marketplace (third-party integrations) |
+### Wave 16a — Data products / B2B (4)
+DP1 State plan-churn dataset · DP2 Quarterly "State of Medicare Leads" PDF · DP3 Consumer-quality signals API · DP4 MediScore benchmark dashboard
 
-## Skipped
+### Wave 16b — Owned media + community (8)
+OM1 Compliance webinar series · OM2 AI news brief daily · OM3 Agent Academy certification · OM4 Affiliate publishing program · OM5 Podcast network · OM6 Discord community embed · OM7 Mentorship matching · OM8 Annual awards
 
-- Annual conference (real-world; planned by humans, not built by agents)
-- Lead investment fund (regulatory complexity beyond scope)
-- Agent-vs-vendor reverse auction (overlap with Smart Match — defer)
+### Wave 17 — Dev ecosystem (5)
+DE1 App marketplace · DE2 Public webhooks · DE3 Live feed iframe widget · DE4 TypeScript SDK on npm · DE5 Hackathon platform
 
-## Wave protocol
+### Wave 18 — Out-there bets (7)
+OT1 Obituary scraper → final expense · OT2 Estate-planning referral side-channel · OT3 Lead options/futures market · OT4 Direct mail marketplace · OT5 Carrier-direct binding · OT6 Spanish-language vertical · OT7 Predictive agent churn detection
 
+### Killers from the top-10 list (the 3 not yet placed above)
+- AEP Campaign Auto-Orchestrator → Wave 13c (Compliance/Campaign Ops): CO1
+- Lead "Second-Look" Re-list → Wave 8 (Marketplace dynamics): M6
+- Voice-Driven Mobile Browsing → Wave 15a: VR6
+
+## Skipped (real-world or regulatory)
+- Annual conference (humans, not agents)
+- Lead-LP fund (regulatory complexity beyond engineering)
+- Acquisition-of-vendors program (M&A, humans)
+- Carrier appointment broker (sales relationship, humans)
+
+## Protocol
 - Each wave: feature agents work in isolated worktrees off the same parent commit.
-- Schema is locked after Wave 6a — feature agents don't add migrations.
-- LLM/Twilio/CRM/NIPR features ship with the stub backend; production runtime switches via env vars.
+- Schema is locked after each foundation wave; feature agents don't add migrations.
+- LLM/Twilio/CRM/NIPR features use the stub backend; production runtime switches via env vars.
 - Each agent: tsc clean, lint 0 errors, tests pass, no schema diff drift.
-- Collector merges all wave branches into a single PR with a single squash commit per wave.
+- Collector merges all wave branches into a single PR with one squash commit per wave.
+
+## Realistic timeline
+At ~4 minutes of agent-work per agent + ~5 minutes per collector PR + CI:
+- Wave 6b: 5 agents parallel ≈ 1 unit
+- Wave 7: 8 agents parallel ≈ 1 unit
+- Wave 8: 5+1 agents ≈ 1 unit
+- Wave 9: 6 agents ≈ 1 unit
+- Wave 10: 6 agents ≈ 1 unit
+- Wave 11: 3 agents ≈ 0.6 units
+- Wave 12a foundation: 1 agent serial ≈ 1 unit
+- Waves 12b-18: ~52 agents in batches of 5-8 ≈ 7-8 units
+- **Total: ~14 units of agent time, 25-30 collector PRs**
+
+Will execute in batches, with the constraint that each foundation extension must merge before its dependent feature wave can branch off.
