@@ -39,6 +39,7 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
   const [transcript, setTranscript] = useState<string>("");
   const [suggestions, setSuggestions] = useState<AssistSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [dncBlocked, setDncBlocked] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const callLogIdRef = useRef<number | null>(null);
   // Avoid bare-DOM globals in eslint config — let TS infer from the JSX ref.
@@ -91,19 +92,39 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
       setTranscript("");
       setSuggestions([]);
       setError(null);
+      setDncBlocked(null);
     }
   }, [open]);
 
   async function handleStartCall() {
     setIsCalling(true);
     setError(null);
+    setDncBlocked(null);
     try {
       const res = await apiRequest("POST", "/api/dialer/call", { leadId });
       const data: CallStartResult = await res.json();
       setCallLogId(data.callLogId);
       setCallStatus(data.status || "queued");
     } catch (err: any) {
-      setError(err?.message || "Failed to start call");
+      // `apiRequest` throws `Error("<status>: <body-text>")` on non-2xx. The
+      // body is JSON for our routes, so we parse it back out to detect the
+      // DNC block reliably and surface the server's reason.
+      const message: string = err?.message || "";
+      const match = message.match(/^(\d{3}):\s*([\s\S]*)$/);
+      const status = match ? Number(match[1]) : undefined;
+      let body: { message?: string; dncBlocked?: boolean } | undefined;
+      if (match) {
+        try {
+          body = JSON.parse(match[2]);
+        } catch {
+          body = undefined;
+        }
+      }
+      if (status === 403 && (body?.dncBlocked || /dnc/i.test(body?.message || message))) {
+        setDncBlocked(body?.message || "Phone is on DNC list — call blocked");
+      } else {
+        setError(message || "Failed to start call");
+      }
     } finally {
       setIsCalling(false);
     }
@@ -173,6 +194,16 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
           <p className="text-xs text-destructive mt-2" data-testid="dialer-error">
             {error}
           </p>
+        )}
+        {dncBlocked && (
+          <div
+            className="mt-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            data-testid="dialer-dnc-blocked"
+            role="alert"
+          >
+            <strong className="font-semibold">Call blocked: </strong>
+            {dncBlocked}
+          </div>
         )}
       </div>
 
