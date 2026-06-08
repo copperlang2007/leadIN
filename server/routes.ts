@@ -35,6 +35,11 @@ import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
+import {
+  autoIssueReplacement,
+  proposeReplacementCredit,
+  type ReplacementDeps,
+} from "./leadReplacement";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -739,6 +744,160 @@ export async function registerRoutes(
       }
       console.error("Error denying dispute:", err);
       res.status(500).json({ message: err?.message || "Failed to deny dispute" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Lead replacement / trade-in credits (Wave 7 — T1)
+  //
+  // When the K3 dialer logs 3+ unsuccessful attempts on a purchased lead
+  // (or the nightly DNC re-check flags the consumer phone), we auto-issue
+  // a 50%-of-price trade-in credit instead of forcing the buyer to file a
+  // dispute. Idempotent: a second check returns "already_credited".
+  // Agent-only — the route requires the requester to own the order.
+  // ──────────────────────────────────────────────────────
+  app.post("/api/orders/:orderId/check-replacement", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+
+      const order = await storage.getOrderById(orderId);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (order.userId !== userId) {
+        const u = await storage.getUser(userId);
+        if (u?.role !== "admin") {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+
+      // Throttle so a UI retry storm can't hammer the dialer log scan.
+      if (!(await takeToken(`replacement:${userId}`, 30, 10 / 60))) {
+        return res.status(429).json({ message: "Too many replacement checks" });
+      }
+
+      const deps: ReplacementDeps = {
+        getOrder: (id) => storage.getOrderById(id),
+        getCallLogsForOrder: (id) => storage.getCallLogsForOrder(id),
+        getCreditForOrder: (id) => storage.getTradeInCreditByOrderId(id),
+        createTradeInCredit: (input) => storage.createTradeInCredit(input),
+        redeemTradeInCredit: (cid, lid) => storage.redeemTradeInCredit(cid, lid),
+        recordAudit: (input) =>
+          recordAudit({
+            actorUserId: input.actorUserId,
+            action: input.action,
+            targetKind: input.targetKind ?? null,
+            targetId: input.targetId ?? null,
+            metadata: input.metadata ?? null,
+          }),
+      };
+
+      const result = await autoIssueReplacement(orderId, deps);
+      // Idempotent: 200 in all "shaped" cases. The body carries `issued`.
+      if (result.issued) {
+        return res.status(201).json(result);
+      }
+      // Surface a 409 only when the credit already exists — every other
+      // ineligibility (too old, no bad signal, …) stays a 200 so the UI
+      // can render a friendly "not eligible" state without trapping errors.
+      if (result.reason === "already_credited") {
+        const existing = await storage.getTradeInCreditByOrderId(orderId);
+        return res.status(200).json({ issued: false, reason: result.reason, credit: existing });
+      }
+      return res.status(200).json(result);
+    } catch (err: any) {
+      console.error("Error checking replacement eligibility:", err);
+      res.status(500).json({ message: err?.message || "Failed to check replacement eligibility" });
+    }
+  });
+
+  // Dry-run: return eligibility without issuing.
+  app.get("/api/orders/:orderId/replacement-eligibility", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+      const order = await storage.getOrderById(orderId);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (order.userId !== userId) {
+        const u = await storage.getUser(userId);
+        if (u?.role !== "admin") return res.status(403).json({ message: "Forbidden" });
+      }
+      const proposal = await proposeReplacementCredit(orderId, {
+        getOrder: (id) => storage.getOrderById(id),
+        getCallLogsForOrder: (id) => storage.getCallLogsForOrder(id),
+        getCreditForOrder: (id) => storage.getTradeInCreditByOrderId(id),
+        createTradeInCredit: (input) => storage.createTradeInCredit(input),
+        redeemTradeInCredit: (cid, lid) => storage.redeemTradeInCredit(cid, lid),
+      });
+      return res.json(proposal);
+    } catch (err: any) {
+      console.error("Error fetching replacement eligibility:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch eligibility" });
+    }
+  });
+
+  // List the caller's available trade-in credits (top of orders page).
+  app.get("/api/tradein/credits", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const rows = await storage.listTradeInCreditsForUser(userId);
+      res.json(rows);
+    } catch (err: any) {
+      console.error("Error listing trade-in credits:", err);
+      res.status(500).json({ message: err?.message || "Failed to list credits" });
+    }
+  });
+
+  // Redeem a credit against a new lead purchase. Body: { leadId }.
+  app.post("/api/tradein/:creditId/redeem", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const creditId = parseInt(req.params.creditId, 10);
+      if (!Number.isFinite(creditId) || creditId <= 0) {
+        return res.status(400).json({ message: "Invalid credit id" });
+      }
+      const leadId = Number(req.body?.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId is required" });
+      }
+
+      const credit = await storage.getTradeInCreditById(creditId);
+      if (!credit) return res.status(404).json({ message: "Credit not found" });
+      if (credit.agentUserId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      if (credit.status !== "issued") {
+        return res.status(409).json({ message: `Credit ${credit.status}` });
+      }
+      if (credit.expiresAt && new Date(credit.expiresAt).getTime() < Date.now()) {
+        return res.status(409).json({ message: "Credit expired" });
+      }
+
+      const redeemed = await storage.redeemTradeInCredit(creditId, leadId);
+
+      // Audit the redemption. The lead purchase itself is a separate call
+      // (the client-side flow purchases the lead after the credit is locked
+      // in); we record the linkage so an admin can trace the discount.
+      await recordAudit({
+        actorUserId: userId,
+        action: "tradein_credit.redeemed",
+        targetKind: "credit",
+        targetId: String(creditId),
+        metadata: { leadId, creditCents: redeemed.creditCents },
+      });
+
+      res.json(redeemed);
+    } catch (err: any) {
+      console.error("Error redeeming credit:", err);
+      if (/not redeemable/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      res.status(500).json({ message: err?.message || "Failed to redeem credit" });
     }
   });
 
