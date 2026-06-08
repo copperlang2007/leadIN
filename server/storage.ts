@@ -26,6 +26,7 @@ import {
   callLogs,
   transcripts,
   conversationAssists,
+  smsLogs,
   crmConnections,
   crmSyncEvents,
   agentReputationEvents,
@@ -40,6 +41,8 @@ import {
   type Transcript,
   type ConversationAssist,
   type LeadTradeInCredit,
+  type SmsLog,
+  type InsertSmsLog,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -350,6 +353,22 @@ export interface IStorage {
     triggerPhrase: string;
     suggestion: string;
   }): Promise<ConversationAssist>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T7): TCPA-safe SMS outreach
+  // ──────────────────────────────────────────────────────
+  createSmsLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    direction: "out" | "in";
+    body: string;
+    status: string;
+  }): Promise<SmsLog>;
+  listSmsLogsForLead(
+    leadId: number,
+    agentUserId: string,
+  ): Promise<SmsLog[]>;
 
   // ──────────────────────────────────────────────────────
   // Wave 6 (K4) — CRM connections & bidirectional sync events
@@ -2727,6 +2746,41 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return row;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T7): SMS outreach log helpers
+  // ──────────────────────────────────────────────────────
+
+  async createSmsLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    direction: "out" | "in";
+    body: string;
+    status: string;
+  }): Promise<SmsLog> {
+    const values: InsertSmsLog = {
+      agentUserId: input.agentUserId,
+      leadId: input.leadId ?? null,
+      twilioSid: input.twilioSid ?? null,
+      direction: input.direction,
+      body: input.body,
+      status: input.status,
+    };
+    const [row] = await db.insert(smsLogs).values(values).returning();
+    return row;
+  }
+
+  async listSmsLogsForLead(leadId: number, agentUserId: string): Promise<SmsLog[]> {
+    // Scope by agent so one buyer can't read another buyer's correspondence
+    // with the same lead. Order by newest first so the panel renders the
+    // current conversation at the top.
+    return await db
+      .select()
+      .from(smsLogs)
+      .where(and(eq(smsLogs.leadId, leadId), eq(smsLogs.agentUserId, agentUserId)))
+      .orderBy(desc(smsLogs.createdAt));
   }
 
   async getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]> {

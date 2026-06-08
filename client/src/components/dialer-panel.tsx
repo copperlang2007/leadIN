@@ -6,10 +6,11 @@
 // WebSocket event.
 
 import { useEffect, useRef, useState } from "react";
-import { Phone, PhoneOff, Sparkles, Loader2, X } from "lucide-react";
+import { Phone, PhoneOff, Sparkles, Loader2, X, MessageSquare, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { apiRequest } from "@/lib/queryClient";
 
 interface DialerPanelProps {
@@ -32,6 +33,23 @@ interface CallStartResult {
   stub: boolean;
 }
 
+// ── Wave 7 (T7) — SMS outreach types ──────────────────
+interface SmsTemplate {
+  key: string;
+  label: string;
+  variables: ReadonlyArray<"firstName" | "state" | "agentName">;
+  body: string;
+}
+
+interface SmsLog {
+  id: number;
+  direction: "out" | "in";
+  body: string;
+  status: string;
+  createdAt: string | Date;
+  twilioSid?: string | null;
+}
+
 export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
   const [callLogId, setCallLogId] = useState<number | null>(null);
   const [callStatus, setCallStatus] = useState<string>("idle");
@@ -44,6 +62,16 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
   const callLogIdRef = useRef<number | null>(null);
   // Avoid bare-DOM globals in eslint config — let TS infer from the JSX ref.
   const transcriptInputRef = useRef<any>(null);
+
+  // ── Wave 7 (T7) — SMS state ──────────────────────────
+  const [smsTemplates, setSmsTemplates] = useState<SmsTemplate[]>([]);
+  const [smsTemplateKey, setSmsTemplateKey] = useState<string>("");
+  const [smsVarFirstName, setSmsVarFirstName] = useState<string>("");
+  const [smsVarState, setSmsVarState] = useState<string>("");
+  const [smsVarAgentName, setSmsVarAgentName] = useState<string>("");
+  const [smsLogs, setSmsLogs] = useState<SmsLog[]>([]);
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsError, setSmsError] = useState<string | null>(null);
 
   // Keep ref in sync so the ws onmessage handler reads the latest value.
   useEffect(() => {
@@ -93,8 +121,39 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
       setSuggestions([]);
       setError(null);
       setDncBlocked(null);
+      setSmsLogs([]);
+      setSmsTemplateKey("");
+      setSmsError(null);
     }
   }, [open]);
+
+  // ── Wave 7 (T7) — load templates + logs when panel opens ───
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const tplRes = await apiRequest("GET", "/api/sms/templates");
+        const tpls: SmsTemplate[] = await tplRes.json();
+        if (cancelled) return;
+        setSmsTemplates(tpls);
+        if (tpls.length > 0 && !smsTemplateKey) setSmsTemplateKey(tpls[0].key);
+      } catch {
+        /* ignore — SMS tab will show empty */
+      }
+      try {
+        const logRes = await apiRequest("GET", `/api/sms/logs/${leadId}`);
+        const logs: SmsLog[] = await logRes.json();
+        if (!cancelled) setSmsLogs(logs);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, leadId]);
 
   async function handleStartCall() {
     setIsCalling(true);
@@ -147,6 +206,37 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
     }
   }
 
+  // ── Wave 7 (T7) — SMS send handler ──────────────────
+  async function handleSendSms() {
+    if (!smsTemplateKey) return;
+    setSmsSending(true);
+    setSmsError(null);
+    try {
+      // Only include variables required by the chosen template, so the
+      // server's whitelist check sees nothing extraneous.
+      const tpl = smsTemplates.find((t) => t.key === smsTemplateKey);
+      const variables: Record<string, string> = {};
+      if (tpl?.variables.includes("firstName") && smsVarFirstName) variables.firstName = smsVarFirstName;
+      if (tpl?.variables.includes("state") && smsVarState) variables.state = smsVarState;
+      if (tpl?.variables.includes("agentName") && smsVarAgentName) variables.agentName = smsVarAgentName;
+      await apiRequest("POST", "/api/sms/send", {
+        leadId,
+        templateKey: smsTemplateKey,
+        variables,
+      });
+      // Refresh history so the just-sent message is visible.
+      const logRes = await apiRequest("GET", `/api/sms/logs/${leadId}`);
+      const logs: SmsLog[] = await logRes.json();
+      setSmsLogs(logs);
+    } catch (err: any) {
+      setSmsError(err?.message || "Failed to send SMS");
+    } finally {
+      setSmsSending(false);
+    }
+  }
+
+  const activeSmsTemplate = smsTemplates.find((t) => t.key === smsTemplateKey);
+
   if (!open) return null;
 
   return (
@@ -169,108 +259,231 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
         </Button>
       </div>
 
-      <div className="p-4 border-b">
-        {!callLogId ? (
-          <Button
-            className="w-full gap-2"
-            onClick={handleStartCall}
-            disabled={isCalling}
-            data-testid="dialer-call-now"
-          >
-            {isCalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
-            Call now
-          </Button>
-        ) : (
-          <Button
-            variant="destructive"
-            className="w-full gap-2"
-            onClick={onClose}
-            data-testid="dialer-end-call"
-          >
-            <PhoneOff className="h-4 w-4" /> End call
-          </Button>
-        )}
-        {error && (
-          <p className="text-xs text-destructive mt-2" data-testid="dialer-error">
-            {error}
-          </p>
-        )}
-        {dncBlocked && (
-          <div
-            className="mt-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-            data-testid="dialer-dnc-blocked"
-            role="alert"
-          >
-            <strong className="font-semibold">Call blocked: </strong>
-            {dncBlocked}
+      <Tabs defaultValue="call" className="flex-1 flex flex-col min-h-0">
+        <TabsList className="mx-4 mt-3 grid grid-cols-2 w-auto" data-testid="dialer-tabs">
+          <TabsTrigger value="call" data-testid="dialer-tab-call" className="gap-1.5">
+            <Phone className="h-3.5 w-3.5" /> Call
+          </TabsTrigger>
+          <TabsTrigger value="sms" data-testid="dialer-tab-sms" className="gap-1.5">
+            <MessageSquare className="h-3.5 w-3.5" /> SMS
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="call" className="flex-1 flex flex-col min-h-0 mt-0">
+          <div className="p-4 border-b">
+            {!callLogId ? (
+              <Button
+                className="w-full gap-2"
+                onClick={handleStartCall}
+                disabled={isCalling}
+                data-testid="dialer-call-now"
+              >
+                {isCalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Phone className="h-4 w-4" />}
+                Call now
+              </Button>
+            ) : (
+              <Button
+                variant="destructive"
+                className="w-full gap-2"
+                onClick={onClose}
+                data-testid="dialer-end-call"
+              >
+                <PhoneOff className="h-4 w-4" /> End call
+              </Button>
+            )}
+            {error && (
+              <p className="text-xs text-destructive mt-2" data-testid="dialer-error">
+                {error}
+              </p>
+            )}
+            {dncBlocked && (
+              <div
+                className="mt-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                data-testid="dialer-dnc-blocked"
+                role="alert"
+              >
+                <strong className="font-semibold">Call blocked: </strong>
+                {dncBlocked}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
-        <div className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-          <Sparkles className="h-3.5 w-3.5 text-primary" /> AI suggestions
-        </div>
-        <ScrollArea className="px-4 pb-3 max-h-48">
-          {suggestions.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic">
-              Suggestions will appear here when the consumer mentions cost, network,
-              doctor, side effects, deductibles, or copays.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {suggestions.map((s) => (
-                <li
-                  key={s.id}
-                  className="text-sm bg-primary/5 border border-primary/20 rounded p-2"
-                  data-testid="dialer-suggestion"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <Badge variant="outline" className="text-[10px]">
-                      {s.triggerPhrase}
-                    </Badge>
-                    <span className="text-[10px] text-muted-foreground font-mono">
-                      {s.at.toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <p className="leading-snug">{s.suggestion}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </ScrollArea>
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-primary" /> AI suggestions
+            </div>
+            <ScrollArea className="px-4 pb-3 max-h-48">
+              {suggestions.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">
+                  Suggestions will appear here when the consumer mentions cost, network,
+                  doctor, side effects, deductibles, or copays.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {suggestions.map((s) => (
+                    <li
+                      key={s.id}
+                      className="text-sm bg-primary/5 border border-primary/20 rounded p-2"
+                      data-testid="dialer-suggestion"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <Badge variant="outline" className="text-[10px]">
+                          {s.triggerPhrase}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {s.at.toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <p className="leading-snug">{s.suggestion}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </ScrollArea>
 
-        <div className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide border-t">
-          Live transcript
-        </div>
-        <ScrollArea className="flex-1 px-4 pb-3">
-          {transcript ? (
-            <pre className="text-xs whitespace-pre-wrap leading-relaxed" data-testid="dialer-transcript">
-              {transcript}
-            </pre>
-          ) : (
-            <p className="text-xs text-muted-foreground italic">
-              Transcript will stream here once the call connects.
-            </p>
-          )}
-        </ScrollArea>
+            <div className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide border-t">
+              Live transcript
+            </div>
+            <ScrollArea className="flex-1 px-4 pb-3">
+              {transcript ? (
+                <pre className="text-xs whitespace-pre-wrap leading-relaxed" data-testid="dialer-transcript">
+                  {transcript}
+                </pre>
+              ) : (
+                <p className="text-xs text-muted-foreground italic">
+                  Transcript will stream here once the call connects.
+                </p>
+              )}
+            </ScrollArea>
 
-        {callLogId && (
-          <div className="border-t p-3 flex gap-2" data-testid="dialer-transcript-injector">
-            <input
-              ref={transcriptInputRef}
-              className="flex-1 text-xs bg-muted/40 rounded px-2 py-1 outline-none"
-              placeholder="dev: push transcript line"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handlePushTranscript();
-              }}
-            />
-            <Button size="sm" variant="outline" onClick={handlePushTranscript}>
-              Push
+            {callLogId && (
+              <div className="border-t p-3 flex gap-2" data-testid="dialer-transcript-injector">
+                <input
+                  ref={transcriptInputRef}
+                  className="flex-1 text-xs bg-muted/40 rounded px-2 py-1 outline-none"
+                  placeholder="dev: push transcript line"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handlePushTranscript();
+                  }}
+                />
+                <Button size="sm" variant="outline" onClick={handlePushTranscript}>
+                  Push
+                </Button>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="sms" className="flex-1 flex flex-col min-h-0 mt-0" data-testid="dialer-sms-tab">
+          <div className="p-4 border-b space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide block mb-1">
+                Template
+              </label>
+              <select
+                value={smsTemplateKey}
+                onChange={(e) => setSmsTemplateKey(e.target.value)}
+                className="w-full text-sm bg-background border rounded px-2 py-1 outline-none"
+                data-testid="sms-template-picker"
+              >
+                {smsTemplates.map((t) => (
+                  <option key={t.key} value={t.key}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {activeSmsTemplate?.variables.includes("firstName") && (
+              <input
+                value={smsVarFirstName}
+                onChange={(e) => setSmsVarFirstName(e.target.value)}
+                className="w-full text-sm bg-background border rounded px-2 py-1 outline-none"
+                placeholder="First name"
+                data-testid="sms-var-firstname"
+              />
+            )}
+            {activeSmsTemplate?.variables.includes("state") && (
+              <input
+                value={smsVarState}
+                onChange={(e) => setSmsVarState(e.target.value.toUpperCase().slice(0, 2))}
+                className="w-full text-sm bg-background border rounded px-2 py-1 outline-none"
+                placeholder="State (e.g. FL)"
+                data-testid="sms-var-state"
+              />
+            )}
+            {activeSmsTemplate?.variables.includes("agentName") && (
+              <input
+                value={smsVarAgentName}
+                onChange={(e) => setSmsVarAgentName(e.target.value)}
+                className="w-full text-sm bg-background border rounded px-2 py-1 outline-none"
+                placeholder="Your name (agent)"
+                data-testid="sms-var-agentname"
+              />
+            )}
+
+            {activeSmsTemplate && (
+              <div
+                className="text-xs bg-muted/40 rounded p-2 leading-relaxed whitespace-pre-wrap"
+                data-testid="sms-preview"
+              >
+                {activeSmsTemplate.body}
+                {" Reply STOP to opt out."}
+              </div>
+            )}
+
+            <Button
+              className="w-full gap-2"
+              onClick={handleSendSms}
+              disabled={smsSending || !smsTemplateKey}
+              data-testid="sms-send"
+            >
+              {smsSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Send SMS
             </Button>
+            {smsError && (
+              <p className="text-xs text-destructive" data-testid="sms-error">
+                {smsError}
+              </p>
+            )}
           </div>
-        )}
-      </div>
+
+          <div className="px-4 pt-3 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            History
+          </div>
+          <ScrollArea className="flex-1 px-4 pb-3" data-testid="sms-history">
+            {smsLogs.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">
+                No SMS history with this lead yet.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {smsLogs.map((log) => (
+                  <li
+                    key={log.id}
+                    className={`text-sm rounded p-2 ${
+                      log.direction === "out"
+                        ? "bg-primary/5 border border-primary/20"
+                        : "bg-muted/40 border border-border"
+                    }`}
+                    data-testid="sms-log-row"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Badge variant="outline" className="text-[10px]">
+                        {log.direction === "out" ? "Sent" : "Received"} · {log.status}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground font-mono">
+                        {new Date(log.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="leading-snug whitespace-pre-wrap">{log.body}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ScrollArea>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

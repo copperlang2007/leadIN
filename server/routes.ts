@@ -15,6 +15,17 @@ import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveCon
 import { startCallForLead, processTranscriptChunk } from "./dialer";
 import { gateCallAgainstDnc } from "./dncAtDial";
 import { verifyWebhook as verifyTwilioWebhook, twilioWebhookUrl, isTwilioLive } from "./lib/twilio";
+import {
+  sendOutreach,
+  listTemplates as listSmsTemplates,
+  isStopMessage,
+  UnknownTemplateError,
+  InvalidPlaceholderError,
+  MissingPurchaseError,
+  OptedOutError,
+  RateLimitExceededError,
+  NoConsumerPhoneError,
+} from "./smsOutreach";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
@@ -2970,6 +2981,152 @@ ${allUrls
     } catch (err: any) {
       console.error("dialer.calls error:", err);
       res.status(500).json({ message: err?.message || "failed to fetch calls" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T7) — SMS outreach
+  // ──────────────────────────────────────────────────────
+
+  // GET /api/sms/templates  — the canned template registry for the picker.
+  app.get("/api/sms/templates", isAuthenticated, async (_req, res) => {
+    res.json(listSmsTemplates());
+  });
+
+  // POST /api/sms/send  — render + dispatch a templated SMS.
+  app.post("/api/sms/send", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = Number(req.body?.leadId);
+      const templateKey = String(req.body?.templateKey ?? "");
+      const variables =
+        req.body?.variables && typeof req.body.variables === "object"
+          ? (req.body.variables as Record<string, string>)
+          : undefined;
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId is required" });
+      }
+      if (!templateKey) {
+        return res.status(400).json({ message: "templateKey is required" });
+      }
+      const result = await sendOutreach({
+        agentUserId: userId,
+        leadId,
+        templateKey,
+        variables,
+      });
+      res.json(result);
+    } catch (err: any) {
+      // Map domain errors to HTTP codes the UI can interpret.
+      if (err instanceof UnknownTemplateError) {
+        return res.status(404).json({ message: err.message });
+      }
+      if (err instanceof InvalidPlaceholderError) {
+        return res.status(400).json({ message: err.message });
+      }
+      if (err instanceof MissingPurchaseError) {
+        return res.status(403).json({ message: "purchase required to message this lead" });
+      }
+      if (err instanceof OptedOutError) {
+        return res.status(409).json({ message: "lead has opted out — STOP received within 30d" });
+      }
+      if (err instanceof RateLimitExceededError) {
+        return res.status(429).json({ message: err.message });
+      }
+      if (err instanceof NoConsumerPhoneError) {
+        return res.status(400).json({ message: err.message });
+      }
+      console.error("sms.send error:", err);
+      res.status(500).json({ message: err?.message || "failed to send sms" });
+    }
+  });
+
+  // GET /api/sms/logs/:leadId  — agent's SMS history with a single lead.
+  app.get("/api/sms/logs/:leadId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = Number(req.params?.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId must be a positive number" });
+      }
+      const logs = await storage.listSmsLogsForLead(leadId, userId);
+      res.json(logs);
+    } catch (err: any) {
+      console.error("sms.logs error:", err);
+      res.status(500).json({ message: err?.message || "failed to fetch sms logs" });
+    }
+  });
+
+  // POST /api/sms/webhook  — Twilio inbound + status callback.
+  // Verifies X-Twilio-Signature in live mode; in stub mode (no auth token)
+  // we accept the event so dev/CI can drive the flow.
+  app.post("/api/sms/webhook", async (req: any, res) => {
+    try {
+      const fullUrl = twilioWebhookUrl(req);
+      const valid = verifyTwilioWebhook(
+        { headers: req.headers, body: req.body, url: req.url },
+        fullUrl,
+      );
+      if (!valid && isTwilioLive()) {
+        return res.status(403).json({ message: "invalid signature" });
+      }
+      const sid: string | undefined = req.body?.MessageSid;
+      const status: string | undefined = req.body?.MessageStatus;
+      const inboundBody: string | undefined = req.body?.Body;
+      if (!sid) return res.status(400).json({ message: "MessageSid required" });
+
+      // Status callback for an outbound message: update the existing row.
+      if (status && !inboundBody) {
+        const { db } = await import("./db");
+        const { smsLogs } = await import("@shared/schema");
+        const { eq } = await import("drizzle-orm");
+        await db
+          .update(smsLogs)
+          .set({ status })
+          .where(eq(smsLogs.twilioSid, sid));
+        return res.json({ ok: true });
+      }
+
+      // Inbound message from the consumer. Look up which lead/agent this is
+      // for by matching the From phone to a recent outbound recipient.
+      const fromPhone: string | undefined = req.body?.From;
+      if (!fromPhone || !inboundBody) {
+        return res.status(400).json({ message: "From and Body required for inbound" });
+      }
+      const { db } = await import("./db");
+      const { leads } = await import("@shared/schema");
+      const { smsLogs: smsLogsTable } = await import("@shared/schema");
+      const { eq, desc } = await import("drizzle-orm");
+      const [lead] = await db.select().from(leads).where(eq(leads.consumerPhone, fromPhone)).limit(1);
+      if (!lead) {
+        // Unrecognised phone — log anonymously and ack.
+        return res.json({ ok: true, ignored: true });
+      }
+      // Find the most recent outbound log for that lead to attribute the
+      // inbound message to the same agent.
+      const [recent] = await db
+        .select()
+        .from(smsLogsTable)
+        .where(eq(smsLogsTable.leadId, lead.id))
+        .orderBy(desc(smsLogsTable.createdAt))
+        .limit(1);
+      const agentUserId = recent?.agentUserId;
+      if (!agentUserId) {
+        return res.json({ ok: true, ignored: true });
+      }
+      await storage.createSmsLog({
+        agentUserId,
+        leadId: lead.id,
+        twilioSid: sid,
+        direction: "in",
+        body: inboundBody,
+        status: "received",
+      });
+      const optedOut = isStopMessage(inboundBody);
+      res.json({ ok: true, optedOut });
+    } catch (err: any) {
+      console.error("sms.webhook error:", err);
+      res.status(500).json({ message: err?.message || "webhook failed" });
     }
   });
 
