@@ -29,10 +29,12 @@ import {
   crmConnections,
   crmSyncEvents,
   agentReputationEvents,
+  leadTradeInCredits,
   type CallLog,
   type InsertCallLog,
   type Transcript,
   type ConversationAssist,
+  type LeadTradeInCredit,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -368,6 +370,22 @@ export interface IStorage {
   }): Promise<void>;
   getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
   computeAgentReputation(agentUserId: string): Promise<number>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T1) — Lead replacement / trade-in credits
+  // ──────────────────────────────────────────────────────
+  getCallLogsForOrder(orderId: number): Promise<CallLog[]>;
+  getTradeInCreditByOrderId(orderId: number): Promise<LeadTradeInCredit | undefined>;
+  getTradeInCreditById(creditId: number): Promise<LeadTradeInCredit | undefined>;
+  listTradeInCreditsForUser(userId: string): Promise<LeadTradeInCredit[]>;
+  createTradeInCredit(input: {
+    orderId: number;
+    agentUserId: string;
+    creditCents: number;
+    reason?: string | null;
+    expiresAt?: Date | null;
+  }): Promise<LeadTradeInCredit>;
+  redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2692,6 +2710,91 @@ export class DatabaseStorage implements IStorage {
 
   async computeAgentReputation(agentUserId: string): Promise<number> {
     return await computeAgentReputationCore(agentUserId);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T1) — Lead replacement / trade-in credits
+  // ──────────────────────────────────────────────────────
+  async getCallLogsForOrder(orderId: number): Promise<CallLog[]> {
+    // Join call_logs.lead_id == orders.lead_id, scoped to that order.
+    // Drizzle subquery via inner join on the order row.
+    const order = await this.getOrderById(orderId);
+    if (!order) return [];
+    return await db
+      .select()
+      .from(callLogs)
+      .where(eq(callLogs.leadId, order.leadId))
+      .orderBy(desc(callLogs.startedAt))
+      .limit(100);
+  }
+
+  async getTradeInCreditByOrderId(orderId: number): Promise<LeadTradeInCredit | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.orderId, orderId))
+      .limit(1);
+    return row;
+  }
+
+  async getTradeInCreditById(creditId: number): Promise<LeadTradeInCredit | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.id, creditId))
+      .limit(1);
+    return row;
+  }
+
+  async listTradeInCreditsForUser(userId: string): Promise<LeadTradeInCredit[]> {
+    return await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.agentUserId, userId))
+      .orderBy(desc(leadTradeInCredits.createdAt))
+      .limit(100);
+  }
+
+  async createTradeInCredit(input: {
+    orderId: number;
+    agentUserId: string;
+    creditCents: number;
+    reason?: string | null;
+    expiresAt?: Date | null;
+  }): Promise<LeadTradeInCredit> {
+    const [row] = await db
+      .insert(leadTradeInCredits)
+      .values({
+        orderId: input.orderId,
+        agentUserId: input.agentUserId,
+        creditCents: input.creditCents,
+        reason: input.reason ?? null,
+        status: "issued",
+        expiresAt: input.expiresAt ?? null,
+      })
+      .returning();
+    return row;
+  }
+
+  async redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit> {
+    // Mark redeemed atomically. The actual wallet discount is applied by
+    // the route layer (which then calls purchaseLead with reduced balance
+    // pressure). leadId is recorded in audit metadata at the route.
+    const [row] = await db
+      .update(leadTradeInCredits)
+      .set({ status: "redeemed", redeemedAt: new Date() })
+      .where(
+        and(
+          eq(leadTradeInCredits.id, creditId),
+          eq(leadTradeInCredits.status, "issued"),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new Error("Credit not redeemable (not found, already redeemed, or expired)");
+    }
+    void leadId;
+    return row;
   }
 }
 

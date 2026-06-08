@@ -35,6 +35,8 @@ import {
   User,
   ShieldAlert,
   Loader2,
+  RefreshCcw,
+  Wallet,
 } from "lucide-react";
 import { format } from "date-fns";
 import type { Order } from "@/lib/types";
@@ -67,6 +69,26 @@ interface Dispute {
   status: "open" | "approved" | "denied";
   reason: DisputeReason;
   refundCents: number | null;
+}
+
+interface TradeInCredit {
+  id: number;
+  orderId: number;
+  agentUserId: string;
+  creditCents: number;
+  reason: string | null;
+  status: "issued" | "redeemed" | "expired";
+  redeemedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+}
+
+interface CheckReplacementResponse {
+  issued: boolean;
+  reason: string;
+  creditCents?: number;
+  credit?: TradeInCredit;
+  verdict?: "bad" | "ok" | "insufficient";
 }
 
 const REASON_LABELS: Record<DisputeReason, string> = {
@@ -110,6 +132,61 @@ export default function Orders() {
   const disputesByOrderId = new Map<number, Dispute | null>();
   orders.forEach((o, i) => {
     disputesByOrderId.set(o.id, disputeQueries[i]?.data ?? null);
+  });
+
+  // Trade-in credits (Wave 7 / T1). One row per order at most; we list all
+  // credits the user has accumulated and surface a "Check replacement" CTA
+  // per order so the agent can request the auto-issue flow.
+  const { data: credits = [] } = useQuery<TradeInCredit[]>({
+    queryKey: ["/api/tradein/credits"],
+  });
+
+  const checkReplacement = useMutation({
+    mutationFn: async (orderId: number) => {
+      const res = await apiRequest("POST", `/api/orders/${orderId}/check-replacement`, {});
+      return (await res.json()) as CheckReplacementResponse;
+    },
+    onSuccess: (result) => {
+      if (result.issued) {
+        toast({
+          title: "Replacement credit issued",
+          description: `You earned a $${((result.creditCents ?? 0) / 100).toFixed(2)} credit toward your next lead.`,
+        });
+      } else if (result.reason === "already_credited") {
+        toast({
+          title: "Already credited",
+          description: "This order already has an active trade-in credit.",
+        });
+      } else if (result.reason === "verdict_ok") {
+        toast({
+          title: "Not eligible",
+          description: "This lead shows successful contact — no replacement is warranted.",
+        });
+      } else if (result.reason === "verdict_insufficient") {
+        toast({
+          title: "Not enough signal",
+          description: "Try again after a few more dial attempts (3+ failed calls trigger eligibility).",
+        });
+      } else if (result.reason === "order_too_old") {
+        toast({
+          title: "Outside replacement window",
+          description: "Auto-replacement only applies to orders less than 14 days old.",
+        });
+      } else {
+        toast({
+          title: "Not eligible",
+          description: result.reason,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/tradein/credits"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Replacement check failed",
+        description: err.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const fileDispute = useMutation({
@@ -239,6 +316,30 @@ export default function Orders() {
           </div>
         )}
 
+        {/* Trade-in credits banner (Wave 7 / T1) */}
+        {credits.filter(c => c.status === "issued").length > 0 && (
+          <Card className="border-emerald-200 bg-emerald-50/60 dark:bg-emerald-950/20 dark:border-emerald-900" data-testid="card-tradein-credits">
+            <CardContent className="p-4 flex items-center gap-3">
+              <Wallet className="h-5 w-5 text-emerald-600" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+                  Available trade-in credits
+                </p>
+                <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80">
+                  Apply at checkout to discount your next lead purchase.
+                </p>
+              </div>
+              <span className="text-xl font-bold font-mono text-emerald-700 dark:text-emerald-300" data-testid="text-tradein-total">
+                ${(
+                  credits
+                    .filter(c => c.status === "issued")
+                    .reduce((s, c) => s + c.creditCents, 0) / 100
+                ).toFixed(2)}
+              </span>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Orders List */}
         {isLoading ? (
           <div className="space-y-3">
@@ -258,6 +359,7 @@ export default function Orders() {
           <div className="space-y-3">
             {orders.map((order) => {
               const dispute = disputesByOrderId.get(order.id) ?? null;
+              const orderCredit = credits.find(c => c.orderId === order.id) ?? null;
               return (
                 <Card key={order.id} className="hover:shadow-sm transition-shadow" data-testid={`card-order-${order.id}`}>
                   <CardContent className="p-5">
@@ -344,6 +446,33 @@ export default function Orders() {
                           >
                             <ShieldAlert className="h-3 w-3" /> File a dispute
                           </Button>
+                        )}
+                        {!orderCredit && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1 text-xs"
+                            onClick={() => checkReplacement.mutate(order.id)}
+                            disabled={checkReplacement.isPending}
+                            data-testid={`button-check-replacement-${order.id}`}
+                          >
+                            {checkReplacement.isPending && checkReplacement.variables === order.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <RefreshCcw className="h-3 w-3" />
+                            )}
+                            Check replacement eligibility
+                          </Button>
+                        )}
+                        {orderCredit && orderCredit.status === "issued" && (
+                          <Badge className="bg-emerald-500/15 text-emerald-700 border-emerald-500/20 text-[10px]" data-testid={`badge-credit-${order.id}`}>
+                            Credit ${(orderCredit.creditCents / 100).toFixed(2)}
+                          </Badge>
+                        )}
+                        {orderCredit && orderCredit.status === "redeemed" && (
+                          <Badge variant="outline" className="text-muted-foreground text-[10px]" data-testid={`badge-credit-redeemed-${order.id}`}>
+                            Credit redeemed
+                          </Badge>
                         )}
                       </div>
                     </div>
