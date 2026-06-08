@@ -28,6 +28,8 @@ import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { recordAudit, listAudit } from "./audit";
 import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
+import { handleInboundWebhook } from "./crmSync";
+import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -1079,6 +1081,130 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error revoking vendor API key:", err);
       res.status(500).json({ message: "Failed to revoke API key" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6 (K4) — CRM connections (per-org) + inbound webhook
+  // ──────────────────────────────────────────────────────
+  app.get("/api/orgs/:orgId/crm-connections", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) return res.status(403).json({ message: "Org membership required" });
+      const rows = await storage.getCrmConnectionsForOrg(orgId);
+      // Never leak access tokens to the client. The UI only needs to know
+      // which providers are connected and when.
+      const safe = rows.map(r => ({
+        id: r.id,
+        provider: r.provider,
+        status: r.status,
+        createdAt: r.createdAt,
+        externalAccountId: r.externalAccountId,
+      }));
+      res.json({ connections: safe, providers: listProviders() });
+    } catch (err) {
+      console.error("Error listing CRM connections:", err);
+      res.status(500).json({ message: "Failed to list CRM connections" });
+    }
+  });
+
+  app.post("/api/orgs/:orgId/crm-connections", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const schema = z.object({
+        provider: z.enum(["hubspot", "salesforce", "ghl", "pipedrive"]),
+        accessToken: z.string().min(1),
+        refreshToken: z.string().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromError(parsed.error).toString() });
+      }
+      // TODO(K4 follow-up): real OAuth code-exchange. For now we accept the
+      // raw token so the rest of the integration is wireable end-to-end.
+      if (!getCrmAdapter(parsed.data.provider)) {
+        return res.status(400).json({ message: "Unsupported provider" });
+      }
+      const conn = await storage.createCrmConnection({
+        orgId,
+        provider: parsed.data.provider,
+        accessToken: parsed.data.accessToken,
+        refreshToken: parsed.data.refreshToken ?? null,
+      });
+      recordAudit({
+        actorUserId: userId,
+        orgId,
+        action: "crm.connect",
+        targetKind: "crm_connection",
+        targetId: String(conn.id),
+        metadata: { provider: conn.provider },
+      }).catch(e => console.error("[audit] failed:", e));
+      res.status(201).json({
+        id: conn.id,
+        provider: conn.provider,
+        status: conn.status,
+        createdAt: conn.createdAt,
+      });
+    } catch (err) {
+      console.error("Error creating CRM connection:", err);
+      res.status(500).json({ message: "Failed to create CRM connection" });
+    }
+  });
+
+  app.delete("/api/orgs/:orgId/crm-connections/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId, id } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const connectionId = parseInt(id, 10);
+      if (!Number.isFinite(connectionId)) {
+        return res.status(400).json({ message: "Invalid connection id" });
+      }
+      const ok = await storage.deleteCrmConnection(connectionId, orgId);
+      if (!ok) return res.status(404).json({ message: "Connection not found" });
+      recordAudit({
+        actorUserId: userId,
+        orgId,
+        action: "crm.disconnect",
+        targetKind: "crm_connection",
+        targetId: String(connectionId),
+      }).catch(e => console.error("[audit] failed:", e));
+      res.json({ deleted: true });
+    } catch (err) {
+      console.error("Error deleting CRM connection:", err);
+      res.status(500).json({ message: "Failed to delete CRM connection" });
+    }
+  });
+
+  // Inbound CRM webhook.
+  // SECURITY NOTE: Each provider ships its own signature scheme — HubSpot
+  // uses `X-HubSpot-Signature-v3` (HMAC over method+URI+body+timestamp),
+  // Salesforce signs platform events with the connected app cert, GHL
+  // signs with a shared webhook secret, Pipedrive supports HTTP basic auth.
+  // For dev / E2E we accept any body and trust the payload — a production
+  // K4 follow-up wires `crypto.timingSafeEqual` checks per provider before
+  // calling `handleInboundWebhook`.
+  app.post("/api/crm/webhook/:provider", async (req: any, res) => {
+    try {
+      const { provider } = req.params;
+      if (!getCrmAdapter(provider)) {
+        return res.status(404).json({ message: "Unknown provider" });
+      }
+      const result = await handleInboundWebhook(provider, req.body, { storage });
+      res.json(result);
+    } catch (err) {
+      console.error("Error handling CRM webhook:", err);
+      res.status(500).json({ message: "Failed to process webhook" });
     }
   });
 
