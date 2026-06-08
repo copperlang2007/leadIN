@@ -12,6 +12,7 @@ import {
   orgMembers,
   agentProfiles,
   leadAssignments,
+  leadClaims,
   keywordSignals,
   cmsPlanSignals,
   behavioralEvents,
@@ -52,6 +53,17 @@ import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "dr
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import {
+  openAuction as openAuctionFn,
+  shouldOpenAuction,
+  isAuctionOpen,
+  markAuctionOpen,
+  clearAuctionOpen,
+  type AuctionDeps,
+  type PendingClaim,
+} from "./auction";
+import { FEATURE_FLAGS } from "@shared/featureFlags";
+import { broadcastAuctionOpened, broadcastAuctionResolved } from "./websocket";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { splitRevenue } from "./vendorPayouts";
 import {
@@ -176,7 +188,13 @@ export interface IStorage {
   ): Promise<AgentProfile>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
-  routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
+  routeLeadToBestAgent(leadId: number, opts?: { bypassAuction?: boolean }): Promise<LeadAssignment | null>;
+  recordAuctionClaim(leadId: number, agentUserId: string): Promise<{ ok: boolean; reason?: string; claimId?: number }>;
+  getAuctionForLead(leadId: number): Promise<{
+    status: "pending" | "won" | "lost" | "expired";
+    leadId: number;
+    claims: { id: number; agentUserId: string; status: string; createdAt: string | null }[];
+  } | null>;
   setAssignmentStatus(assignmentId: number, agentUserId: string, status: "accepted" | "declined"): Promise<LeadAssignment | null>;
   getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]>;
   getAgentDashboardStats(agentUserId: string): Promise<{
@@ -1037,7 +1055,10 @@ export class DatabaseStorage implements IStorage {
   // Ranks eligible agents and assigns the lead to the best match.
   // Returns the assignment record, or null if no agent qualifies.
   // ──────────────────────────────────────────────────────
-  async routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null> {
+  async routeLeadToBestAgent(
+    leadId: number,
+    opts: { bypassAuction?: boolean } = {},
+  ): Promise<LeadAssignment | null> {
     // Pre-check outside the transaction. These reads are advisory — the
     // authoritative checks happen inside the lock below. Keeping them here
     // is a cheap fast-path that avoids opening a tx for obvious no-ops.
@@ -1045,6 +1066,20 @@ export class DatabaseStorage implements IStorage {
     if (!preLead || preLead.sold || preLead.removed) return null;
     if (preLead.assignedToUserId) return null; // already routed
     if (!preLead.orgId) return null; // global pool leads aren't auto-routed
+
+    // K1 — Speed-to-Lead Live Auction. For high-MediScore leads we open
+    // a 10s WebSocket auction window instead of immediately assigning to
+    // the highest-ranked agent. The auction's resolver eventually writes
+    // a `lead_assignments` row exactly like the normal flow; we return
+    // null here so the caller's `lead_assignment` broadcast doesn't fire
+    // prematurely. `bypassAuction` is used by the fallback path inside
+    // resolveAuction to avoid re-opening an auction when we time out.
+    if (!opts.bypassAuction && shouldOpenAuction(preLead.mediscore, FEATURE_FLAGS.liveAuction)) {
+      await this.openLiveAuction(leadId).catch(err =>
+        console.error("[auction] open error", { leadId, err }),
+      );
+      return null;
+    }
 
     // Serialize assignment per-org. Two concurrent ingests in the same
     // org used to be able to read identical open-lead counts and both
@@ -1157,6 +1192,267 @@ export class DatabaseStorage implements IStorage {
         return assignment;
       });
     });
+  }
+
+  // ──────────────────────────────────────────────────────
+  // K1 — Live auction: side-effect surface
+  // ──────────────────────────────────────────────────────
+
+  /** Hydrate AgentCandidate rows for the given users in an org. Mirrors
+   * the eligibility query inside `routeLeadToBestAgent` so the resolver
+   * sees the same candidate shape as the immediate-routing path. */
+  private async hydrateCandidatesForUsers(
+    orgId: string,
+    userIds: string[],
+  ): Promise<AgentCandidate[]> {
+    if (userIds.length === 0) return [];
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          eq(agentProfiles.orgId, orgId),
+          inArray(agentProfiles.userId, userIds),
+        ),
+      );
+    const out: AgentCandidate[] = [];
+    for (const row of rows) {
+      if (!row.users) continue;
+      const ap = row.agent_profiles;
+      const [openCountRow] = await db
+        .select({ count: count() })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.assignedToUserId, row.users.id),
+            eq(leads.sold, false),
+            eq(leads.removed, false),
+          ),
+        );
+      out.push({
+        userId: row.users.id,
+        licensedStates: ap.licensedStates,
+        appointedCarriers: ap.appointedCarriers,
+        territoryZips: ap.territoryZips,
+        territoryCounties: ap.territoryCounties,
+        capacityLimit: ap.capacityLimit,
+        openLeadCount: Number(openCountRow?.count ?? 0),
+        conversionRate: parseFloat(ap.conversionRate ?? "0"),
+        acceptingLeads: ap.acceptingLeads,
+        verified: ap.verificationStatus === "verified",
+      });
+    }
+    return out;
+  }
+
+  /** Build the DB-backed `AuctionDeps`. Extracted so tests can poke at
+   * individual pieces (DB-isolated unit tests live in auction.test.ts).
+   * `_orgId` is currently informational — kept on the signature so the
+   * eventual writer can route per-org Postgres NOTIFY without a refactor. */
+  private buildAuctionDeps(_orgId: string): AuctionDeps {
+    return {
+      assignmentExists: async (leadId: number) => {
+        const [row] = await db
+          .select({ id: leadAssignments.id })
+          .from(leadAssignments)
+          .where(eq(leadAssignments.leadId, leadId))
+          .limit(1);
+        return !!row;
+      },
+      isOpen: (leadId: number) => isAuctionOpen(leadId),
+      markOpen: (leadId: number) => markAuctionOpen(leadId),
+      clearOpen: (leadId: number) => clearAuctionOpen(leadId),
+      listPendingClaims: async (leadId: number) => {
+        const rows = await db
+          .select()
+          .from(leadClaims)
+          .where(and(eq(leadClaims.leadId, leadId), eq(leadClaims.status, "pending")));
+        return rows.map<PendingClaim>(r => ({
+          id: r.id,
+          agentUserId: r.agentUserId,
+          createdAt: r.createdAt ?? new Date(),
+        }));
+      },
+      hydrateCandidates: async (oid: string, userIds: string[]) =>
+        this.hydrateCandidatesForUsers(oid, userIds),
+      markClaim: async (claimId: number, status) => {
+        await db
+          .update(leadClaims)
+          .set({ status, resolvedAt: new Date() })
+          .where(eq(leadClaims.id, claimId));
+      },
+      writeAssignment: async ({ leadId, orgId: oid, agentUserId, matchScore, reason }) => {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(leads)
+            .set({ assignedToUserId: agentUserId, assignedAt: new Date() })
+            .where(eq(leads.id, leadId));
+          await tx.insert(leadAssignments).values({
+            leadId,
+            orgId: oid,
+            agentUserId,
+            matchScore,
+            reason,
+            status: "assigned",
+          });
+        });
+      },
+      fallbackRoute: async (leadId: number) => {
+        await this.routeLeadToBestAgent(leadId, { bypassAuction: true });
+      },
+      broadcastOpened: (payload) => {
+        broadcastAuctionOpened({
+          leadId: payload.leadId,
+          orgId: payload.orgId,
+          candidateUserIds: payload.candidateUserIds,
+          windowMs: payload.windowMs,
+          opensAt: payload.opensAt,
+          closesAt: payload.closesAt,
+        });
+      },
+      broadcastResolved: (payload) => {
+        broadcastAuctionResolved({
+          leadId: payload.leadId,
+          winnerUserId: payload.winnerUserId,
+          matchScore: payload.matchScore,
+          reasons: payload.reasons,
+          outcome: payload.outcome,
+        });
+      },
+      schedule: (fn, ms) => {
+        // Detach from any current execution context. `unref()` so a hung
+        // timer never blocks process shutdown.
+        const t = setTimeout(fn, ms);
+        if (typeof t === "object" && t !== null && "unref" in t) t.unref();
+      },
+    };
+  }
+
+  /** Public: open a live auction for a lead. Called from
+   * `routeLeadToBestAgent` when the MediScore + flag gate is met. */
+  async openLiveAuction(leadId: number, windowMs?: number): Promise<void> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!lead || !lead.orgId) return;
+    // Enumerate the same candidate pool as the immediate-routing path so
+    // the WS payload's candidateUserIds reflects who's actually eligible.
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          eq(agentProfiles.orgId, lead.orgId),
+          eq(agentProfiles.acceptingLeads, true),
+          eq(agentProfiles.verificationStatus, "verified"),
+        ),
+      );
+    const candidateUserIds = rows
+      .map(r => r.users?.id)
+      .filter((id): id is string => typeof id === "string");
+
+    const deps = this.buildAuctionDeps(lead.orgId);
+    await openAuctionFn(
+      {
+        leadId,
+        orgId: lead.orgId,
+        lead: {
+          state: lead.state,
+          zipCode: lead.zipCode,
+          source: lead.source,
+          compatibilityScore: lead.compatibilityScore ?? 50,
+        },
+        candidateUserIds,
+        windowMs,
+      },
+      deps,
+    );
+  }
+
+  /** Record an agent's claim during the auction window. Verifies the
+   * agent is verified+accepting in the lead's org before persisting. */
+  async recordAuctionClaim(
+    leadId: number,
+    agentUserId: string,
+  ): Promise<{ ok: boolean; reason?: string; claimId?: number }> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!lead || !lead.orgId) return { ok: false, reason: "lead not found" };
+
+    // Idempotency: once the lead is assigned the auction is over.
+    if (lead.assignedToUserId) return { ok: false, reason: "auction closed" };
+
+    // Confirm the auction is currently open (in-memory marker).
+    if (!isAuctionOpen(leadId)) return { ok: false, reason: "auction not open" };
+
+    // Hard eligibility: only verified, accepting agents in the same org
+    // can claim. This mirrors the routing engine's hard filter.
+    const [ap] = await db
+      .select()
+      .from(agentProfiles)
+      .where(
+        and(
+          eq(agentProfiles.userId, agentUserId),
+          eq(agentProfiles.orgId, lead.orgId),
+        ),
+      );
+    if (!ap) return { ok: false, reason: "not in org" };
+    if (ap.verificationStatus !== "verified") return { ok: false, reason: "unverified" };
+    if (!ap.acceptingLeads) return { ok: false, reason: "not accepting leads" };
+
+    // Deduplicate: one pending claim per (lead, agent).
+    const [existing] = await db
+      .select({ id: leadClaims.id })
+      .from(leadClaims)
+      .where(
+        and(
+          eq(leadClaims.leadId, leadId),
+          eq(leadClaims.agentUserId, agentUserId),
+          eq(leadClaims.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (existing) return { ok: true, claimId: existing.id };
+
+    const [inserted] = await db
+      .insert(leadClaims)
+      .values({
+        leadId,
+        agentUserId,
+        orgId: lead.orgId,
+        status: "pending",
+      })
+      .returning({ id: leadClaims.id });
+    return { ok: true, claimId: inserted.id };
+  }
+
+  /** Snapshot of an in-flight or resolved auction. Used by the GET endpoint. */
+  async getAuctionForLead(leadId: number) {
+    const rows = await db
+      .select()
+      .from(leadClaims)
+      .where(eq(leadClaims.leadId, leadId))
+      .orderBy(desc(leadClaims.createdAt));
+    if (rows.length === 0) return null;
+    // The overall status: if any row is 'won' the auction has a winner;
+    // else if all are 'expired' it expired; else still pending.
+    const statuses = rows.map(r => r.status);
+    const status: "pending" | "won" | "lost" | "expired" = statuses.includes("won")
+      ? "won"
+      : statuses.every(s => s === "expired")
+        ? "expired"
+        : statuses.every(s => s === "lost" || s === "expired")
+          ? "lost"
+          : "pending";
+    return {
+      leadId,
+      status,
+      claims: rows.map(r => ({
+        id: r.id,
+        agentUserId: r.agentUserId,
+        status: r.status,
+        createdAt: r.createdAt?.toISOString() ?? null,
+      })),
+    };
   }
 
   async setAssignmentStatus(

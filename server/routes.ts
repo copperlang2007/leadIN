@@ -1250,6 +1250,44 @@ export async function registerRoutes(
     }
   });
 
+  // ──────────────────────────────────────────────────────
+  // K1 — Live auction endpoints
+  // ──────────────────────────────────────────────────────
+
+  // Agent clicks "Claim" during the 10s auction window.
+  app.post("/api/auctions/:leadId/claim", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = parseInt(req.params.leadId, 10);
+      if (!Number.isFinite(leadId)) {
+        return res.status(400).json({ message: "invalid leadId" });
+      }
+      const out = await storage.recordAuctionClaim(leadId, userId);
+      if (!out.ok) return res.status(409).json({ message: out.reason ?? "claim rejected" });
+      res.status(201).json({ claimId: out.claimId });
+    } catch (err) {
+      console.error("Error recording claim:", err);
+      res.status(500).json({ message: "Failed to record claim" });
+    }
+  });
+
+  // Snapshot of the auction state (claims + overall status). Cheap poll
+  // path for clients that miss the WS broadcast.
+  app.get("/api/auctions/:leadId", isAuthenticated, async (req: any, res) => {
+    try {
+      const leadId = parseInt(req.params.leadId, 10);
+      if (!Number.isFinite(leadId)) {
+        return res.status(400).json({ message: "invalid leadId" });
+      }
+      const snap = await storage.getAuctionForLead(leadId);
+      if (!snap) return res.status(404).json({ message: "no auction" });
+      res.json(snap);
+    } catch (err) {
+      console.error("Error fetching auction:", err);
+      res.status(500).json({ message: "Failed to fetch auction" });
+    }
+  });
+
   // List agents in the caller's active org (owner/admin only)
   app.get("/api/orgs/:orgId/agents", isAuthenticated, async (req: any, res) => {
     try {
