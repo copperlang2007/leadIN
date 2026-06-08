@@ -13,7 +13,19 @@ import {
 import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections, broadcastAssistSuggestion } from "./websocket";
 import { startCallForLead, processTranscriptChunk } from "./dialer";
+import { gateCallAgainstDnc } from "./dncAtDial";
 import { verifyWebhook as verifyTwilioWebhook, twilioWebhookUrl, isTwilioLive } from "./lib/twilio";
+import {
+  sendOutreach,
+  listTemplates as listSmsTemplates,
+  isStopMessage,
+  UnknownTemplateError,
+  InvalidPlaceholderError,
+  MissingPurchaseError,
+  OptedOutError,
+  RateLimitExceededError,
+  NoConsumerPhoneError,
+} from "./smsOutreach";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
@@ -24,6 +36,12 @@ import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } 
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
 import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
+import { startNiprRenewalCron, verifyAgentLicense } from "./niprSync";
+import {
+  attemptDeliveryForLead,
+  startSmartMatchCycleCron,
+  SMART_MATCH_TIERS,
+} from "./smartMatch";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
@@ -33,6 +51,12 @@ import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
+import {
+  autoIssueReplacement,
+  proposeReplacementCredit,
+  type ReplacementDeps,
+} from "./leadReplacement";
+import { getPersonaForLead } from "./leadPersona";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -136,6 +160,9 @@ export async function registerRoutes(
   startCmsSignalCron();
   startDncRecheckCron();
   startEmailDigestCron();
+  startNiprRenewalCron();
+  // Wave 7 (T3) — daily reset of smart-match monthly cycles.
+  startSmartMatchCycleCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -458,6 +485,51 @@ export async function registerRoutes(
     }
   });
 
+  // Wave 7 (T6) — AI persona for a purchased lead. Gated to the purchaser of
+  // the lead or to admin users. Re-generates if the cached row is > 7 days old
+  // (or whenever `?force=true` is supplied).
+  app.get("/api/leads/:id/persona", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = parseInt(req.params.id);
+      if (!Number.isFinite(leadId)) {
+        return res.status(400).json({ message: "Invalid lead id" });
+      }
+
+      const user = await storage.getUser(userId);
+      const isAdminUser = user?.role === "admin";
+
+      if (!isAdminUser) {
+        // Must own a completed order for this lead.
+        const order = await storage.getOrderForLead(userId, leadId);
+        if (!order) {
+          return res
+            .status(403)
+            .json({ message: "Purchase this lead to view the AI persona" });
+        }
+      }
+
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org-scope guard: an admin from a different org should not see a
+      // persona for an org-scoped lead they don't belong to.
+      if (lead.orgId && !isAdminUser) {
+        if (user?.activeOrgId !== lead.orgId) {
+          return res.status(403).json({ message: "Lead not available to your organization" });
+        }
+      }
+
+      const force = req.query.force === "true" || req.query.force === "1";
+      const persona = await getPersonaForLead(leadId, force);
+      if (!persona) return res.status(404).json({ message: "Lead not found" });
+      res.json(persona);
+    } catch (error) {
+      console.error("Error generating lead persona:", error);
+      res.status(500).json({ message: "Failed to generate persona" });
+    }
+  });
+
   app.post("/api/leads/:id/purchase", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
@@ -591,6 +663,24 @@ export async function registerRoutes(
         reason: parsed.data.reason,
         notes: parsed.data.notes,
       });
+
+      // T2 — Fire-and-forget AI classification. Never blocks dispute creation.
+      (async () => {
+        try {
+          const { classifyDispute } = await import("./disputeClassifier");
+          const result = await classifyDispute({
+            reason: parsed.data.reason,
+            notes: parsed.data.notes ?? null,
+          });
+          await storage.updateDisputeAi(dispute.id, {
+            aiClassification: result.classification,
+            aiConfidence: result.confidence,
+          });
+        } catch (err) {
+          console.error("[disputeClassifier] failed:", (err as Error).message);
+        }
+      })();
+
       res.status(201).json(dispute);
     } catch (err: any) {
       if (/does not belong/i.test(err?.message ?? "")) {
@@ -718,6 +808,251 @@ export async function registerRoutes(
       }
       console.error("Error denying dispute:", err);
       res.status(500).json({ message: err?.message || "Failed to deny dispute" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Lead replacement / trade-in credits (Wave 7 — T1)
+  //
+  // When the K3 dialer logs 3+ unsuccessful attempts on a purchased lead
+  // (or the nightly DNC re-check flags the consumer phone), we auto-issue
+  // a 50%-of-price trade-in credit instead of forcing the buyer to file a
+  // dispute. Idempotent: a second check returns "already_credited".
+  // Agent-only — the route requires the requester to own the order.
+  // ──────────────────────────────────────────────────────
+  app.post("/api/orders/:orderId/check-replacement", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+
+      const order = await storage.getOrderById(orderId);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (order.userId !== userId) {
+        const u = await storage.getUser(userId);
+        if (u?.role !== "admin") {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+      }
+
+      // Throttle so a UI retry storm can't hammer the dialer log scan.
+      if (!(await takeToken(`replacement:${userId}`, 30, 10 / 60))) {
+        return res.status(429).json({ message: "Too many replacement checks" });
+      }
+
+      const deps: ReplacementDeps = {
+        getOrder: (id) => storage.getOrderById(id),
+        getCallLogsForOrder: (id) => storage.getCallLogsForOrder(id),
+        getCreditForOrder: (id) => storage.getTradeInCreditByOrderId(id),
+        createTradeInCredit: (input) => storage.createTradeInCredit(input),
+        redeemTradeInCredit: (cid, lid) => storage.redeemTradeInCredit(cid, lid),
+        recordAudit: (input) =>
+          recordAudit({
+            actorUserId: input.actorUserId,
+            action: input.action,
+            targetKind: input.targetKind ?? null,
+            targetId: input.targetId ?? null,
+            metadata: input.metadata ?? null,
+          }),
+      };
+
+      const result = await autoIssueReplacement(orderId, deps);
+      // Idempotent: 200 in all "shaped" cases. The body carries `issued`.
+      if (result.issued) {
+        return res.status(201).json(result);
+      }
+      // Surface a 409 only when the credit already exists — every other
+      // ineligibility (too old, no bad signal, …) stays a 200 so the UI
+      // can render a friendly "not eligible" state without trapping errors.
+      if (result.reason === "already_credited") {
+        const existing = await storage.getTradeInCreditByOrderId(orderId);
+        return res.status(200).json({ issued: false, reason: result.reason, credit: existing });
+      }
+      return res.status(200).json(result);
+    } catch (err: any) {
+      console.error("Error checking replacement eligibility:", err);
+      res.status(500).json({ message: err?.message || "Failed to check replacement eligibility" });
+    }
+  });
+
+  // Dry-run: return eligibility without issuing.
+  app.get("/api/orders/:orderId/replacement-eligibility", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+      const order = await storage.getOrderById(orderId);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (order.userId !== userId) {
+        const u = await storage.getUser(userId);
+        if (u?.role !== "admin") return res.status(403).json({ message: "Forbidden" });
+      }
+      const proposal = await proposeReplacementCredit(orderId, {
+        getOrder: (id) => storage.getOrderById(id),
+        getCallLogsForOrder: (id) => storage.getCallLogsForOrder(id),
+        getCreditForOrder: (id) => storage.getTradeInCreditByOrderId(id),
+        createTradeInCredit: (input) => storage.createTradeInCredit(input),
+        redeemTradeInCredit: (cid, lid) => storage.redeemTradeInCredit(cid, lid),
+      });
+      return res.json(proposal);
+    } catch (err: any) {
+      console.error("Error fetching replacement eligibility:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch eligibility" });
+    }
+  });
+
+  // List the caller's available trade-in credits (top of orders page).
+  app.get("/api/tradein/credits", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const rows = await storage.listTradeInCreditsForUser(userId);
+      res.json(rows);
+    } catch (err: any) {
+      console.error("Error listing trade-in credits:", err);
+      res.status(500).json({ message: err?.message || "Failed to list credits" });
+    }
+  });
+
+  // Redeem a credit against a new lead purchase. Body: { leadId }.
+  app.post("/api/tradein/:creditId/redeem", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const creditId = parseInt(req.params.creditId, 10);
+      if (!Number.isFinite(creditId) || creditId <= 0) {
+        return res.status(400).json({ message: "Invalid credit id" });
+      }
+      const leadId = Number(req.body?.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId is required" });
+      }
+
+      const credit = await storage.getTradeInCreditById(creditId);
+      if (!credit) return res.status(404).json({ message: "Credit not found" });
+      if (credit.agentUserId !== userId) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      if (credit.status !== "issued") {
+        return res.status(409).json({ message: `Credit ${credit.status}` });
+      }
+      if (credit.expiresAt && new Date(credit.expiresAt).getTime() < Date.now()) {
+        return res.status(409).json({ message: "Credit expired" });
+      }
+
+      const redeemed = await storage.redeemTradeInCredit(creditId, leadId);
+
+      // Audit the redemption. The lead purchase itself is a separate call
+      // (the client-side flow purchases the lead after the credit is locked
+      // in); we record the linkage so an admin can trace the discount.
+      await recordAudit({
+        actorUserId: userId,
+        action: "tradein_credit.redeemed",
+        targetKind: "credit",
+        targetId: String(creditId),
+        metadata: { leadId, creditCents: redeemed.creditCents },
+      });
+
+      res.json(redeemed);
+    } catch (err: any) {
+      console.error("Error redeeming credit:", err);
+      if (/not redeemable/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      res.status(500).json({ message: err?.message || "Failed to redeem credit" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Smart-Match Subscriptions (Wave 7 — T3)
+  //
+  // Flat-rate monthly plan: "give me N matching leads/month". Subscriptions
+  // are created against a fixed tier table; the ingest path auto-delivers
+  // matching leads to the highest-remaining-quota subscriber.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/smart-match/tiers", (_req, res) => {
+    res.json({ tiers: SMART_MATCH_TIERS });
+  });
+
+  app.post("/api/smart-match", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const quotaRaw = Number(req.body?.monthlyLeadQuota);
+      const filterRaw = req.body?.filterCriteria;
+      if (!Number.isFinite(quotaRaw)) {
+        return res.status(400).json({ message: "monthlyLeadQuota required" });
+      }
+      const tier = SMART_MATCH_TIERS.find(t => t.quota === quotaRaw);
+      if (!tier) {
+        return res.status(400).json({
+          message: `Invalid quota; must be one of: ${SMART_MATCH_TIERS.map(t => t.quota).join(", ")}`,
+        });
+      }
+      if (filterRaw && (typeof filterRaw !== "object" || Array.isArray(filterRaw))) {
+        return res.status(400).json({ message: "filterCriteria must be an object" });
+      }
+
+      // Rate-limit subscription creation to thwart spam-create / mis-clicks.
+      if (!(await takeToken(`smartmatch-create:${userId}`, 5, 1 / 60))) {
+        return res.status(429).json({ message: "Too many subscription attempts" });
+      }
+
+      const created = await storage.createSmartMatchSubscription({
+        agentUserId: userId,
+        monthlyLeadQuota: tier.quota,
+        monthlyPriceCents: tier.priceCents,
+        filterCriteria: (filterRaw ?? {}) as Record<string, unknown>,
+      });
+
+      recordAudit({
+        actorUserId: userId,
+        action: "smartmatch.create",
+        targetKind: "smart_match_subscription",
+        targetId: String(created.id),
+        metadata: { quota: tier.quota, priceCents: tier.priceCents },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("Error creating smart-match subscription:", err);
+      res.status(500).json({ message: err?.message || "Failed to create subscription" });
+    }
+  });
+
+  app.get("/api/smart-match", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const subs = await storage.listSmartMatchSubscriptions(userId);
+      res.json(subs);
+    } catch (err: any) {
+      console.error("Error listing smart-match subscriptions:", err);
+      res.status(500).json({ message: err?.message || "Failed to list subscriptions" });
+    }
+  });
+
+  app.delete("/api/smart-match/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return res.status(400).json({ message: "Invalid subscription id" });
+      }
+      const cancelled = await storage.cancelSmartMatchSubscription(id, userId);
+      if (!cancelled) {
+        return res.status(404).json({ message: "Subscription not found" });
+      }
+      recordAudit({
+        actorUserId: userId,
+        action: "smartmatch.cancel",
+        targetKind: "smart_match_subscription",
+        targetId: String(id),
+      }).catch(err => console.error("[audit] failed:", err));
+      res.json(cancelled);
+    } catch (err: any) {
+      console.error("Error cancelling smart-match subscription:", err);
+      res.status(500).json({ message: err?.message || "Failed to cancel subscription" });
     }
   });
 
@@ -1136,6 +1471,27 @@ export async function registerRoutes(
         })
         .catch(err => console.error("Routing error:", err));
 
+      // T3 — smart-match flat-rate delivery. Best-effort; will no-op if the
+      // org routing engine already grabbed the lead, or if no active sub
+      // matches. We re-read the lead from storage so we see any state
+      // changes (e.g. assignedToUserId) that the routing engine wrote.
+      (async () => {
+        try {
+          const fresh = await storage.getLead(lead.id);
+          if (!fresh) return;
+          const delivery = await attemptDeliveryForLead(fresh);
+          if (delivery) {
+            broadcastLeadAssignment({
+              agentUserId: delivery.agentUserId,
+              leadId: lead.id,
+              matchScore: 100,
+            });
+          }
+        } catch (err: any) {
+          console.error("[smart-match] post-ingest delivery error:", err?.message);
+        }
+      })();
+
       res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
     } catch (error: any) {
       console.error("Error ingesting lead:", error);
@@ -1462,6 +1818,13 @@ export async function registerRoutes(
         verificationStatus: existing?.verificationStatus ?? "pending",
       });
 
+      // Fire-and-forget NIPR verification. Onboarding must succeed even when
+      // NIPR is unreachable; the result is cached on the profile and shown
+      // in the UI on next poll.
+      verifyAgentLicense(userId).catch(err =>
+        console.error("[nipr] background verify failed:", err?.message),
+      );
+
       res.json(profile);
     } catch (err) {
       console.error("Error onboarding agent:", err);
@@ -1725,6 +2088,34 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error setting verification:", err);
       res.status(500).json({ message: "Failed to update verification" });
+    }
+  });
+
+  // Admin re-trigger of NIPR/DOI license verification for an agent in their org.
+  // Returns the verify result synchronously (it's a single HTTP call to NIPR,
+  // not the background path used by onboarding).
+  app.post("/api/agent/:userId/nipr/verify", isAuthenticated, async (req: any, res) => {
+    try {
+      const actorId = req.user.claims.sub;
+      const targetUserId = req.params.userId;
+      const target = await storage.getAgentProfile(targetUserId);
+      if (!target) return res.status(404).json({ message: "Agent profile not found" });
+
+      // Self-trigger always allowed; admins/owners can re-trigger for any
+      // agent in their own org.
+      if (actorId !== targetUserId) {
+        const role = await storage.getUserOrgRole(actorId, target.orgId);
+        if (role !== "owner" && role !== "admin") {
+          return res.status(403).json({ message: "Owner or admin role required" });
+        }
+      }
+
+      const result = await verifyAgentLicense(targetUserId);
+      const updated = await storage.getAgentProfile(targetUserId);
+      res.json({ result, profile: updated });
+    } catch (err) {
+      console.error("Error re-verifying NIPR license:", err);
+      res.status(500).json({ message: "Failed to verify license" });
     }
   });
 
@@ -2430,6 +2821,16 @@ ${allUrls
       if (!Number.isFinite(leadId) || leadId <= 0) {
         return res.status(400).json({ message: "leadId is required" });
       }
+      // Wave 7 (T8) — real-time DNC re-check right before dialling. If the
+      // phone is now on the suppression list we refuse the call and have
+      // already updated lead.dncFlagged + written an audit row.
+      const gate = await gateCallAgainstDnc(leadId, userId);
+      if (!gate.allowed) {
+        return res.status(403).json({
+          message: gate.reason || "call blocked by DNC",
+          dncBlocked: true,
+        });
+      }
       const result = await startCallForLead(userId, leadId);
       res.json(result);
     } catch (err: any) {
@@ -2513,6 +2914,59 @@ ${allUrls
     }
   });
 
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): Vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+
+  // Vendor-key authed: a vendor sees their own scorecard.
+  app.get("/api/vendors/me/scorecard", async (req: any, res) => {
+    try {
+      const apiKey = req.headers["x-api-key"] as string | undefined;
+      if (!apiKey) {
+        return res.status(401).json({ message: "API key required (X-Api-Key header)" });
+      }
+      const vendor = await storage.getVendorByApiKey(apiKey);
+      if (!vendor) {
+        return res.status(401).json({ message: "Invalid or inactive API key" });
+      }
+      // 30 reads / vendor / minute is plenty for a dashboard refresh.
+      if (!(await takeToken(`scorecard:${vendor.id}`, 30, 1))) {
+        return res.status(429).json({ message: "Rate limit exceeded" });
+      }
+      const { getVendorScorecard } = await import("./vendorScorecard");
+      const card = await getVendorScorecard(vendor.id);
+      res.json(card);
+    } catch (err: any) {
+      console.error("vendor scorecard error:", err);
+      res.status(500).json({ message: err?.message || "Failed to build scorecard" });
+    }
+  });
+
+  // Platform admin: scorecard for any vendor by id.
+  app.get("/api/admin/vendors/:vendorId/scorecard", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (!user || user.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const vendorId = Number(req.params.vendorId);
+      if (!Number.isFinite(vendorId) || vendorId <= 0) {
+        return res.status(400).json({ message: "Invalid vendorId" });
+      }
+      const vendor = await storage.getVendor(vendorId);
+      if (!vendor) {
+        return res.status(404).json({ message: "Vendor not found" });
+      }
+      const { getVendorScorecard } = await import("./vendorScorecard");
+      const card = await getVendorScorecard(vendorId);
+      res.json({ vendor: { id: vendor.id, name: vendor.name }, ...card });
+    } catch (err: any) {
+      console.error("admin vendor scorecard error:", err);
+      res.status(500).json({ message: err?.message || "Failed to build scorecard" });
+    }
+  });
+
   // GET /api/dialer/calls?leadId=  — call history for the current agent.
   app.get("/api/dialer/calls", isAuthenticated, async (req: any, res) => {
     try {
@@ -2527,6 +2981,152 @@ ${allUrls
     } catch (err: any) {
       console.error("dialer.calls error:", err);
       res.status(500).json({ message: err?.message || "failed to fetch calls" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T7) — SMS outreach
+  // ──────────────────────────────────────────────────────
+
+  // GET /api/sms/templates  — the canned template registry for the picker.
+  app.get("/api/sms/templates", isAuthenticated, async (_req, res) => {
+    res.json(listSmsTemplates());
+  });
+
+  // POST /api/sms/send  — render + dispatch a templated SMS.
+  app.post("/api/sms/send", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = Number(req.body?.leadId);
+      const templateKey = String(req.body?.templateKey ?? "");
+      const variables =
+        req.body?.variables && typeof req.body.variables === "object"
+          ? (req.body.variables as Record<string, string>)
+          : undefined;
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId is required" });
+      }
+      if (!templateKey) {
+        return res.status(400).json({ message: "templateKey is required" });
+      }
+      const result = await sendOutreach({
+        agentUserId: userId,
+        leadId,
+        templateKey,
+        variables,
+      });
+      res.json(result);
+    } catch (err: any) {
+      // Map domain errors to HTTP codes the UI can interpret.
+      if (err instanceof UnknownTemplateError) {
+        return res.status(404).json({ message: err.message });
+      }
+      if (err instanceof InvalidPlaceholderError) {
+        return res.status(400).json({ message: err.message });
+      }
+      if (err instanceof MissingPurchaseError) {
+        return res.status(403).json({ message: "purchase required to message this lead" });
+      }
+      if (err instanceof OptedOutError) {
+        return res.status(409).json({ message: "lead has opted out — STOP received within 30d" });
+      }
+      if (err instanceof RateLimitExceededError) {
+        return res.status(429).json({ message: err.message });
+      }
+      if (err instanceof NoConsumerPhoneError) {
+        return res.status(400).json({ message: err.message });
+      }
+      console.error("sms.send error:", err);
+      res.status(500).json({ message: err?.message || "failed to send sms" });
+    }
+  });
+
+  // GET /api/sms/logs/:leadId  — agent's SMS history with a single lead.
+  app.get("/api/sms/logs/:leadId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = Number(req.params?.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId must be a positive number" });
+      }
+      const logs = await storage.listSmsLogsForLead(leadId, userId);
+      res.json(logs);
+    } catch (err: any) {
+      console.error("sms.logs error:", err);
+      res.status(500).json({ message: err?.message || "failed to fetch sms logs" });
+    }
+  });
+
+  // POST /api/sms/webhook  — Twilio inbound + status callback.
+  // Verifies X-Twilio-Signature in live mode; in stub mode (no auth token)
+  // we accept the event so dev/CI can drive the flow.
+  app.post("/api/sms/webhook", async (req: any, res) => {
+    try {
+      const fullUrl = twilioWebhookUrl(req);
+      const valid = verifyTwilioWebhook(
+        { headers: req.headers, body: req.body, url: req.url },
+        fullUrl,
+      );
+      if (!valid && isTwilioLive()) {
+        return res.status(403).json({ message: "invalid signature" });
+      }
+      const sid: string | undefined = req.body?.MessageSid;
+      const status: string | undefined = req.body?.MessageStatus;
+      const inboundBody: string | undefined = req.body?.Body;
+      if (!sid) return res.status(400).json({ message: "MessageSid required" });
+
+      // Status callback for an outbound message: update the existing row.
+      if (status && !inboundBody) {
+        const { db } = await import("./db");
+        const { smsLogs } = await import("@shared/schema");
+        const { eq } = await import("drizzle-orm");
+        await db
+          .update(smsLogs)
+          .set({ status })
+          .where(eq(smsLogs.twilioSid, sid));
+        return res.json({ ok: true });
+      }
+
+      // Inbound message from the consumer. Look up which lead/agent this is
+      // for by matching the From phone to a recent outbound recipient.
+      const fromPhone: string | undefined = req.body?.From;
+      if (!fromPhone || !inboundBody) {
+        return res.status(400).json({ message: "From and Body required for inbound" });
+      }
+      const { db } = await import("./db");
+      const { leads } = await import("@shared/schema");
+      const { smsLogs: smsLogsTable } = await import("@shared/schema");
+      const { eq, desc } = await import("drizzle-orm");
+      const [lead] = await db.select().from(leads).where(eq(leads.consumerPhone, fromPhone)).limit(1);
+      if (!lead) {
+        // Unrecognised phone — log anonymously and ack.
+        return res.json({ ok: true, ignored: true });
+      }
+      // Find the most recent outbound log for that lead to attribute the
+      // inbound message to the same agent.
+      const [recent] = await db
+        .select()
+        .from(smsLogsTable)
+        .where(eq(smsLogsTable.leadId, lead.id))
+        .orderBy(desc(smsLogsTable.createdAt))
+        .limit(1);
+      const agentUserId = recent?.agentUserId;
+      if (!agentUserId) {
+        return res.json({ ok: true, ignored: true });
+      }
+      await storage.createSmsLog({
+        agentUserId,
+        leadId: lead.id,
+        twilioSid: sid,
+        direction: "in",
+        body: inboundBody,
+        status: "received",
+      });
+      const optedOut = isStopMessage(inboundBody);
+      res.json({ ok: true, optedOut });
+    } catch (err: any) {
+      console.error("sms.webhook error:", err);
+      res.status(500).json({ message: err?.message || "webhook failed" });
     }
   });
 

@@ -23,6 +23,8 @@ import Analytics from "@/pages/analytics";
 import Pricing from "@/pages/pricing";
 import SavedLists from "@/pages/saved-lists";
 import TcpaPage from "@/pages/tcpa";
+import VendorScorecard from "@/pages/vendor-scorecard";
+import SmartMatchPage from "@/pages/smart-match";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -54,6 +56,8 @@ function Router() {
       <Route path="/pricing" component={Pricing} />
       <Route path="/saved" component={SavedLists} />
       <Route path="/tcpa" component={TcpaPage} />
+      <Route path="/admin/vendor-scorecard" component={VendorScorecard} />
+      <Route path="/smart-match" component={SmartMatchPage} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
       <Route component={NotFound} />

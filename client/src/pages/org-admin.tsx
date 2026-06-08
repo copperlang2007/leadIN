@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2 } from "lucide-react";
+import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { PermissionRequired } from "@/components/permission-required";
@@ -60,8 +60,17 @@ interface OrgAgent {
   licenseNumber: string | null;
   licenseDocumentUrl: string | null;
   openLeads: number;
+  // Wave 7 (T4): NIPR/DOI verification cache columns.
+  niprVerifiedAt: string | null;
+  niprLicenseExpiry: string | null;
+  niprLastError: string | null;
   user: { id: string; email: string | null; firstName: string | null; lastName: string | null };
 }
+
+// Agents whose license expires within this many days are surfaced in the
+// org-admin renewal banner. Keep in sync with RENEWAL_WINDOW_DAYS in
+// server/niprSync.ts.
+const RENEWAL_WINDOW_DAYS = 30;
 
 function formatCents(cents: number): string {
   const dollars = (cents || 0) / 100;
@@ -248,6 +257,50 @@ export default function OrgAdmin() {
             </Badge>
           </div>
         </div>
+
+        {/* Wave 7 (T4): license-expiry alerts. Surfaces every agent in the
+            org whose NIPR-cached expiry is within RENEWAL_WINDOW_DAYS so
+            owners/admins can chase the renewal before routing breaks. */}
+        {(() => {
+          const horizon = Date.now() + RENEWAL_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+          const expiring = agents.filter(a => {
+            if (!a.niprLicenseExpiry) return false;
+            const t = new Date(a.niprLicenseExpiry).getTime();
+            return Number.isFinite(t) && t < horizon;
+          });
+          if (expiring.length === 0) return null;
+          return (
+            <div
+              className="border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 rounded-md p-3"
+              data-testid="banner-license-expiry"
+            >
+              <div className="flex items-center gap-2 font-medium text-amber-900 dark:text-amber-100">
+                <AlertTriangle className="h-4 w-4" />
+                {expiring.length} agent{expiring.length === 1 ? "" : "s"} {expiring.length === 1 ? "has" : "have"} a license expiring within {RENEWAL_WINDOW_DAYS} days
+              </div>
+              <ul className="mt-2 text-sm text-amber-900 dark:text-amber-100 space-y-0.5">
+                {expiring.map(a => {
+                  const days = Math.max(
+                    0,
+                    Math.ceil(
+                      (new Date(a.niprLicenseExpiry!).getTime() - Date.now()) /
+                        (24 * 60 * 60 * 1000),
+                    ),
+                  );
+                  return (
+                    <li key={a.userId} data-testid={`row-expiry-${a.userId}`}>
+                      {a.user.firstName} {a.user.lastName} ({a.user.email}) — expires in {days} day{days === 1 ? "" : "s"}
+                      {" "}
+                      <span className="text-xs opacity-75">
+                        ({new Date(a.niprLicenseExpiry!).toISOString().slice(0, 10)})
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })()}
 
         <Card>
           <CardHeader>

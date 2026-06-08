@@ -26,13 +26,23 @@ import {
   callLogs,
   transcripts,
   conversationAssists,
+  smsLogs,
   crmConnections,
   crmSyncEvents,
   agentReputationEvents,
+  leadTradeInCredits,
+  smartMatchSubscriptions,
+  type SmartMatchSubscription,
+  leadPersonas,
+  type LeadPersona,
+  type InsertLeadPersona,
   type CallLog,
   type InsertCallLog,
   type Transcript,
   type ConversationAssist,
+  type LeadTradeInCredit,
+  type SmsLog,
+  type InsertSmsLog,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -213,6 +223,13 @@ export interface IStorage {
     userId: string,
     fields: { capacityLimit?: number; acceptingLeads?: boolean },
   ): Promise<AgentProfile>;
+  updateAgentNipr(
+    userId: string,
+    fields: { verifiedAt?: Date | null; expiry?: Date | null; error?: string | null },
+  ): Promise<AgentProfile>;
+  findAgentsExpiringWithin(
+    days: number,
+  ): Promise<(AgentProfile & { user: User })[]>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number, opts?: { bypassAuction?: boolean }): Promise<LeadAssignment | null>;
@@ -286,6 +303,7 @@ export interface IStorage {
     refundCents: number,
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
+  updateDisputeAi(disputeId: number, fields: { aiClassification?: string | null; aiConfidence?: number | null }): Promise<void>;
 
   // ──────────────────────────────────────────────────────
   // Wave 6b: TCPA defense insurance (policy + claims)
@@ -337,6 +355,22 @@ export interface IStorage {
   }): Promise<ConversationAssist>;
 
   // ──────────────────────────────────────────────────────
+  // Wave 7 (T7): TCPA-safe SMS outreach
+  // ──────────────────────────────────────────────────────
+  createSmsLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    direction: "out" | "in";
+    body: string;
+    status: string;
+  }): Promise<SmsLog>;
+  listSmsLogsForLead(
+    leadId: number,
+    agentUserId: string,
+  ): Promise<SmsLog[]>;
+
+  // ──────────────────────────────────────────────────────
   // Wave 6 (K4) — CRM connections & bidirectional sync events
   // ──────────────────────────────────────────────────────
   createCrmConnection(input: {
@@ -368,6 +402,66 @@ export interface IStorage {
   }): Promise<void>;
   getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
   computeAgentReputation(agentUserId: string): Promise<number>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+  getVendorScorecardRows(
+    vendorId: number,
+    dimension: "type" | "source",
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Array<{
+    key: string;
+    ingested: number;
+    sold: number;
+    avgMediscore: number;
+    disputes: number;
+    revenueCents: number;
+  }>>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T1) — Lead replacement / trade-in credits
+  // ──────────────────────────────────────────────────────
+  getCallLogsForOrder(orderId: number): Promise<CallLog[]>;
+  getTradeInCreditByOrderId(orderId: number): Promise<LeadTradeInCredit | undefined>;
+  getTradeInCreditById(creditId: number): Promise<LeadTradeInCredit | undefined>;
+  listTradeInCreditsForUser(userId: string): Promise<LeadTradeInCredit[]>;
+  createTradeInCredit(input: {
+    orderId: number;
+    agentUserId: string;
+    creditCents: number;
+    reason?: string | null;
+    expiresAt?: Date | null;
+  }): Promise<LeadTradeInCredit>;
+  redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T3) — smart-match subscriptions
+  // ──────────────────────────────────────────────────────
+  createSmartMatchSubscription(input: {
+    agentUserId: string;
+    orgId?: string | null;
+    monthlyLeadQuota: number;
+    monthlyPriceCents: number;
+    filterCriteria: Record<string, unknown>;
+  }): Promise<SmartMatchSubscription>;
+  listSmartMatchSubscriptions(userId?: string): Promise<SmartMatchSubscription[]>;
+  cancelSmartMatchSubscription(id: number, agentUserId: string): Promise<SmartMatchSubscription | null>;
+  decrementSmartMatchQuota(id: number): Promise<void>;
+  resetSmartMatchCycle(id: number): Promise<void>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T6) — Lead persona cache
+  // ──────────────────────────────────────────────────────
+  getLeadPersona(leadId: number): Promise<LeadPersona | undefined>;
+  upsertLeadPersona(input: {
+    leadId: number;
+    persona: string;
+    predictedObjections: string[];
+    bestApproach: string;
+    modelUsed?: string | null;
+  }): Promise<LeadPersona>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1147,6 +1241,51 @@ export class DatabaseStorage implements IStorage {
       .returning();
     if (!p) throw new Error("Agent profile not found");
     return p;
+  }
+
+  // Wave 7 (T4): NIPR/DOI auto-verification cache columns.
+  // `verifiedAt` is the wall-clock time we last successfully called NIPR.
+  // `expiry` is the license expiration date returned by NIPR.
+  // `error` records the last failure message (cleared on success).
+  // Passing `undefined` for a field leaves it untouched; `null` explicitly clears it.
+  async updateAgentNipr(
+    userId: string,
+    fields: { verifiedAt?: Date | null; expiry?: Date | null; error?: string | null },
+  ): Promise<AgentProfile> {
+    const patch: Partial<AgentProfile> = { updatedAt: new Date() };
+    if (fields.verifiedAt !== undefined) patch.niprVerifiedAt = fields.verifiedAt;
+    if (fields.expiry !== undefined) patch.niprLicenseExpiry = fields.expiry;
+    if (fields.error !== undefined) patch.niprLastError = fields.error;
+    const [p] = await db
+      .update(agentProfiles)
+      .set(patch)
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    if (!p) throw new Error("Agent profile not found");
+    return p;
+  }
+
+  async findAgentsExpiringWithin(
+    days: number,
+  ): Promise<(AgentProfile & { user: User })[]> {
+    const safeDays = Math.max(0, Math.trunc(days));
+    const cutoff = new Date(Date.now() + safeDays * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          sql`${agentProfiles.niprLicenseExpiry} IS NOT NULL`,
+          lt(agentProfiles.niprLicenseExpiry, cutoff),
+        ),
+      );
+    const result: (AgentProfile & { user: User })[] = [];
+    for (const r of rows) {
+      if (!r.users) continue;
+      result.push({ ...r.agent_profiles, user: r.users });
+    }
+    return result;
   }
 
   async listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]> {
@@ -2091,6 +2230,26 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // T2 — Update dispute with AI classification + confidence. Never throws.
+  async updateDisputeAi(
+    disputeId: number,
+    fields: { aiClassification?: string | null; aiConfidence?: number | null },
+  ): Promise<void> {
+    try {
+      const patch: Record<string, unknown> = {};
+      if (fields.aiClassification !== undefined) patch.aiClassification = fields.aiClassification;
+      if (fields.aiConfidence !== undefined) {
+        patch.aiConfidence = fields.aiConfidence === null ? null : fields.aiConfidence.toFixed(2);
+      }
+      if (Object.keys(patch).length === 0) return;
+      await db.update(leadDisputes).set(patch).where(eq(leadDisputes.id, disputeId));
+    } catch (err) {
+      // Swallow — classification is a UX enhancement, not part of the
+      // dispute creation contract.
+      console.error("[disputeClassifier] updateDisputeAi failed:", (err as Error).message);
+    }
+  }
+
   async getDispute(id: number): Promise<LeadDispute | undefined> {
     const [d] = await db.select().from(leadDisputes).where(eq(leadDisputes.id, id));
     return d;
@@ -2589,6 +2748,41 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T7): SMS outreach log helpers
+  // ──────────────────────────────────────────────────────
+
+  async createSmsLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    direction: "out" | "in";
+    body: string;
+    status: string;
+  }): Promise<SmsLog> {
+    const values: InsertSmsLog = {
+      agentUserId: input.agentUserId,
+      leadId: input.leadId ?? null,
+      twilioSid: input.twilioSid ?? null,
+      direction: input.direction,
+      body: input.body,
+      status: input.status,
+    };
+    const [row] = await db.insert(smsLogs).values(values).returning();
+    return row;
+  }
+
+  async listSmsLogsForLead(leadId: number, agentUserId: string): Promise<SmsLog[]> {
+    // Scope by agent so one buyer can't read another buyer's correspondence
+    // with the same lead. Order by newest first so the panel renders the
+    // current conversation at the top.
+    return await db
+      .select()
+      .from(smsLogs)
+      .where(and(eq(smsLogs.leadId, leadId), eq(smsLogs.agentUserId, agentUserId)))
+      .orderBy(desc(smsLogs.createdAt));
+  }
+
   async getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]> {
     return await db
       .select()
@@ -2692,6 +2886,311 @@ export class DatabaseStorage implements IStorage {
 
   async computeAgentReputation(agentUserId: string): Promise<number> {
     return await computeAgentReputationCore(agentUserId);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+  //
+  // Aggregated per-`type` or per-`source` performance for a single vendor in
+  // the [windowStart, windowEnd) window.
+  //
+  // Uses the lead's `createdAt` as the bucketing date (so an old lead sold
+  // recently still attributes to its ingestion window). Orders + disputes are
+  // joined via lateral subqueries so missing rows fall through as 0.
+  async getVendorScorecardRows(
+    vendorId: number,
+    dimension: "type" | "source",
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Array<{
+    key: string;
+    ingested: number;
+    sold: number;
+    avgMediscore: number;
+    disputes: number;
+    revenueCents: number;
+  }>> {
+    // Whitelist the grouping column — never interpolate user input into the
+    // GROUP BY clause directly.
+    const groupCol = dimension === "source" ? sql.raw("source") : sql.raw("type");
+
+    // Build a single grouped aggregate:
+    //   - ingested / sold / avg_mediscore come from leads themselves
+    //   - revenue_cents joins orders by lead_id (LEFT JOIN so unsold leads
+    //     don't disappear) and sums ROUND(price * 100) so we stay in integer
+    //     cents and avoid floating-point drift.
+    //   - disputes joins lead_disputes by lead_id and counts distinct rows.
+    // Per-lead joins are deduped via DISTINCT for safety, though there's a
+    // unique constraint on lead_disputes.order_id.
+    const rows = await db.execute<{
+      key: string;
+      ingested: string | number;
+      sold: string | number;
+      avg_mediscore: string | number | null;
+      disputes: string | number;
+      revenue_cents: string | number | null;
+    }>(sql`
+      WITH vendor_leads AS (
+        SELECT l.id, l.${groupCol} AS bucket, l.sold, l.mediscore
+        FROM leads l
+        WHERE l.vendor_id = ${vendorId}
+          AND l.removed = false
+          AND l.created_at >= ${windowStart}
+          AND l.created_at < ${windowEnd}
+      ),
+      revenue AS (
+        SELECT vl.bucket,
+               COALESCE(SUM(ROUND(o.price::numeric * 100))::bigint, 0) AS revenue_cents
+        FROM vendor_leads vl
+        LEFT JOIN orders o ON o.lead_id = vl.id
+        GROUP BY vl.bucket
+      ),
+      disputes AS (
+        SELECT vl.bucket,
+               COUNT(DISTINCT d.id)::int AS disputes
+        FROM vendor_leads vl
+        LEFT JOIN lead_disputes d ON d.lead_id = vl.id
+        GROUP BY vl.bucket
+      )
+      SELECT
+        vl.bucket AS key,
+        COUNT(*)::int AS ingested,
+        COUNT(*) FILTER (WHERE vl.sold = true)::int AS sold,
+        COALESCE(AVG(vl.mediscore), 0)::float AS avg_mediscore,
+        COALESCE(d.disputes, 0)::int AS disputes,
+        COALESCE(r.revenue_cents, 0)::bigint AS revenue_cents
+      FROM vendor_leads vl
+      LEFT JOIN revenue r ON r.bucket = vl.bucket
+      LEFT JOIN disputes d ON d.bucket = vl.bucket
+      GROUP BY vl.bucket, r.revenue_cents, d.disputes
+      ORDER BY revenue_cents DESC, sold DESC
+    `);
+
+    const list = ((rows as any).rows ?? rows) as Array<{
+      key: string;
+      ingested: string | number;
+      sold: string | number;
+      avg_mediscore: string | number | null;
+      disputes: string | number;
+      revenue_cents: string | number | null;
+    }>;
+
+    return list.map(r => ({
+      key: String(r.key),
+      ingested: Number(r.ingested ?? 0),
+      sold: Number(r.sold ?? 0),
+      avgMediscore: Number(r.avg_mediscore ?? 0),
+      disputes: Number(r.disputes ?? 0),
+      revenueCents: Number(r.revenue_cents ?? 0),
+    }));
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T1) — Lead replacement / trade-in credits
+  // ──────────────────────────────────────────────────────
+  async getCallLogsForOrder(orderId: number): Promise<CallLog[]> {
+    // Join call_logs.lead_id == orders.lead_id, scoped to that order.
+    // Drizzle subquery via inner join on the order row.
+    const order = await this.getOrderById(orderId);
+    if (!order) return [];
+    return await db
+      .select()
+      .from(callLogs)
+      .where(eq(callLogs.leadId, order.leadId))
+      .orderBy(desc(callLogs.startedAt))
+      .limit(100);
+  }
+
+  async getTradeInCreditByOrderId(orderId: number): Promise<LeadTradeInCredit | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.orderId, orderId))
+      .limit(1);
+    return row;
+  }
+
+  async getTradeInCreditById(creditId: number): Promise<LeadTradeInCredit | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.id, creditId))
+      .limit(1);
+    return row;
+  }
+
+  async listTradeInCreditsForUser(userId: string): Promise<LeadTradeInCredit[]> {
+    return await db
+      .select()
+      .from(leadTradeInCredits)
+      .where(eq(leadTradeInCredits.agentUserId, userId))
+      .orderBy(desc(leadTradeInCredits.createdAt))
+      .limit(100);
+  }
+
+  async createTradeInCredit(input: {
+    orderId: number;
+    agentUserId: string;
+    creditCents: number;
+    reason?: string | null;
+    expiresAt?: Date | null;
+  }): Promise<LeadTradeInCredit> {
+    const [row] = await db
+      .insert(leadTradeInCredits)
+      .values({
+        orderId: input.orderId,
+        agentUserId: input.agentUserId,
+        creditCents: input.creditCents,
+        reason: input.reason ?? null,
+        status: "issued",
+        expiresAt: input.expiresAt ?? null,
+      })
+      .returning();
+    return row;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T6) — Lead persona cache
+  // ──────────────────────────────────────────────────────
+  async getLeadPersona(leadId: number): Promise<LeadPersona | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadPersonas)
+      .where(eq(leadPersonas.leadId, leadId));
+    return row;
+  }
+
+  async upsertLeadPersona(input: {
+    leadId: number;
+    persona: string;
+    predictedObjections: string[];
+    bestApproach: string;
+    modelUsed?: string | null;
+  }): Promise<LeadPersona> {
+    const values: InsertLeadPersona = {
+      leadId: input.leadId,
+      persona: input.persona,
+      predictedObjections: input.predictedObjections ?? [],
+      bestApproach: input.bestApproach ?? null,
+      modelUsed: input.modelUsed ?? null,
+      generatedAt: new Date(),
+    };
+    const [row] = await db
+      .insert(leadPersonas)
+      .values(values)
+      .onConflictDoUpdate({
+        target: leadPersonas.leadId,
+        set: {
+          persona: values.persona,
+          predictedObjections: values.predictedObjections,
+          bestApproach: values.bestApproach,
+          modelUsed: values.modelUsed,
+          generatedAt: values.generatedAt,
+        },
+      })
+      .returning();
+    return row;
+  }
+
+
+  async createSmartMatchSubscription(input: {
+    agentUserId: string;
+    orgId?: string | null;
+    monthlyLeadQuota: number;
+    monthlyPriceCents: number;
+    filterCriteria: Record<string, unknown>;
+  }): Promise<SmartMatchSubscription> {
+    const [row] = await db
+      .insert(smartMatchSubscriptions)
+      .values({
+        agentUserId: input.agentUserId,
+        orgId: input.orgId ?? null,
+        monthlyLeadQuota: input.monthlyLeadQuota,
+        monthlyPriceCents: input.monthlyPriceCents,
+        filterCriteria: input.filterCriteria,
+        status: "active",
+        cyclesDelivered: 0,
+        leadsDeliveredThisCycle: 0,
+        cycleStartedAt: new Date(),
+      })
+      .returning();
+    return row;
+  }
+
+  async redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit> {
+    // Mark redeemed atomically. The actual wallet discount is applied by
+    // the route layer (which then calls purchaseLead with reduced balance
+    // pressure). leadId is recorded in audit metadata at the route.
+    const [row] = await db
+      .update(leadTradeInCredits)
+      .set({ status: "redeemed", redeemedAt: new Date() })
+      .where(
+        and(
+          eq(leadTradeInCredits.id, creditId),
+          eq(leadTradeInCredits.status, "issued"),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new Error("Credit not redeemable (not found, already redeemed, or expired)");
+    }
+    void leadId;
+    return row;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T3) — smart-match subscriptions
+  // ──────────────────────────────────────────────────────
+  async listSmartMatchSubscriptions(userId?: string): Promise<SmartMatchSubscription[]> {
+    // Active-only, ordered by id for determinism. The picker tolerates any
+    // order but tests + UI expect a stable shape.
+    const conditions = userId
+      ? and(eq(smartMatchSubscriptions.status, "active"), eq(smartMatchSubscriptions.agentUserId, userId))
+      : eq(smartMatchSubscriptions.status, "active");
+    return await db
+      .select()
+      .from(smartMatchSubscriptions)
+      .where(conditions)
+      .orderBy(smartMatchSubscriptions.id);
+  }
+
+  async cancelSmartMatchSubscription(id: number, agentUserId: string): Promise<SmartMatchSubscription | null> {
+    // Only the owning agent can cancel — guards against IDOR via the path
+    // param. Returns null when the row doesn't exist or belongs to someone
+    // else, so the route can map that to 404.
+    const [row] = await db
+      .update(smartMatchSubscriptions)
+      .set({ status: "cancelled" })
+      .where(
+        and(
+          eq(smartMatchSubscriptions.id, id),
+          eq(smartMatchSubscriptions.agentUserId, agentUserId),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  async decrementSmartMatchQuota(id: number): Promise<void> {
+    // "Decrement" in spec terms = bump the delivered counter by one. The
+    // remaining-quota view is computed as quota - delivered, so this is
+    // the right column to nudge.
+    await db
+      .update(smartMatchSubscriptions)
+      .set({ leadsDeliveredThisCycle: sql`${smartMatchSubscriptions.leadsDeliveredThisCycle} + 1` })
+      .where(eq(smartMatchSubscriptions.id, id));
+  }
+
+  async resetSmartMatchCycle(id: number): Promise<void> {
+    await db
+      .update(smartMatchSubscriptions)
+      .set({
+        leadsDeliveredThisCycle: 0,
+        cyclesDelivered: sql`${smartMatchSubscriptions.cyclesDelivered} + 1`,
+        cycleStartedAt: new Date(),
+      })
+      .where(eq(smartMatchSubscriptions.id, id));
   }
 }
 
