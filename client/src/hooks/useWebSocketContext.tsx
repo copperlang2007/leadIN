@@ -3,11 +3,13 @@ import { createContext, useContext, useRef, useState, useEffect, useCallback, ty
 export type WSStatus = "connecting" | "connected" | "disconnected";
 
 type NewLeadCallback = (lead: any) => void;
+type AuctionMessageCallback = (msg: any) => void;
 
 interface WebSocketContextValue {
   status: WSStatus;
   lastLeadTime: Date | null;
   subscribeToNewLeads: (cb: NewLeadCallback) => () => void;
+  subscribeToAuctions: (cb: AuctionMessageCallback) => () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
@@ -19,11 +21,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
   const subscribersRef = useRef<Set<NewLeadCallback>>(new Set());
+  const auctionSubscribersRef = useRef<Set<AuctionMessageCallback>>(new Set());
 
   const subscribeToNewLeads = useCallback((cb: NewLeadCallback) => {
     subscribersRef.current.add(cb);
     return () => {
       subscribersRef.current.delete(cb);
+    };
+  }, []);
+
+  const subscribeToAuctions = useCallback((cb: AuctionMessageCallback) => {
+    auctionSubscribersRef.current.add(cb);
+    return () => {
+      auctionSubscribersRef.current.delete(cb);
     };
   }, []);
 
@@ -49,6 +59,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         if (data.type === "new_lead") {
           setLastLeadTime(new Date());
           subscribersRef.current.forEach(cb => cb(data.lead));
+        } else if (data.type === "auction_opened" || data.type === "auction_resolved") {
+          auctionSubscribersRef.current.forEach(cb => cb(data));
         }
       } catch {
         // ignore parse errors
@@ -84,7 +96,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   return (
-    <WebSocketContext.Provider value={{ status, lastLeadTime, subscribeToNewLeads }}>
+    <WebSocketContext.Provider value={{ status, lastLeadTime, subscribeToNewLeads, subscribeToAuctions }}>
       {children}
     </WebSocketContext.Provider>
   );
