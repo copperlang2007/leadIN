@@ -20,6 +20,8 @@ import {
   vendorBalances,
   vendorPayouts,
   leadDisputes,
+  tcpaPolicies,
+  tcpaClaims,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -46,6 +48,8 @@ import {
   type InsertSavedList,
   type VendorPayout,
   type LeadDispute,
+  type TcpaPolicy,
+  type TcpaClaim,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -62,6 +66,7 @@ import {
   priceStringToCents,
   type DisputeReason,
 } from "./disputes";
+import { computeAggregatePaidCents, validateApprovedPayout } from "./tcpa";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -241,6 +246,31 @@ export interface IStorage {
     refundCents: number,
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: TCPA defense insurance (policy + claims)
+  // ──────────────────────────────────────────────────────
+  createTcpaPolicy(input: {
+    orgId: string;
+    carrierName?: string | null;
+    perClaimLimitCents?: number;
+    aggregateLimitCents?: number;
+    endsAt?: Date | null;
+  }): Promise<TcpaPolicy>;
+  getActivePolicyForOrg(orgId: string): Promise<TcpaPolicy | undefined>;
+  fileTcpaClaim(input: {
+    orgId: string;
+    agentUserId: string;
+    claimReason: string;
+    amountClaimedCents: number;
+    orderId?: number | null;
+  }): Promise<TcpaClaim>;
+  resolveTcpaClaim(input: {
+    claimId: number;
+    action: "approved" | "denied";
+    amountPaidCents?: number;
+  }): Promise<TcpaClaim>;
+  listTcpaClaims(orgId: string): Promise<TcpaClaim[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1822,6 +1852,176 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return updated;
     });
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: TCPA defense insurance
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Create a new TCPA policy for an org. Auto-expires any existing active
+   * policy first — only one active policy per org is allowed.
+   */
+  async createTcpaPolicy(input: {
+    orgId: string;
+    carrierName?: string | null;
+    perClaimLimitCents?: number;
+    aggregateLimitCents?: number;
+    endsAt?: Date | null;
+  }): Promise<TcpaPolicy> {
+    return await db.transaction(async (tx) => {
+      // Auto-expire any existing active policy for this org so the unique
+      // "one active policy" invariant holds without a partial index.
+      await tx
+        .update(tcpaPolicies)
+        .set({ status: "expired", endsAt: new Date() })
+        .where(and(eq(tcpaPolicies.orgId, input.orgId), eq(tcpaPolicies.status, "active")));
+
+      const values: Record<string, unknown> = {
+        orgId: input.orgId,
+        carrierName: input.carrierName ?? null,
+        endsAt: input.endsAt ?? null,
+        status: "active",
+      };
+      if (typeof input.perClaimLimitCents === "number" && Number.isFinite(input.perClaimLimitCents)) {
+        values.perClaimLimitCents = Math.max(0, Math.floor(input.perClaimLimitCents));
+      }
+      if (typeof input.aggregateLimitCents === "number" && Number.isFinite(input.aggregateLimitCents)) {
+        values.aggregateLimitCents = Math.max(0, Math.floor(input.aggregateLimitCents));
+      }
+
+      const [created] = await tx.insert(tcpaPolicies).values(values as typeof tcpaPolicies.$inferInsert).returning();
+      return created;
+    });
+  }
+
+  async getActivePolicyForOrg(orgId: string): Promise<TcpaPolicy | undefined> {
+    const [policy] = await db
+      .select()
+      .from(tcpaPolicies)
+      .where(and(eq(tcpaPolicies.orgId, orgId), eq(tcpaPolicies.status, "active")))
+      .orderBy(desc(tcpaPolicies.startedAt))
+      .limit(1);
+    return policy;
+  }
+
+  /**
+   * File a new claim against the org's active policy. Throws if the org has
+   * no active policy. Claim opens at status='open'.
+   */
+  async fileTcpaClaim(input: {
+    orgId: string;
+    agentUserId: string;
+    claimReason: string;
+    amountClaimedCents: number;
+    orderId?: number | null;
+  }): Promise<TcpaClaim> {
+    if (!Number.isFinite(input.amountClaimedCents) || input.amountClaimedCents <= 0) {
+      throw new Error("amountClaimedCents must be a positive integer");
+    }
+    const policy = await this.getActivePolicyForOrg(input.orgId);
+    if (!policy) {
+      throw new Error("Org has no active TCPA policy");
+    }
+    const [claim] = await db
+      .insert(tcpaClaims)
+      .values({
+        policyId: policy.id,
+        orderId: input.orderId ?? null,
+        agentUserId: input.agentUserId,
+        claimReason: input.claimReason,
+        amountClaimedCents: Math.floor(input.amountClaimedCents),
+        status: "open",
+      })
+      .returning();
+    return claim;
+  }
+
+  /**
+   * Resolve an open claim. `approved` must carry a positive
+   * `amountPaidCents`; it is clamped to the policy's per-claim limit and
+   * rejected if it would push the aggregate over the policy cap. `denied`
+   * records no payout. Idempotent: re-resolving with the same action
+   * returns the existing row; cross-state transitions throw.
+   */
+  async resolveTcpaClaim(input: {
+    claimId: number;
+    action: "approved" | "denied";
+    amountPaidCents?: number;
+  }): Promise<TcpaClaim> {
+    return await db.transaction(async (tx) => {
+      const [claim] = await tx
+        .select()
+        .from(tcpaClaims)
+        .where(eq(tcpaClaims.id, input.claimId))
+        .for("update");
+      if (!claim) throw new Error("Claim not found");
+
+      // Idempotent re-resolve.
+      if (claim.status === input.action) return claim;
+      if (claim.status !== "open") {
+        throw new Error(`Claim is ${claim.status} and cannot be re-resolved`);
+      }
+
+      if (input.action === "denied") {
+        const [updated] = await tx
+          .update(tcpaClaims)
+          .set({ status: "denied", resolvedAt: new Date(), amountPaidCents: 0 })
+          .where(eq(tcpaClaims.id, input.claimId))
+          .returning();
+        return updated;
+      }
+
+      // Approval path — pull the policy + sibling claims under lock so the
+      // aggregate check is consistent.
+      const [policy] = await tx
+        .select()
+        .from(tcpaPolicies)
+        .where(eq(tcpaPolicies.id, claim.policyId))
+        .for("update");
+      if (!policy) throw new Error("Policy not found");
+
+      const siblings = await tx
+        .select()
+        .from(tcpaClaims)
+        .where(eq(tcpaClaims.policyId, policy.id));
+
+      const alreadyPaid = computeAggregatePaidCents(
+        siblings
+          .filter((s) => s.id !== claim.id)
+          .map((s) => ({ status: s.status, amountPaidCents: s.amountPaidCents })),
+      );
+
+      const finalPayout = validateApprovedPayout({
+        amountPaidCents: input.amountPaidCents ?? 0,
+        perClaimLimitCents: policy.perClaimLimitCents,
+        aggregateLimitCents: policy.aggregateLimitCents,
+        alreadyPaidAggregateCents: alreadyPaid,
+      });
+
+      const [updated] = await tx
+        .update(tcpaClaims)
+        .set({
+          status: "approved",
+          amountPaidCents: finalPayout,
+          resolvedAt: new Date(),
+        })
+        .where(eq(tcpaClaims.id, input.claimId))
+        .returning();
+      return updated;
+    });
+  }
+
+  async listTcpaClaims(orgId: string): Promise<TcpaClaim[]> {
+    // Join through tcpa_policies so we scope by org without trusting the
+    // caller to pre-filter by policyId.
+    const rows = await db
+      .select({ claim: tcpaClaims })
+      .from(tcpaClaims)
+      .innerJoin(tcpaPolicies, eq(tcpaClaims.policyId, tcpaPolicies.id))
+      .where(eq(tcpaPolicies.orgId, orgId))
+      .orderBy(desc(tcpaClaims.filedAt));
+    return rows.map((r) => r.claim);
   }
 }
 
