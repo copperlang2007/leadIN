@@ -29,6 +29,9 @@ import {
   crmConnections,
   crmSyncEvents,
   agentReputationEvents,
+  leadPersonas,
+  type LeadPersona,
+  type InsertLeadPersona,
   type CallLog,
   type InsertCallLog,
   type Transcript,
@@ -368,6 +371,16 @@ export interface IStorage {
   }): Promise<void>;
   getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
   computeAgentReputation(agentUserId: string): Promise<number>;
+
+  // Wave 7 (T6) — Lead persona cache
+  getLeadPersona(leadId: number): Promise<LeadPersona | undefined>;
+  upsertLeadPersona(input: {
+    leadId: number;
+    persona: string;
+    predictedObjections: string[];
+    bestApproach: string;
+    modelUsed?: string | null;
+  }): Promise<LeadPersona>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2692,6 +2705,49 @@ export class DatabaseStorage implements IStorage {
 
   async computeAgentReputation(agentUserId: string): Promise<number> {
     return await computeAgentReputationCore(agentUserId);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T6) — Lead persona cache
+  // ──────────────────────────────────────────────────────
+  async getLeadPersona(leadId: number): Promise<LeadPersona | undefined> {
+    const [row] = await db
+      .select()
+      .from(leadPersonas)
+      .where(eq(leadPersonas.leadId, leadId));
+    return row;
+  }
+
+  async upsertLeadPersona(input: {
+    leadId: number;
+    persona: string;
+    predictedObjections: string[];
+    bestApproach: string;
+    modelUsed?: string | null;
+  }): Promise<LeadPersona> {
+    const values: InsertLeadPersona = {
+      leadId: input.leadId,
+      persona: input.persona,
+      predictedObjections: input.predictedObjections ?? [],
+      bestApproach: input.bestApproach ?? null,
+      modelUsed: input.modelUsed ?? null,
+      generatedAt: new Date(),
+    };
+    const [row] = await db
+      .insert(leadPersonas)
+      .values(values)
+      .onConflictDoUpdate({
+        target: leadPersonas.leadId,
+        set: {
+          persona: values.persona,
+          predictedObjections: values.predictedObjections,
+          bestApproach: values.bestApproach,
+          modelUsed: values.modelUsed,
+          generatedAt: values.generatedAt,
+        },
+      })
+      .returning();
+    return row;
   }
 }
 
