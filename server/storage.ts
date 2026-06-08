@@ -368,6 +368,23 @@ export interface IStorage {
   }): Promise<void>;
   getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
   computeAgentReputation(agentUserId: string): Promise<number>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+  getVendorScorecardRows(
+    vendorId: number,
+    dimension: "type" | "source",
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Array<{
+    key: string;
+    ingested: number;
+    sold: number;
+    avgMediscore: number;
+    disputes: number;
+    revenueCents: number;
+  }>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2692,6 +2709,104 @@ export class DatabaseStorage implements IStorage {
 
   async computeAgentReputation(agentUserId: string): Promise<number> {
     return await computeAgentReputationCore(agentUserId);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+  //
+  // Aggregated per-`type` or per-`source` performance for a single vendor in
+  // the [windowStart, windowEnd) window.
+  //
+  // Uses the lead's `createdAt` as the bucketing date (so an old lead sold
+  // recently still attributes to its ingestion window). Orders + disputes are
+  // joined via lateral subqueries so missing rows fall through as 0.
+  async getVendorScorecardRows(
+    vendorId: number,
+    dimension: "type" | "source",
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Array<{
+    key: string;
+    ingested: number;
+    sold: number;
+    avgMediscore: number;
+    disputes: number;
+    revenueCents: number;
+  }>> {
+    // Whitelist the grouping column — never interpolate user input into the
+    // GROUP BY clause directly.
+    const groupCol = dimension === "source" ? sql.raw("source") : sql.raw("type");
+
+    // Build a single grouped aggregate:
+    //   - ingested / sold / avg_mediscore come from leads themselves
+    //   - revenue_cents joins orders by lead_id (LEFT JOIN so unsold leads
+    //     don't disappear) and sums ROUND(price * 100) so we stay in integer
+    //     cents and avoid floating-point drift.
+    //   - disputes joins lead_disputes by lead_id and counts distinct rows.
+    // Per-lead joins are deduped via DISTINCT for safety, though there's a
+    // unique constraint on lead_disputes.order_id.
+    const rows = await db.execute<{
+      key: string;
+      ingested: string | number;
+      sold: string | number;
+      avg_mediscore: string | number | null;
+      disputes: string | number;
+      revenue_cents: string | number | null;
+    }>(sql`
+      WITH vendor_leads AS (
+        SELECT l.id, l.${groupCol} AS bucket, l.sold, l.mediscore
+        FROM leads l
+        WHERE l.vendor_id = ${vendorId}
+          AND l.removed = false
+          AND l.created_at >= ${windowStart}
+          AND l.created_at < ${windowEnd}
+      ),
+      revenue AS (
+        SELECT vl.bucket,
+               COALESCE(SUM(ROUND(o.price::numeric * 100))::bigint, 0) AS revenue_cents
+        FROM vendor_leads vl
+        LEFT JOIN orders o ON o.lead_id = vl.id
+        GROUP BY vl.bucket
+      ),
+      disputes AS (
+        SELECT vl.bucket,
+               COUNT(DISTINCT d.id)::int AS disputes
+        FROM vendor_leads vl
+        LEFT JOIN lead_disputes d ON d.lead_id = vl.id
+        GROUP BY vl.bucket
+      )
+      SELECT
+        vl.bucket AS key,
+        COUNT(*)::int AS ingested,
+        COUNT(*) FILTER (WHERE vl.sold = true)::int AS sold,
+        COALESCE(AVG(vl.mediscore), 0)::float AS avg_mediscore,
+        COALESCE(d.disputes, 0)::int AS disputes,
+        COALESCE(r.revenue_cents, 0)::bigint AS revenue_cents
+      FROM vendor_leads vl
+      LEFT JOIN revenue r ON r.bucket = vl.bucket
+      LEFT JOIN disputes d ON d.bucket = vl.bucket
+      GROUP BY vl.bucket, r.revenue_cents, d.disputes
+      ORDER BY revenue_cents DESC, sold DESC
+    `);
+
+    const list = ((rows as any).rows ?? rows) as Array<{
+      key: string;
+      ingested: string | number;
+      sold: string | number;
+      avg_mediscore: string | number | null;
+      disputes: string | number;
+      revenue_cents: string | number | null;
+    }>;
+
+    return list.map(r => ({
+      key: String(r.key),
+      ingested: Number(r.ingested ?? 0),
+      sold: Number(r.sold ?? 0),
+      avgMediscore: Number(r.avg_mediscore ?? 0),
+      disputes: Number(r.disputes ?? 0),
+      revenueCents: Number(r.revenue_cents ?? 0),
+    }));
   }
 }
 

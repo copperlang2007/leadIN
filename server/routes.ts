@@ -2513,6 +2513,59 @@ ${allUrls
     }
   });
 
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T5): Vendor performance scorecard
+  // ──────────────────────────────────────────────────────
+
+  // Vendor-key authed: a vendor sees their own scorecard.
+  app.get("/api/vendors/me/scorecard", async (req: any, res) => {
+    try {
+      const apiKey = req.headers["x-api-key"] as string | undefined;
+      if (!apiKey) {
+        return res.status(401).json({ message: "API key required (X-Api-Key header)" });
+      }
+      const vendor = await storage.getVendorByApiKey(apiKey);
+      if (!vendor) {
+        return res.status(401).json({ message: "Invalid or inactive API key" });
+      }
+      // 30 reads / vendor / minute is plenty for a dashboard refresh.
+      if (!(await takeToken(`scorecard:${vendor.id}`, 30, 1))) {
+        return res.status(429).json({ message: "Rate limit exceeded" });
+      }
+      const { getVendorScorecard } = await import("./vendorScorecard");
+      const card = await getVendorScorecard(vendor.id);
+      res.json(card);
+    } catch (err: any) {
+      console.error("vendor scorecard error:", err);
+      res.status(500).json({ message: err?.message || "Failed to build scorecard" });
+    }
+  });
+
+  // Platform admin: scorecard for any vendor by id.
+  app.get("/api/admin/vendors/:vendorId/scorecard", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (!user || user.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const vendorId = Number(req.params.vendorId);
+      if (!Number.isFinite(vendorId) || vendorId <= 0) {
+        return res.status(400).json({ message: "Invalid vendorId" });
+      }
+      const vendor = await storage.getVendor(vendorId);
+      if (!vendor) {
+        return res.status(404).json({ message: "Vendor not found" });
+      }
+      const { getVendorScorecard } = await import("./vendorScorecard");
+      const card = await getVendorScorecard(vendorId);
+      res.json({ vendor: { id: vendor.id, name: vendor.name }, ...card });
+    } catch (err: any) {
+      console.error("admin vendor scorecard error:", err);
+      res.status(500).json({ message: err?.message || "Failed to build scorecard" });
+    }
+  });
+
   // GET /api/dialer/calls?leadId=  — call history for the current agent.
   app.get("/api/dialer/calls", isAuthenticated, async (req: any, res) => {
     try {
