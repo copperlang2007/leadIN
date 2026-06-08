@@ -26,6 +26,9 @@ import {
   callLogs,
   transcripts,
   conversationAssists,
+  crmConnections,
+  crmSyncEvents,
+  agentReputationEvents,
   type CallLog,
   type InsertCallLog,
   type Transcript,
@@ -58,6 +61,10 @@ import {
   type LeadDispute,
   type TcpaPolicy,
   type TcpaClaim,
+  type CrmConnection,
+  type InsertCrmConnection,
+  type CrmSyncEvent,
+  type InsertCrmSyncEvent,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -320,6 +327,37 @@ export interface IStorage {
     triggerPhrase: string;
     suggestion: string;
   }): Promise<ConversationAssist>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6 (K4) — CRM connections & bidirectional sync events
+  // ──────────────────────────────────────────────────────
+  createCrmConnection(input: {
+    orgId: string;
+    provider: string;
+    accessToken?: string | null;
+    refreshToken?: string | null;
+  }): Promise<CrmConnection>;
+  getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]>;
+  deleteCrmConnection(connectionId: number, orgId: string): Promise<boolean>;
+  recordCrmSyncEvent(event: {
+    connectionId: number;
+    direction: "out" | "in";
+    resourceType: "contact" | "deal" | "note" | "task";
+    resourceId?: string | null;
+    externalId?: string | null;
+    status: "success" | "error";
+    errorMessage?: string | null;
+  }): Promise<CrmSyncEvent>;
+  getRecentSyncEvents(connectionId: number, limit?: number): Promise<CrmSyncEvent[]>;
+  findSyncEventByExternalId(externalId: string, resourceType: string): Promise<CrmSyncEvent | undefined>;
+  getOrderById(orderId: number): Promise<Order | undefined>;
+  recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: string;
+    weight: number;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -541,7 +579,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async purchaseLead(leadId: number, userId: string): Promise<Order> {
-    return await db.transaction(async (tx) => {
+    const order = await db.transaction(async (tx) => {
       const [lead] = await tx
         .select()
         .from(leads)
@@ -582,7 +620,7 @@ export class DatabaseStorage implements IStorage {
         .set({ sold: true, soldAt: new Date(), purchasedBy: userId })
         .where(eq(leads.id, leadId));
 
-      const [order] = await tx
+      const [orderRow] = await tx
         .insert(orders)
         .values({ userId, leadId, orgId: lead.orgId ?? null, price: lead.price, status: "completed" })
         .returning();
@@ -590,10 +628,21 @@ export class DatabaseStorage implements IStorage {
       // Credit the vendor's pending balance with their revenue share.
       // Use Decimal -> cents to avoid float drift; floor to whole cents.
       const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-      await this.creditVendorOnSaleTx(tx, order.id, lead.id, lead.vendorId, salePriceCents);
+      await this.creditVendorOnSaleTx(tx, orderRow.id, lead.id, lead.vendorId, salePriceCents);
 
-      return order;
+      return orderRow;
     });
+
+    // Fire-and-forget CRM sync after the purchase commits. Importing here
+    // (and not at top-level) breaks the storage<->crmSync circular dep —
+    // crmSync's typed deps only need a narrow slice of `storage`.
+    if (order.orgId) {
+      void import("./crmSync.js")
+        .then(m => m.syncOrderToCrms(order, { storage: this }))
+        .catch(err => console.error("[crmSync] post-purchase sync failed", err));
+    }
+
+    return order;
   }
 
   async checkDuplicateLead(phone: string | undefined, type: string): Promise<boolean> {
@@ -2373,6 +2422,39 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  // ──────────────────────────────────────────────────────
+  // Wave 6 (K4) — CRM connections + sync events
+  // ──────────────────────────────────────────────────────
+  async createCrmConnection(input: {
+    orgId: string;
+    provider: string;
+    accessToken?: string | null;
+    refreshToken?: string | null;
+  }): Promise<CrmConnection> {
+    // ON CONFLICT (orgId, provider) → refresh tokens so reconnect just
+    // overwrites the stored credentials in place.
+    const values: InsertCrmConnection = {
+      orgId: input.orgId,
+      provider: input.provider,
+      accessToken: input.accessToken ?? null,
+      refreshToken: input.refreshToken ?? null,
+      status: "active",
+    };
+    const [row] = await db
+      .insert(crmConnections)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [crmConnections.orgId, crmConnections.provider],
+        set: {
+          accessToken: values.accessToken,
+          refreshToken: values.refreshToken,
+          status: "active",
+        },
+      })
+      .returning();
+    return row;
+  }
+
   async updateCallLog(
     callLogId: number,
     fields: Partial<Pick<InsertCallLog, "twilioSid" | "status" | "durationSec" | "recordingUrl" | "endedAt">>,
@@ -2435,6 +2517,91 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return row;
+  }
+
+  async getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]> {
+    return await db
+      .select()
+      .from(crmConnections)
+      .where(eq(crmConnections.orgId, orgId))
+      .orderBy(desc(crmConnections.createdAt));
+  }
+
+  async deleteCrmConnection(connectionId: number, orgId: string): Promise<boolean> {
+    const result = await db
+      .delete(crmConnections)
+      .where(and(eq(crmConnections.id, connectionId), eq(crmConnections.orgId, orgId)))
+      .returning({ id: crmConnections.id });
+    return result.length > 0;
+  }
+
+  async recordCrmSyncEvent(event: {
+    connectionId: number;
+    direction: "out" | "in";
+    resourceType: "contact" | "deal" | "note" | "task";
+    resourceId?: string | null;
+    externalId?: string | null;
+    status: "success" | "error";
+    errorMessage?: string | null;
+  }): Promise<CrmSyncEvent> {
+    const values: InsertCrmSyncEvent = {
+      connectionId: event.connectionId,
+      direction: event.direction,
+      resourceType: event.resourceType,
+      resourceId: event.resourceId ?? null,
+      externalId: event.externalId ?? null,
+      status: event.status,
+      errorMessage: event.errorMessage ?? null,
+    };
+    const [row] = await db.insert(crmSyncEvents).values(values).returning();
+    return row;
+  }
+
+  async getRecentSyncEvents(connectionId: number, limit = 50): Promise<CrmSyncEvent[]> {
+    return await db
+      .select()
+      .from(crmSyncEvents)
+      .where(eq(crmSyncEvents.connectionId, connectionId))
+      .orderBy(desc(crmSyncEvents.createdAt))
+      .limit(limit);
+  }
+
+  async findSyncEventByExternalId(externalId: string, resourceType: string): Promise<CrmSyncEvent | undefined> {
+    // Find the original outbound event so we can resolve back to the order.
+    const [row] = await db
+      .select()
+      .from(crmSyncEvents)
+      .where(
+        and(
+          eq(crmSyncEvents.externalId, externalId),
+          eq(crmSyncEvents.resourceType, resourceType),
+          eq(crmSyncEvents.direction, "out"),
+        ),
+      )
+      .orderBy(desc(crmSyncEvents.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async getOrderById(orderId: number): Promise<Order | undefined> {
+    const [row] = await db.select().from(orders).where(eq(orders.id, orderId));
+    return row;
+  }
+
+  async recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: string;
+    weight: number;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    await db.insert(agentReputationEvents).values({
+      agentUserId: input.agentUserId,
+      eventType: input.eventType,
+      weight: input.weight,
+      relatedLeadId: input.relatedLeadId ?? null,
+      metadata: input.metadata ?? null,
+    });
   }
 }
 
