@@ -591,6 +591,24 @@ export async function registerRoutes(
         reason: parsed.data.reason,
         notes: parsed.data.notes,
       });
+
+      // T2 — Fire-and-forget AI classification. Never blocks dispute creation.
+      (async () => {
+        try {
+          const { classifyDispute } = await import("./disputeClassifier");
+          const result = await classifyDispute({
+            reason: parsed.data.reason,
+            notes: parsed.data.notes ?? null,
+          });
+          await storage.updateDisputeAi(dispute.id, {
+            aiClassification: result.classification,
+            aiConfidence: result.confidence,
+          });
+        } catch (err) {
+          console.error("[disputeClassifier] failed:", (err as Error).message);
+        }
+      })();
+
       res.status(201).json(dispute);
     } catch (err: any) {
       if (/does not belong/i.test(err?.message ?? "")) {

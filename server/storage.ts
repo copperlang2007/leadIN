@@ -286,6 +286,7 @@ export interface IStorage {
     refundCents: number,
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
+  updateDisputeAi(disputeId: number, fields: { aiClassification?: string | null; aiConfidence?: number | null }): Promise<void>;
 
   // ──────────────────────────────────────────────────────
   // Wave 6b: TCPA defense insurance (policy + claims)
@@ -2089,6 +2090,26 @@ export class DatabaseStorage implements IStorage {
       if (!winner) throw new Error("Failed to create or read dispute");
       return winner;
     });
+  }
+
+  // T2 — Update dispute with AI classification + confidence. Never throws.
+  async updateDisputeAi(
+    disputeId: number,
+    fields: { aiClassification?: string | null; aiConfidence?: number | null },
+  ): Promise<void> {
+    try {
+      const patch: Record<string, unknown> = {};
+      if (fields.aiClassification !== undefined) patch.aiClassification = fields.aiClassification;
+      if (fields.aiConfidence !== undefined) {
+        patch.aiConfidence = fields.aiConfidence === null ? null : fields.aiConfidence.toFixed(2);
+      }
+      if (Object.keys(patch).length === 0) return;
+      await db.update(leadDisputes).set(patch).where(eq(leadDisputes.id, disputeId));
+    } catch (err) {
+      // Swallow — classification is a UX enhancement, not part of the
+      // dispute creation contract.
+      console.error("[disputeClassifier] updateDisputeAi failed:", (err as Error).message);
+    }
   }
 
   async getDispute(id: number): Promise<LeadDispute | undefined> {
