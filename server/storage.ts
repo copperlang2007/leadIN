@@ -213,6 +213,13 @@ export interface IStorage {
     userId: string,
     fields: { capacityLimit?: number; acceptingLeads?: boolean },
   ): Promise<AgentProfile>;
+  updateAgentNipr(
+    userId: string,
+    fields: { verifiedAt?: Date | null; expiry?: Date | null; error?: string | null },
+  ): Promise<AgentProfile>;
+  findAgentsExpiringWithin(
+    days: number,
+  ): Promise<(AgentProfile & { user: User })[]>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
   routeLeadToBestAgent(leadId: number, opts?: { bypassAuction?: boolean }): Promise<LeadAssignment | null>;
@@ -1148,6 +1155,51 @@ export class DatabaseStorage implements IStorage {
       .returning();
     if (!p) throw new Error("Agent profile not found");
     return p;
+  }
+
+  // Wave 7 (T4): NIPR/DOI auto-verification cache columns.
+  // `verifiedAt` is the wall-clock time we last successfully called NIPR.
+  // `expiry` is the license expiration date returned by NIPR.
+  // `error` records the last failure message (cleared on success).
+  // Passing `undefined` for a field leaves it untouched; `null` explicitly clears it.
+  async updateAgentNipr(
+    userId: string,
+    fields: { verifiedAt?: Date | null; expiry?: Date | null; error?: string | null },
+  ): Promise<AgentProfile> {
+    const patch: Partial<AgentProfile> = { updatedAt: new Date() };
+    if (fields.verifiedAt !== undefined) patch.niprVerifiedAt = fields.verifiedAt;
+    if (fields.expiry !== undefined) patch.niprLicenseExpiry = fields.expiry;
+    if (fields.error !== undefined) patch.niprLastError = fields.error;
+    const [p] = await db
+      .update(agentProfiles)
+      .set(patch)
+      .where(eq(agentProfiles.userId, userId))
+      .returning();
+    if (!p) throw new Error("Agent profile not found");
+    return p;
+  }
+
+  async findAgentsExpiringWithin(
+    days: number,
+  ): Promise<(AgentProfile & { user: User })[]> {
+    const safeDays = Math.max(0, Math.trunc(days));
+    const cutoff = new Date(Date.now() + safeDays * 24 * 60 * 60 * 1000);
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          sql`${agentProfiles.niprLicenseExpiry} IS NOT NULL`,
+          lt(agentProfiles.niprLicenseExpiry, cutoff),
+        ),
+      );
+    const result: (AgentProfile & { user: User })[] = [];
+    for (const r of rows) {
+      if (!r.users) continue;
+      result.push({ ...r.agent_profiles, user: r.users });
+    }
+    return result;
   }
 
   async listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]> {

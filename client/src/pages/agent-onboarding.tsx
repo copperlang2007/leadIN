@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Briefcase, MapPin, FileBadge, Building2, Loader2, Save } from "lucide-react";
+import { Briefcase, MapPin, FileBadge, Building2, Loader2, Save, ShieldCheck, AlertTriangle } from "lucide-react";
 
 const ALL_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
@@ -33,6 +33,10 @@ interface AgentProfile {
   licenseDocumentUrl: string | null;
   verificationStatus: string;
   capacityLimit: number;
+  // Wave 7 (T4): NIPR/DOI auto-verification cache.
+  niprVerifiedAt: string | null;
+  niprLicenseExpiry: string | null;
+  niprLastError: string | null;
 }
 
 interface OrgList {
@@ -45,7 +49,19 @@ export default function AgentOnboarding() {
   const queryClient = useQueryClient();
 
   const { data: orgs } = useQuery<OrgList>({ queryKey: ["/api/orgs"] });
-  const { data: profile, isLoading } = useQuery<AgentProfile | null>({ queryKey: ["/api/agent/profile"] });
+  const { data: profile, isLoading } = useQuery<AgentProfile | null>({
+    queryKey: ["/api/agent/profile"],
+    // Wave 7 (T4): poll while NIPR verification is pending (we have a
+    // license number but no verifiedAt and no error yet) so the badge
+    // refreshes once the background verify lands. ~5s feels responsive
+    // without hammering the API.
+    refetchInterval: (q) => {
+      const p = q.state.data as AgentProfile | null | undefined;
+      if (!p) return false;
+      const pending = !!p.licenseNumber && !p.niprVerifiedAt && !p.niprLastError;
+      return pending ? 5000 : false;
+    },
+  });
 
   const [orgName, setOrgName] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
@@ -192,7 +208,7 @@ export default function AgentOnboarding() {
                   </div>
                 </div>
                 {profile && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap" data-testid="status-row">
                     <span className="text-sm text-muted-foreground">Verification status:</span>
                     <Badge
                       variant={profile.verificationStatus === "verified" ? "default" : "outline"}
@@ -203,6 +219,40 @@ export default function AgentOnboarding() {
                     >
                       {profile.verificationStatus}
                     </Badge>
+                    {/* Wave 7 (T4): NIPR/DOI auto-verification badge.
+                        Three visual states: verified (green w/ expiry),
+                        error (red), pending (spinner while we wait for the
+                        background NIPR call to land). */}
+                    {profile.licenseNumber && (
+                      profile.niprVerifiedAt ? (
+                        <Badge
+                          className="bg-emerald-600 flex items-center gap-1"
+                          data-testid="badge-nipr-verified"
+                        >
+                          <ShieldCheck className="h-3 w-3" />
+                          NIPR verified
+                          {profile.niprLicenseExpiry && (
+                            <span className="opacity-90 ml-1">
+                              · expires {new Date(profile.niprLicenseExpiry).toISOString().slice(0, 10)}
+                            </span>
+                          )}
+                        </Badge>
+                      ) : profile.niprLastError ? (
+                        <Badge
+                          variant="outline"
+                          className="bg-destructive text-destructive-foreground flex items-center gap-1"
+                          data-testid="badge-nipr-error"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          NIPR error
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="flex items-center gap-1" data-testid="badge-nipr-pending">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Verifying license…
+                        </Badge>
+                      )
+                    )}
                   </div>
                 )}
               </CardContent>

@@ -25,6 +25,7 @@ import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } 
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
 import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
+import { startNiprRenewalCron, verifyAgentLicense } from "./niprSync";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
@@ -137,6 +138,7 @@ export async function registerRoutes(
   startCmsSignalCron();
   startDncRecheckCron();
   startEmailDigestCron();
+  startNiprRenewalCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -1481,6 +1483,13 @@ export async function registerRoutes(
         verificationStatus: existing?.verificationStatus ?? "pending",
       });
 
+      // Fire-and-forget NIPR verification. Onboarding must succeed even when
+      // NIPR is unreachable; the result is cached on the profile and shown
+      // in the UI on next poll.
+      verifyAgentLicense(userId).catch(err =>
+        console.error("[nipr] background verify failed:", err?.message),
+      );
+
       res.json(profile);
     } catch (err) {
       console.error("Error onboarding agent:", err);
@@ -1744,6 +1753,34 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error setting verification:", err);
       res.status(500).json({ message: "Failed to update verification" });
+    }
+  });
+
+  // Admin re-trigger of NIPR/DOI license verification for an agent in their org.
+  // Returns the verify result synchronously (it's a single HTTP call to NIPR,
+  // not the background path used by onboarding).
+  app.post("/api/agent/:userId/nipr/verify", isAuthenticated, async (req: any, res) => {
+    try {
+      const actorId = req.user.claims.sub;
+      const targetUserId = req.params.userId;
+      const target = await storage.getAgentProfile(targetUserId);
+      if (!target) return res.status(404).json({ message: "Agent profile not found" });
+
+      // Self-trigger always allowed; admins/owners can re-trigger for any
+      // agent in their own org.
+      if (actorId !== targetUserId) {
+        const role = await storage.getUserOrgRole(actorId, target.orgId);
+        if (role !== "owner" && role !== "admin") {
+          return res.status(403).json({ message: "Owner or admin role required" });
+        }
+      }
+
+      const result = await verifyAgentLicense(targetUserId);
+      const updated = await storage.getAgentProfile(targetUserId);
+      res.json({ result, profile: updated });
+    } catch (err) {
+      console.error("Error re-verifying NIPR license:", err);
+      res.status(500).json({ message: "Failed to verify license" });
     }
   });
 
