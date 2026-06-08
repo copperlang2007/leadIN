@@ -12,9 +12,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { CheckCircle2, Shield, Lock, Eye, Mail, FileText, User, Calendar, Phone, AtSign, MapPin, Loader2, AlertTriangle, Sparkles } from "lucide-react";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { setTrackerLeadId, trackEvent } from "@/lib/tracker";
 import { SaveToListPopover } from "@/components/save-to-list-popover";
+import { DialerPanel } from "@/components/dialer-panel";
 
 interface LeadDetailsDialogProps {
   lead: Lead | null;
@@ -104,6 +105,8 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
     }
   }, [open, lead?.id]);
 
+  const [dialerOpen, setDialerOpen] = useState(false);
+
   if (!lead) return null;
 
   const displayLead = (isPurchased && revealedLead) ? revealedLead : lead;
@@ -144,7 +147,19 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
                 <AlertTriangle className="h-3 w-3 mr-1" /> DNC flagged
               </Badge>
             )}
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              {isPurchased && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setDialerOpen(true)}
+                  data-testid={`button-open-dialer-${lead.id}`}
+                  aria-label="Call lead"
+                >
+                  <Phone className="h-4 w-4" /> Call
+                </Button>
+              )}
               <SaveToListPopover leadId={lead.id} />
             </div>
           </div>
@@ -336,6 +351,7 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
           </div>
         </ScrollArea>
       </DialogContent>
+      <DialerPanel leadId={lead.id} open={dialerOpen} onClose={() => setDialerOpen(false)} />
     </Dialog>
   );
 }

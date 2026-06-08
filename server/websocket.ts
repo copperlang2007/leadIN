@@ -169,6 +169,21 @@ export function getActiveConnections(): number {
   return activeConnections;
 }
 
+// Wave 6b (K3) — Dialer AI assist whisper. Broadcast to all connected
+// sockets; the client filters by callLogId so only the agent on that call
+// renders the suggestion.
+export function broadcastAssistSuggestion(payload: {
+  callLogId: number;
+  suggestion: string;
+  triggerPhrase: string;
+}) {
+  if (!wss) return;
+  const message = JSON.stringify({ type: "assist_suggestion", ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
 // Iterate every tracked client and request a graceful close with code 1001
 // ("going away"). Used by the shutdown handler in server/index.ts so
 // in-flight WebSockets are drained before the process exits.
