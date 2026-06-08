@@ -12,6 +12,7 @@ import {
   orgMembers,
   agentProfiles,
   leadAssignments,
+  leadClaims,
   keywordSignals,
   cmsPlanSignals,
   behavioralEvents,
@@ -20,6 +21,18 @@ import {
   vendorBalances,
   vendorPayouts,
   leadDisputes,
+  tcpaPolicies,
+  tcpaClaims,
+  callLogs,
+  transcripts,
+  conversationAssists,
+  crmConnections,
+  crmSyncEvents,
+  agentReputationEvents,
+  type CallLog,
+  type InsertCallLog,
+  type Transcript,
+  type ConversationAssist,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -46,12 +59,37 @@ import {
   type InsertSavedList,
   type VendorPayout,
   type LeadDispute,
+  type TcpaPolicy,
+  type TcpaClaim,
+  type CrmConnection,
+  type InsertCrmConnection,
+  type CrmSyncEvent,
+  type InsertCrmSyncEvent,
+  type AgentReputationEvent,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import {
+  openAuction as openAuctionFn,
+  shouldOpenAuction,
+  isAuctionOpen,
+  markAuctionOpen,
+  clearAuctionOpen,
+  type AuctionDeps,
+  type PendingClaim,
+} from "./auction";
+import { FEATURE_FLAGS } from "@shared/featureFlags";
+import { broadcastAuctionOpened, broadcastAuctionResolved } from "./websocket";
+import {
+  recordEvent as recordReputationEventCore,
+  computeReputationScore as computeAgentReputationCore,
+  REPUTATION_WINDOW_DAYS,
+  clampReputationScore,
+  type ReputationEventType,
+} from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { splitRevenue } from "./vendorPayouts";
 import {
@@ -62,6 +100,7 @@ import {
   priceStringToCents,
   type DisputeReason,
 } from "./disputes";
+import { computeAggregatePaidCents, validateApprovedPayout } from "./tcpa";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -176,7 +215,13 @@ export interface IStorage {
   ): Promise<AgentProfile>;
   listOrgAgents(orgId: string): Promise<(AgentProfile & { user: User; openLeads: number })[]>;
 
-  routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null>;
+  routeLeadToBestAgent(leadId: number, opts?: { bypassAuction?: boolean }): Promise<LeadAssignment | null>;
+  recordAuctionClaim(leadId: number, agentUserId: string): Promise<{ ok: boolean; reason?: string; claimId?: number }>;
+  getAuctionForLead(leadId: number): Promise<{
+    status: "pending" | "won" | "lost" | "expired";
+    leadId: number;
+    claims: { id: number; agentUserId: string; status: string; createdAt: string | null }[];
+  } | null>;
   setAssignmentStatus(assignmentId: number, agentUserId: string, status: "accepted" | "declined"): Promise<LeadAssignment | null>;
   getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]>;
   getAgentDashboardStats(agentUserId: string): Promise<{
@@ -241,6 +286,88 @@ export interface IStorage {
     refundCents: number,
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: TCPA defense insurance (policy + claims)
+  // ──────────────────────────────────────────────────────
+  createTcpaPolicy(input: {
+    orgId: string;
+    carrierName?: string | null;
+    perClaimLimitCents?: number;
+    aggregateLimitCents?: number;
+    endsAt?: Date | null;
+  }): Promise<TcpaPolicy>;
+  getActivePolicyForOrg(orgId: string): Promise<TcpaPolicy | undefined>;
+  fileTcpaClaim(input: {
+    orgId: string;
+    agentUserId: string;
+    claimReason: string;
+    amountClaimedCents: number;
+    orderId?: number | null;
+  }): Promise<TcpaClaim>;
+  resolveTcpaClaim(input: {
+    claimId: number;
+    action: "approved" | "denied";
+    amountPaidCents?: number;
+  }): Promise<TcpaClaim>;
+  listTcpaClaims(orgId: string): Promise<TcpaClaim[]>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K3): dialer / call logs / transcripts / AI assists
+  // ──────────────────────────────────────────────────────
+  createCallLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    status: string;
+  }): Promise<CallLog>;
+  updateCallLog(
+    callLogId: number,
+    fields: Partial<Pick<InsertCallLog, "twilioSid" | "status" | "durationSec" | "recordingUrl" | "endedAt">>,
+  ): Promise<CallLog | undefined>;
+  getCallLogsForAgent(
+    agentUserId: string,
+    opts?: { leadId?: number; limit?: number },
+  ): Promise<CallLog[]>;
+  appendTranscript(callLogId: number, text: string): Promise<Transcript>;
+  recordConversationAssist(input: {
+    callLogId: number;
+    triggerPhrase: string;
+    suggestion: string;
+  }): Promise<ConversationAssist>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6 (K4) — CRM connections & bidirectional sync events
+  // ──────────────────────────────────────────────────────
+  createCrmConnection(input: {
+    orgId: string;
+    provider: string;
+    accessToken?: string | null;
+    refreshToken?: string | null;
+  }): Promise<CrmConnection>;
+  getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]>;
+  deleteCrmConnection(connectionId: number, orgId: string): Promise<boolean>;
+  recordCrmSyncEvent(event: {
+    connectionId: number;
+    direction: "out" | "in";
+    resourceType: "contact" | "deal" | "note" | "task";
+    resourceId?: string | null;
+    externalId?: string | null;
+    status: "success" | "error";
+    errorMessage?: string | null;
+  }): Promise<CrmSyncEvent>;
+  getRecentSyncEvents(connectionId: number, limit?: number): Promise<CrmSyncEvent[]>;
+  findSyncEventByExternalId(externalId: string, resourceType: string): Promise<CrmSyncEvent | undefined>;
+  getOrderById(orderId: number): Promise<Order | undefined>;
+  recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: ReputationEventType | string;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+    weight?: number;
+  }): Promise<void>;
+  getReputationEvents(agentUserId: string, limit?: number): Promise<AgentReputationEvent[]>;
+  computeAgentReputation(agentUserId: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -462,7 +589,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async purchaseLead(leadId: number, userId: string): Promise<Order> {
-    return await db.transaction(async (tx) => {
+    const order = await db.transaction(async (tx) => {
       const [lead] = await tx
         .select()
         .from(leads)
@@ -503,7 +630,7 @@ export class DatabaseStorage implements IStorage {
         .set({ sold: true, soldAt: new Date(), purchasedBy: userId })
         .where(eq(leads.id, leadId));
 
-      const [order] = await tx
+      const [orderRow] = await tx
         .insert(orders)
         .values({ userId, leadId, orgId: lead.orgId ?? null, price: lead.price, status: "completed" })
         .returning();
@@ -511,10 +638,29 @@ export class DatabaseStorage implements IStorage {
       // Credit the vendor's pending balance with their revenue share.
       // Use Decimal -> cents to avoid float drift; floor to whole cents.
       const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-      await this.creditVendorOnSaleTx(tx, order.id, lead.id, lead.vendorId, salePriceCents);
+      await this.creditVendorOnSaleTx(tx, orderRow.id, lead.id, lead.vendorId, salePriceCents);
 
-      return order;
+      // Reputation: +5 for a purchase. Best-effort — recordReputationEvent
+      // swallows errors so a hiccup here can't roll back a paid order.
+      await recordReputationEventCore({
+        agentUserId: userId,
+        eventType: "purchase",
+        relatedLeadId: leadId,
+      });
+
+      return orderRow;
     });
+
+    // Fire-and-forget CRM sync after the purchase commits. Importing here
+    // (and not at top-level) breaks the storage<->crmSync circular dep —
+    // crmSync's typed deps only need a narrow slice of `storage`.
+    if (order.orgId) {
+      void import("./crmSync.js")
+        .then(m => m.syncOrderToCrms(order, { storage: this }))
+        .catch(err => console.error("[crmSync] post-purchase sync failed", err));
+    }
+
+    return order;
   }
 
   async checkDuplicateLead(phone: string | undefined, type: string): Promise<boolean> {
@@ -1037,7 +1183,10 @@ export class DatabaseStorage implements IStorage {
   // Ranks eligible agents and assigns the lead to the best match.
   // Returns the assignment record, or null if no agent qualifies.
   // ──────────────────────────────────────────────────────
-  async routeLeadToBestAgent(leadId: number): Promise<LeadAssignment | null> {
+  async routeLeadToBestAgent(
+    leadId: number,
+    opts: { bypassAuction?: boolean } = {},
+  ): Promise<LeadAssignment | null> {
     // Pre-check outside the transaction. These reads are advisory — the
     // authoritative checks happen inside the lock below. Keeping them here
     // is a cheap fast-path that avoids opening a tx for obvious no-ops.
@@ -1045,6 +1194,20 @@ export class DatabaseStorage implements IStorage {
     if (!preLead || preLead.sold || preLead.removed) return null;
     if (preLead.assignedToUserId) return null; // already routed
     if (!preLead.orgId) return null; // global pool leads aren't auto-routed
+
+    // K1 — Speed-to-Lead Live Auction. For high-MediScore leads we open
+    // a 10s WebSocket auction window instead of immediately assigning to
+    // the highest-ranked agent. The auction's resolver eventually writes
+    // a `lead_assignments` row exactly like the normal flow; we return
+    // null here so the caller's `lead_assignment` broadcast doesn't fire
+    // prematurely. `bypassAuction` is used by the fallback path inside
+    // resolveAuction to avoid re-opening an auction when we time out.
+    if (!opts.bypassAuction && shouldOpenAuction(preLead.mediscore, FEATURE_FLAGS.liveAuction)) {
+      await this.openLiveAuction(leadId).catch(err =>
+        console.error("[auction] open error", { leadId, err }),
+      );
+      return null;
+    }
 
     // Serialize assignment per-org. Two concurrent ingests in the same
     // org used to be able to read identical open-lead counts and both
@@ -1111,6 +1274,23 @@ export class DatabaseStorage implements IStorage {
                 eq(leads.removed, false),
               ),
             );
+          // Pull the agent's trailing-90d reputation aggregate so the ranker
+          // can include it. SQL aggregate inside the same tx so a freshly
+          // recorded event (e.g. just-declined assignment) is visible.
+          const cutoff = new Date(Date.now() - REPUTATION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+          const [repRow] = await tx
+            .select({
+              total: sql<number>`coalesce(sum(${agentReputationEvents.weight}), 0)`.as("total"),
+            })
+            .from(agentReputationEvents)
+            .where(
+              and(
+                eq(agentReputationEvents.agentUserId, row.users.id),
+                gte(agentReputationEvents.createdAt, cutoff),
+              ),
+            );
+          const reputationScore = clampReputationScore(Number(repRow?.total ?? 0));
+
           hydrated.push({
             userId: row.users.id,
             licensedStates: ap.licensedStates,
@@ -1122,6 +1302,7 @@ export class DatabaseStorage implements IStorage {
             conversionRate: parseFloat(ap.conversionRate ?? "0"),
             acceptingLeads: ap.acceptingLeads,
             verified: ap.verificationStatus === "verified",
+            reputationScore,
           });
         }
 
@@ -1159,6 +1340,267 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // ──────────────────────────────────────────────────────
+  // K1 — Live auction: side-effect surface
+  // ──────────────────────────────────────────────────────
+
+  /** Hydrate AgentCandidate rows for the given users in an org. Mirrors
+   * the eligibility query inside `routeLeadToBestAgent` so the resolver
+   * sees the same candidate shape as the immediate-routing path. */
+  private async hydrateCandidatesForUsers(
+    orgId: string,
+    userIds: string[],
+  ): Promise<AgentCandidate[]> {
+    if (userIds.length === 0) return [];
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          eq(agentProfiles.orgId, orgId),
+          inArray(agentProfiles.userId, userIds),
+        ),
+      );
+    const out: AgentCandidate[] = [];
+    for (const row of rows) {
+      if (!row.users) continue;
+      const ap = row.agent_profiles;
+      const [openCountRow] = await db
+        .select({ count: count() })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.assignedToUserId, row.users.id),
+            eq(leads.sold, false),
+            eq(leads.removed, false),
+          ),
+        );
+      out.push({
+        userId: row.users.id,
+        licensedStates: ap.licensedStates,
+        appointedCarriers: ap.appointedCarriers,
+        territoryZips: ap.territoryZips,
+        territoryCounties: ap.territoryCounties,
+        capacityLimit: ap.capacityLimit,
+        openLeadCount: Number(openCountRow?.count ?? 0),
+        conversionRate: parseFloat(ap.conversionRate ?? "0"),
+        acceptingLeads: ap.acceptingLeads,
+        verified: ap.verificationStatus === "verified",
+      });
+    }
+    return out;
+  }
+
+  /** Build the DB-backed `AuctionDeps`. Extracted so tests can poke at
+   * individual pieces (DB-isolated unit tests live in auction.test.ts).
+   * `_orgId` is currently informational — kept on the signature so the
+   * eventual writer can route per-org Postgres NOTIFY without a refactor. */
+  private buildAuctionDeps(_orgId: string): AuctionDeps {
+    return {
+      assignmentExists: async (leadId: number) => {
+        const [row] = await db
+          .select({ id: leadAssignments.id })
+          .from(leadAssignments)
+          .where(eq(leadAssignments.leadId, leadId))
+          .limit(1);
+        return !!row;
+      },
+      isOpen: (leadId: number) => isAuctionOpen(leadId),
+      markOpen: (leadId: number) => markAuctionOpen(leadId),
+      clearOpen: (leadId: number) => clearAuctionOpen(leadId),
+      listPendingClaims: async (leadId: number) => {
+        const rows = await db
+          .select()
+          .from(leadClaims)
+          .where(and(eq(leadClaims.leadId, leadId), eq(leadClaims.status, "pending")));
+        return rows.map<PendingClaim>(r => ({
+          id: r.id,
+          agentUserId: r.agentUserId,
+          createdAt: r.createdAt ?? new Date(),
+        }));
+      },
+      hydrateCandidates: async (oid: string, userIds: string[]) =>
+        this.hydrateCandidatesForUsers(oid, userIds),
+      markClaim: async (claimId: number, status) => {
+        await db
+          .update(leadClaims)
+          .set({ status, resolvedAt: new Date() })
+          .where(eq(leadClaims.id, claimId));
+      },
+      writeAssignment: async ({ leadId, orgId: oid, agentUserId, matchScore, reason }) => {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(leads)
+            .set({ assignedToUserId: agentUserId, assignedAt: new Date() })
+            .where(eq(leads.id, leadId));
+          await tx.insert(leadAssignments).values({
+            leadId,
+            orgId: oid,
+            agentUserId,
+            matchScore,
+            reason,
+            status: "assigned",
+          });
+        });
+      },
+      fallbackRoute: async (leadId: number) => {
+        await this.routeLeadToBestAgent(leadId, { bypassAuction: true });
+      },
+      broadcastOpened: (payload) => {
+        broadcastAuctionOpened({
+          leadId: payload.leadId,
+          orgId: payload.orgId,
+          candidateUserIds: payload.candidateUserIds,
+          windowMs: payload.windowMs,
+          opensAt: payload.opensAt,
+          closesAt: payload.closesAt,
+        });
+      },
+      broadcastResolved: (payload) => {
+        broadcastAuctionResolved({
+          leadId: payload.leadId,
+          winnerUserId: payload.winnerUserId,
+          matchScore: payload.matchScore,
+          reasons: payload.reasons,
+          outcome: payload.outcome,
+        });
+      },
+      schedule: (fn, ms) => {
+        // Detach from any current execution context. `unref()` so a hung
+        // timer never blocks process shutdown.
+        const t = setTimeout(fn, ms);
+        if (typeof t === "object" && t !== null && "unref" in t) t.unref();
+      },
+    };
+  }
+
+  /** Public: open a live auction for a lead. Called from
+   * `routeLeadToBestAgent` when the MediScore + flag gate is met. */
+  async openLiveAuction(leadId: number, windowMs?: number): Promise<void> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!lead || !lead.orgId) return;
+    // Enumerate the same candidate pool as the immediate-routing path so
+    // the WS payload's candidateUserIds reflects who's actually eligible.
+    const rows = await db
+      .select()
+      .from(agentProfiles)
+      .leftJoin(users, eq(agentProfiles.userId, users.id))
+      .where(
+        and(
+          eq(agentProfiles.orgId, lead.orgId),
+          eq(agentProfiles.acceptingLeads, true),
+          eq(agentProfiles.verificationStatus, "verified"),
+        ),
+      );
+    const candidateUserIds = rows
+      .map(r => r.users?.id)
+      .filter((id): id is string => typeof id === "string");
+
+    const deps = this.buildAuctionDeps(lead.orgId);
+    await openAuctionFn(
+      {
+        leadId,
+        orgId: lead.orgId,
+        lead: {
+          state: lead.state,
+          zipCode: lead.zipCode,
+          source: lead.source,
+          compatibilityScore: lead.compatibilityScore ?? 50,
+        },
+        candidateUserIds,
+        windowMs,
+      },
+      deps,
+    );
+  }
+
+  /** Record an agent's claim during the auction window. Verifies the
+   * agent is verified+accepting in the lead's org before persisting. */
+  async recordAuctionClaim(
+    leadId: number,
+    agentUserId: string,
+  ): Promise<{ ok: boolean; reason?: string; claimId?: number }> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
+    if (!lead || !lead.orgId) return { ok: false, reason: "lead not found" };
+
+    // Idempotency: once the lead is assigned the auction is over.
+    if (lead.assignedToUserId) return { ok: false, reason: "auction closed" };
+
+    // Confirm the auction is currently open (in-memory marker).
+    if (!isAuctionOpen(leadId)) return { ok: false, reason: "auction not open" };
+
+    // Hard eligibility: only verified, accepting agents in the same org
+    // can claim. This mirrors the routing engine's hard filter.
+    const [ap] = await db
+      .select()
+      .from(agentProfiles)
+      .where(
+        and(
+          eq(agentProfiles.userId, agentUserId),
+          eq(agentProfiles.orgId, lead.orgId),
+        ),
+      );
+    if (!ap) return { ok: false, reason: "not in org" };
+    if (ap.verificationStatus !== "verified") return { ok: false, reason: "unverified" };
+    if (!ap.acceptingLeads) return { ok: false, reason: "not accepting leads" };
+
+    // Deduplicate: one pending claim per (lead, agent).
+    const [existing] = await db
+      .select({ id: leadClaims.id })
+      .from(leadClaims)
+      .where(
+        and(
+          eq(leadClaims.leadId, leadId),
+          eq(leadClaims.agentUserId, agentUserId),
+          eq(leadClaims.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (existing) return { ok: true, claimId: existing.id };
+
+    const [inserted] = await db
+      .insert(leadClaims)
+      .values({
+        leadId,
+        agentUserId,
+        orgId: lead.orgId,
+        status: "pending",
+      })
+      .returning({ id: leadClaims.id });
+    return { ok: true, claimId: inserted.id };
+  }
+
+  /** Snapshot of an in-flight or resolved auction. Used by the GET endpoint. */
+  async getAuctionForLead(leadId: number) {
+    const rows = await db
+      .select()
+      .from(leadClaims)
+      .where(eq(leadClaims.leadId, leadId))
+      .orderBy(desc(leadClaims.createdAt));
+    if (rows.length === 0) return null;
+    // The overall status: if any row is 'won' the auction has a winner;
+    // else if all are 'expired' it expired; else still pending.
+    const statuses = rows.map(r => r.status);
+    const status: "pending" | "won" | "lost" | "expired" = statuses.includes("won")
+      ? "won"
+      : statuses.every(s => s === "expired")
+        ? "expired"
+        : statuses.every(s => s === "lost" || s === "expired")
+          ? "lost"
+          : "pending";
+    return {
+      leadId,
+      status,
+      claims: rows.map(r => ({
+        id: r.id,
+        agentUserId: r.agentUserId,
+        status: r.status,
+        createdAt: r.createdAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
   async setAssignmentStatus(
     assignmentId: number,
     agentUserId: string,
@@ -1186,6 +1628,15 @@ export class DatabaseStorage implements IStorage {
           .set({ assignedToUserId: null, assignedAt: null })
           .where(eq(leads.id, a.leadId));
       }
+
+      // Reputation: accept = +2, decline = -1.
+      await recordReputationEventCore({
+        agentUserId,
+        eventType: status === "accepted" ? "accepted_assignment" : "declined_assignment",
+        relatedLeadId: a.leadId,
+        metadata: { assignmentId: a.id },
+      });
+
       return updated;
     });
   }
@@ -1616,7 +2067,19 @@ export class DatabaseStorage implements IStorage {
         .onConflictDoNothing({ target: leadDisputes.orderId })
         .returning();
 
-      if (dispute) return dispute;
+      if (dispute) {
+        // Reputation: -3 against the agent who purchased the lead (here, the
+        // buyer filing the dispute — they bought it, found it bad, and the
+        // platform takes that as a negative signal on their judgment / the
+        // routed match). The bigger hit (-5) lands only if admin approves.
+        await recordReputationEventCore({
+          agentUserId: input.buyerUserId,
+          eventType: "dispute_filed_against",
+          relatedLeadId: order.leadId,
+          metadata: { orderId: input.orderId, disputeId: dispute.id },
+        });
+        return dispute;
+      }
 
       // Conflict race — read the row that won.
       const [winner] = await tx
@@ -1792,6 +2255,19 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // Reputation: -5 against the agent on the dispute (the buyer who
+      // purchased the lead). Stacks on top of the -3 from filing so a single
+      // approved dispute nets -8 over the trailing window. Only when the
+      // buyer id is still present (it can be null after GDPR delete).
+      if (dispute.buyerUserId) {
+        await recordReputationEventCore({
+          agentUserId: dispute.buyerUserId,
+          eventType: "dispute_approved",
+          relatedLeadId: dispute.leadId,
+          metadata: { orderId: dispute.orderId, disputeId },
+        });
+      }
+
       return updated;
     });
   }
@@ -1822,6 +2298,400 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return updated;
     });
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b: TCPA defense insurance
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Create a new TCPA policy for an org. Auto-expires any existing active
+   * policy first — only one active policy per org is allowed.
+   */
+  async createTcpaPolicy(input: {
+    orgId: string;
+    carrierName?: string | null;
+    perClaimLimitCents?: number;
+    aggregateLimitCents?: number;
+    endsAt?: Date | null;
+  }): Promise<TcpaPolicy> {
+    return await db.transaction(async (tx) => {
+      // Auto-expire any existing active policy for this org so the unique
+      // "one active policy" invariant holds without a partial index.
+      await tx
+        .update(tcpaPolicies)
+        .set({ status: "expired", endsAt: new Date() })
+        .where(and(eq(tcpaPolicies.orgId, input.orgId), eq(tcpaPolicies.status, "active")));
+
+      const values: Record<string, unknown> = {
+        orgId: input.orgId,
+        carrierName: input.carrierName ?? null,
+        endsAt: input.endsAt ?? null,
+        status: "active",
+      };
+      if (typeof input.perClaimLimitCents === "number" && Number.isFinite(input.perClaimLimitCents)) {
+        values.perClaimLimitCents = Math.max(0, Math.floor(input.perClaimLimitCents));
+      }
+      if (typeof input.aggregateLimitCents === "number" && Number.isFinite(input.aggregateLimitCents)) {
+        values.aggregateLimitCents = Math.max(0, Math.floor(input.aggregateLimitCents));
+      }
+
+      const [created] = await tx.insert(tcpaPolicies).values(values as typeof tcpaPolicies.$inferInsert).returning();
+      return created;
+    });
+  }
+
+  async getActivePolicyForOrg(orgId: string): Promise<TcpaPolicy | undefined> {
+    const [policy] = await db
+      .select()
+      .from(tcpaPolicies)
+      .where(and(eq(tcpaPolicies.orgId, orgId), eq(tcpaPolicies.status, "active")))
+      .orderBy(desc(tcpaPolicies.startedAt))
+      .limit(1);
+    return policy;
+  }
+
+  /**
+   * File a new claim against the org's active policy. Throws if the org has
+   * no active policy. Claim opens at status='open'.
+   */
+  async fileTcpaClaim(input: {
+    orgId: string;
+    agentUserId: string;
+    claimReason: string;
+    amountClaimedCents: number;
+    orderId?: number | null;
+  }): Promise<TcpaClaim> {
+    if (!Number.isFinite(input.amountClaimedCents) || input.amountClaimedCents <= 0) {
+      throw new Error("amountClaimedCents must be a positive integer");
+    }
+    const policy = await this.getActivePolicyForOrg(input.orgId);
+    if (!policy) {
+      throw new Error("Org has no active TCPA policy");
+    }
+    const [claim] = await db
+      .insert(tcpaClaims)
+      .values({
+        policyId: policy.id,
+        orderId: input.orderId ?? null,
+        agentUserId: input.agentUserId,
+        claimReason: input.claimReason,
+        amountClaimedCents: Math.floor(input.amountClaimedCents),
+        status: "open",
+      })
+      .returning();
+    return claim;
+  }
+
+  /**
+   * Resolve an open claim. `approved` must carry a positive
+   * `amountPaidCents`; it is clamped to the policy's per-claim limit and
+   * rejected if it would push the aggregate over the policy cap. `denied`
+   * records no payout. Idempotent: re-resolving with the same action
+   * returns the existing row; cross-state transitions throw.
+   */
+  async resolveTcpaClaim(input: {
+    claimId: number;
+    action: "approved" | "denied";
+    amountPaidCents?: number;
+  }): Promise<TcpaClaim> {
+    return await db.transaction(async (tx) => {
+      const [claim] = await tx
+        .select()
+        .from(tcpaClaims)
+        .where(eq(tcpaClaims.id, input.claimId))
+        .for("update");
+      if (!claim) throw new Error("Claim not found");
+
+      // Idempotent re-resolve.
+      if (claim.status === input.action) return claim;
+      if (claim.status !== "open") {
+        throw new Error(`Claim is ${claim.status} and cannot be re-resolved`);
+      }
+
+      if (input.action === "denied") {
+        const [updated] = await tx
+          .update(tcpaClaims)
+          .set({ status: "denied", resolvedAt: new Date(), amountPaidCents: 0 })
+          .where(eq(tcpaClaims.id, input.claimId))
+          .returning();
+        return updated;
+      }
+
+      // Approval path — pull the policy + sibling claims under lock so the
+      // aggregate check is consistent.
+      const [policy] = await tx
+        .select()
+        .from(tcpaPolicies)
+        .where(eq(tcpaPolicies.id, claim.policyId))
+        .for("update");
+      if (!policy) throw new Error("Policy not found");
+
+      const siblings = await tx
+        .select()
+        .from(tcpaClaims)
+        .where(eq(tcpaClaims.policyId, policy.id));
+
+      const alreadyPaid = computeAggregatePaidCents(
+        siblings
+          .filter((s) => s.id !== claim.id)
+          .map((s) => ({ status: s.status, amountPaidCents: s.amountPaidCents })),
+      );
+
+      const finalPayout = validateApprovedPayout({
+        amountPaidCents: input.amountPaidCents ?? 0,
+        perClaimLimitCents: policy.perClaimLimitCents,
+        aggregateLimitCents: policy.aggregateLimitCents,
+        alreadyPaidAggregateCents: alreadyPaid,
+      });
+
+      const [updated] = await tx
+        .update(tcpaClaims)
+        .set({
+          status: "approved",
+          amountPaidCents: finalPayout,
+          resolvedAt: new Date(),
+        })
+        .where(eq(tcpaClaims.id, input.claimId))
+        .returning();
+      return updated;
+    });
+  }
+
+  async listTcpaClaims(orgId: string): Promise<TcpaClaim[]> {
+    // Join through tcpa_policies so we scope by org without trusting the
+    // caller to pre-filter by policyId.
+    const rows = await db
+      .select({ claim: tcpaClaims })
+      .from(tcpaClaims)
+      .innerJoin(tcpaPolicies, eq(tcpaClaims.policyId, tcpaPolicies.id))
+      .where(eq(tcpaPolicies.orgId, orgId))
+      .orderBy(desc(tcpaClaims.filedAt));
+    return rows.map((r) => r.claim);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K3) — dialer storage methods
+  // ──────────────────────────────────────────────────────
+
+  async createCallLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    status: string;
+  }): Promise<CallLog> {
+    const [row] = await db
+      .insert(callLogs)
+      .values({
+        agentUserId: input.agentUserId,
+        leadId: input.leadId ?? null,
+        twilioSid: input.twilioSid ?? null,
+        status: input.status,
+      })
+      .returning();
+    return row;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6 (K4) — CRM connections + sync events
+  // ──────────────────────────────────────────────────────
+  async createCrmConnection(input: {
+    orgId: string;
+    provider: string;
+    accessToken?: string | null;
+    refreshToken?: string | null;
+  }): Promise<CrmConnection> {
+    // ON CONFLICT (orgId, provider) → refresh tokens so reconnect just
+    // overwrites the stored credentials in place.
+    const values: InsertCrmConnection = {
+      orgId: input.orgId,
+      provider: input.provider,
+      accessToken: input.accessToken ?? null,
+      refreshToken: input.refreshToken ?? null,
+      status: "active",
+    };
+    const [row] = await db
+      .insert(crmConnections)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [crmConnections.orgId, crmConnections.provider],
+        set: {
+          accessToken: values.accessToken,
+          refreshToken: values.refreshToken,
+          status: "active",
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  async updateCallLog(
+    callLogId: number,
+    fields: Partial<Pick<InsertCallLog, "twilioSid" | "status" | "durationSec" | "recordingUrl" | "endedAt">>,
+  ): Promise<CallLog | undefined> {
+    if (Object.keys(fields).length === 0) {
+      const [row] = await db.select().from(callLogs).where(eq(callLogs.id, callLogId));
+      return row;
+    }
+    const [row] = await db
+      .update(callLogs)
+      .set(fields)
+      .where(eq(callLogs.id, callLogId))
+      .returning();
+    return row;
+  }
+
+  async getCallLogsForAgent(
+    agentUserId: string,
+    opts: { leadId?: number; limit?: number } = {},
+  ): Promise<CallLog[]> {
+    const conditions: any[] = [eq(callLogs.agentUserId, agentUserId)];
+    if (typeof opts.leadId === "number") conditions.push(eq(callLogs.leadId, opts.leadId));
+    const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+    return await db
+      .select()
+      .from(callLogs)
+      .where(and(...conditions))
+      .orderBy(desc(callLogs.startedAt))
+      .limit(limit);
+  }
+
+  /**
+   * Append transcript text for a call. The schema has a UNIQUE constraint
+   * on call_log_id (one row per call) so we upsert: insert on first chunk,
+   * concat on subsequent chunks. Newlines separate utterances.
+   */
+  async appendTranscript(callLogId: number, text: string): Promise<Transcript> {
+    const [row] = await db
+      .insert(transcripts)
+      .values({ callLogId, text })
+      .onConflictDoUpdate({
+        target: transcripts.callLogId,
+        set: { text: sql`${transcripts.text} || '\n' || ${text}` },
+      })
+      .returning();
+    return row;
+  }
+
+  async recordConversationAssist(input: {
+    callLogId: number;
+    triggerPhrase: string;
+    suggestion: string;
+  }): Promise<ConversationAssist> {
+    const [row] = await db
+      .insert(conversationAssists)
+      .values({
+        callLogId: input.callLogId,
+        triggerPhrase: input.triggerPhrase,
+        suggestion: input.suggestion,
+      })
+      .returning();
+    return row;
+  }
+
+  async getCrmConnectionsForOrg(orgId: string): Promise<CrmConnection[]> {
+    return await db
+      .select()
+      .from(crmConnections)
+      .where(eq(crmConnections.orgId, orgId))
+      .orderBy(desc(crmConnections.createdAt));
+  }
+
+  async deleteCrmConnection(connectionId: number, orgId: string): Promise<boolean> {
+    const result = await db
+      .delete(crmConnections)
+      .where(and(eq(crmConnections.id, connectionId), eq(crmConnections.orgId, orgId)))
+      .returning({ id: crmConnections.id });
+    return result.length > 0;
+  }
+
+  async recordCrmSyncEvent(event: {
+    connectionId: number;
+    direction: "out" | "in";
+    resourceType: "contact" | "deal" | "note" | "task";
+    resourceId?: string | null;
+    externalId?: string | null;
+    status: "success" | "error";
+    errorMessage?: string | null;
+  }): Promise<CrmSyncEvent> {
+    const values: InsertCrmSyncEvent = {
+      connectionId: event.connectionId,
+      direction: event.direction,
+      resourceType: event.resourceType,
+      resourceId: event.resourceId ?? null,
+      externalId: event.externalId ?? null,
+      status: event.status,
+      errorMessage: event.errorMessage ?? null,
+    };
+    const [row] = await db.insert(crmSyncEvents).values(values).returning();
+    return row;
+  }
+
+  async getRecentSyncEvents(connectionId: number, limit = 50): Promise<CrmSyncEvent[]> {
+    return await db
+      .select()
+      .from(crmSyncEvents)
+      .where(eq(crmSyncEvents.connectionId, connectionId))
+      .orderBy(desc(crmSyncEvents.createdAt))
+      .limit(limit);
+  }
+
+  async findSyncEventByExternalId(externalId: string, resourceType: string): Promise<CrmSyncEvent | undefined> {
+    // Find the original outbound event so we can resolve back to the order.
+    const [row] = await db
+      .select()
+      .from(crmSyncEvents)
+      .where(
+        and(
+          eq(crmSyncEvents.externalId, externalId),
+          eq(crmSyncEvents.resourceType, resourceType),
+          eq(crmSyncEvents.direction, "out"),
+        ),
+      )
+      .orderBy(desc(crmSyncEvents.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async getOrderById(orderId: number): Promise<Order | undefined> {
+    const [row] = await db.select().from(orders).where(eq(orders.id, orderId));
+    return row;
+  }
+
+  async recordReputationEvent(input: {
+    agentUserId: string;
+    eventType: string;
+    weight: number;
+    relatedLeadId?: number | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    await db.insert(agentReputationEvents).values({
+      agentUserId: input.agentUserId,
+      eventType: input.eventType,
+      weight: input.weight,
+      relatedLeadId: input.relatedLeadId ?? null,
+      metadata: input.metadata ?? null,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K5): agent reputation read helpers
+  // ──────────────────────────────────────────────────────
+  async getReputationEvents(
+    agentUserId: string,
+    limit: number = 100,
+  ): Promise<AgentReputationEvent[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 100));
+    return await db
+      .select()
+      .from(agentReputationEvents)
+      .where(eq(agentReputationEvents.agentUserId, agentUserId))
+      .orderBy(desc(agentReputationEvents.createdAt))
+      .limit(safeLimit);
+  }
+
+  async computeAgentReputation(agentUserId: string): Promise<number> {
+    return await computeAgentReputationCore(agentUserId);
   }
 }
 

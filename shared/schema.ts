@@ -39,6 +39,10 @@ export const organizations = pgTable("organizations", {
   stripeCustomerId: varchar("stripe_customer_id", { length: 255 }),
   stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }),
   routingScoreThreshold: integer("routing_score_threshold").notNull().default(70),
+  // Wave 12a (CM2): rolling state-by-state compliance score 0-100.
+  complianceScore: integer("compliance_score").notNull().default(0),
+  // Wave 12a (CO1): AEP orchestrator state. 'idle'|'preparing'|'running'|'paused'|'completed'
+  aepCampaignStatus: varchar("aep_campaign_status", { length: 20 }),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
@@ -93,6 +97,9 @@ export const agentProfiles = pgTable("agent_profiles", {
   niprVerifiedAt: timestamp("nipr_verified_at"),
   niprLicenseExpiry: timestamp("nipr_license_expiry"),
   niprLastError: text("nipr_last_error"),
+  // Wave 12a (MM7): streaks + daily challenges
+  streakCount: integer("streak_count").notNull().default(0),
+  lastActivityAt: timestamp("last_activity_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
@@ -186,6 +193,12 @@ export const leads = pgTable("leads", {
   enrichmentJson: jsonb("enrichment_json"),
   mediscoreExplanation: text("mediscore_explanation"),
   bestCallWindowsJson: jsonb("best_call_windows_json"),
+
+  // ──── Wave 12a: vertical expansion + pricing modes ────
+  // 'medicare'|'aca'|'mortgage_protection'|'auto'|'home'|'commercial'|'annuity'|'pet'|'final_expense'
+  vertical: varchar("vertical", { length: 30 }).notNull().default("medicare"),
+  // 'per_lead'|'pay_per_close'|'subscription_match'
+  pricingMode: varchar("pricing_mode", { length: 20 }).notNull().default("per_lead"),
 
   // Status
   sold: boolean("sold").notNull().default(false),
@@ -1232,3 +1245,1136 @@ export const insertReferralCodeSchema = createInsertSchema(referralCodes);
 export const insertReferralSchema = createInsertSchema(referrals);
 export const insertMarketplaceIntegrationSchema = createInsertSchema(marketplaceIntegrations);
 export const insertMarketplaceIntegrationInstallSchema = createInsertSchema(marketplaceIntegrationInstalls);
+
+// ══════════════════════════════════════════════════════════════════════════
+// Wave 12a — Second batch foundation (one big migration: 0005_second_batch.sql)
+// 50 new tables across 9 categories. Subsequent waves 12b-18 branch off this.
+// Feature flag prefix: FEATURE_* (see shared/featureFlags.ts)
+// ══════════════════════════════════════════════════════════════════════════
+
+// ──────────────────────────────────────────────────────
+// Fintech (6 tables) — F1-F5
+// ──────────────────────────────────────────────────────
+
+// F2 — Lead-backed credit line. balanceCents positive = available credit remaining.
+export const creditLines = pgTable("credit_lines", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  limitCents: integer("limit_cents").notNull(),
+  balanceCents: integer("balance_cents").notNull().default(0),
+  aprBps: integer("apr_bps").notNull().default(0), // basis points (10000 = 100%)
+  status: varchar("status", { length: 20 }).notNull().default("active"), // 'active'|'suspended'|'closed'|'default'
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_credit_lines_user").on(table.userId),
+  index("idx_credit_lines_org").on(table.orgId),
+]);
+
+// F2 — One row per charge / repayment / interest entry against a credit line.
+export const creditRepayments = pgTable("credit_repayments", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  lineId: integer("line_id").notNull().references(() => creditLines.id, { onDelete: "cascade" }),
+  amountCents: integer("amount_cents").notNull(),
+  kind: varchar("kind", { length: 20 }).notNull(), // 'charge'|'payment'|'interest'
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_credit_repayments_line").on(table.lineId),
+  index("idx_credit_repayments_kind").on(table.kind),
+]);
+
+// F3 — Commission escrow: held funds released to agent or vendor on a schedule.
+export const commissionEscrows = pgTable("commission_escrows", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orderId: integer("order_id").notNull().unique().references(() => orders.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  amountCents: integer("amount_cents").notNull(),
+  status: varchar("status", { length: 30 }).notNull().default("held"),
+  // 'held'|'released_to_agent'|'released_to_vendor'
+  releaseAt: timestamp("release_at"),
+  releasedAt: timestamp("released_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_commission_escrows_agent").on(table.agentUserId),
+  index("idx_commission_escrows_status").on(table.status),
+]);
+
+// F1 — Pay-per-close: agent reserves the lead, only pays on close.
+export const payPerCloseOrders = pgTable("pay_per_close_orders", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 20 }).notNull().default("reserved"),
+  // 'reserved'|'closed'|'expired'|'refunded'
+  reservedAt: timestamp("reserved_at").defaultNow(),
+  closedAt: timestamp("closed_at"),
+  closePriceCents: integer("close_price_cents"),
+}, (table) => [
+  index("idx_ppc_agent").on(table.agentUserId),
+  index("idx_ppc_status").on(table.status),
+]);
+
+// F4 — Per-order refund insurance policy purchased at checkout.
+export const refundInsurancePolicies = pgTable("refund_insurance_policies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orderId: integer("order_id").notNull().unique().references(() => orders.id, { onDelete: "cascade" }),
+  premiumPaidCents: integer("premium_paid_cents").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'expired'|'claimed'|'cancelled'
+  refundIssuedCents: integer("refund_issued_cents").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_refund_ins_status").on(table.status),
+]);
+
+// F5 — Issued wallet debit cards (via Stripe Issuing).
+export const walletCards = pgTable("wallet_cards", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  stripeCardId: varchar("stripe_card_id", { length: 255 }).notNull().unique(),
+  last4: varchar("last4", { length: 4 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'frozen'|'cancelled'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_wallet_cards_user").on(table.userId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Compliance moat (6 tables) — CM1-CM6 + CO1
+// ──────────────────────────────────────────────────────
+
+// CM1 — DOI (Department of Insurance) complaints filed against an agent/org.
+export const doiComplaints = pgTable("doi_complaints", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  state: varchar("state", { length: 2 }).notNull(),
+  complaintNumber: varchar("complaint_number", { length: 100 }),
+  filedAt: timestamp("filed_at").notNull(),
+  status: varchar("status", { length: 30 }).notNull().default("open"),
+  // 'open'|'responded'|'closed'|'settled'|'dismissed'
+  summary: text("summary"),
+  defensePacketId: integer("defense_packet_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_doi_complaints_org").on(table.orgId),
+  index("idx_doi_complaints_state").on(table.state),
+  index("idx_doi_complaints_status").on(table.status),
+]);
+
+// CM1 — Auto-generated defense packet (PDF + evidence bundle) for a complaint.
+export const defensePackets = pgTable("defense_packets", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  complaintId: integer("complaint_id").references(() => doiComplaints.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  packetUrl: text("packet_url"),
+  evidenceJson: jsonb("evidence_json"),
+  status: varchar("status", { length: 20 }).notNull().default("draft"),
+  // 'draft'|'generated'|'submitted'
+  generatedAt: timestamp("generated_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_defense_packets_org").on(table.orgId),
+  index("idx_defense_packets_complaint").on(table.complaintId),
+]);
+
+// CM4 — "Certified by LeadMarket" issued certifications.
+export const complianceCertifications = pgTable("compliance_certifications", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  certKind: varchar("cert_kind", { length: 40 }).notNull(),
+  // 'tcpa_clean'|'cms_mippa'|'state_doi'|'pii_iso'
+  level: varchar("level", { length: 20 }).notNull().default("bronze"), // 'bronze'|'silver'|'gold'
+  scorePct: integer("score_pct").notNull().default(0),
+  issuedAt: timestamp("issued_at").defaultNow(),
+  expiresAt: timestamp("expires_at"),
+  badgeUrl: text("badge_url"),
+}, (table) => [
+  index("idx_compliance_certs_org").on(table.orgId),
+  unique("uniq_compliance_cert").on(table.orgId, table.certKind),
+]);
+
+// CM3 — CMS MIPPA marketing-material filings.
+export const cmsFilings = pgTable("cms_filings", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  filingKind: varchar("filing_kind", { length: 40 }).notNull(),
+  // 'sob'|'enrollment_kit'|'ad_script'|'website'
+  materialUrl: text("material_url"),
+  submittedAt: timestamp("submitted_at"),
+  cmsId: varchar("cms_id", { length: 100 }),
+  status: varchar("status", { length: 20 }).notNull().default("draft"),
+  // 'draft'|'submitted'|'approved'|'rejected'
+  reviewNotes: text("review_notes"),
+  approvedAt: timestamp("approved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_cms_filings_org").on(table.orgId),
+  index("idx_cms_filings_status").on(table.status),
+]);
+
+// CM6 — PII retention policies per org for GDPR/CCPA auto-deletion timer.
+export const piiRetentionPolicies = pgTable("pii_retention_policies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
+  leadPiiDays: integer("lead_pii_days").notNull().default(365),
+  recordingDays: integer("recording_days").notNull().default(180),
+  transcriptDays: integer("transcript_days").notNull().default(365),
+  autoDeleteEnabled: boolean("auto_delete_enabled").notNull().default(true),
+  lastSweepAt: timestamp("last_sweep_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// CM5 / TCPA watchdog: realtime events flagged by the compliance monitor.
+export const tcpaWatchdogEvents = pgTable("tcpa_watchdog_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  eventKind: varchar("event_kind", { length: 40 }).notNull(),
+  // 'after_hours_dial'|'dnc_attempt'|'missing_consent'|'two_party_state_no_notice'
+  severity: varchar("severity", { length: 10 }).notNull().default("warn"), // 'info'|'warn'|'critical'
+  details: jsonb("details"),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_watchdog_org").on(table.orgId),
+  index("idx_watchdog_severity").on(table.severity),
+  index("idx_watchdog_created").on(table.createdAt),
+]);
+
+// ──────────────────────────────────────────────────────
+// Marketplace mechanics (12 tables) — MM1-MM8 + M6
+// ──────────────────────────────────────────────────────
+
+// MM1 — Reverse auction (buyer specifies criteria, vendors bid).
+export const reverseAuctions = pgTable("reverse_auctions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  criteriaJson: jsonb("criteria_json").notNull(),
+  maxBidCents: integer("max_bid_cents").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  // 'open'|'awarded'|'cancelled'|'expired'
+  closesAt: timestamp("closes_at").notNull(),
+  awardedBidId: integer("awarded_bid_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_reverse_auctions_buyer").on(table.buyerUserId),
+  index("idx_reverse_auctions_status").on(table.status),
+]);
+
+export const reverseAuctionBids = pgTable("reverse_auction_bids", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  auctionId: integer("auction_id").notNull().references(() => reverseAuctions.id, { onDelete: "cascade" }),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  bidCents: integer("bid_cents").notNull(),
+  leadCount: integer("lead_count").notNull(),
+  noteText: text("note_text"),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'withdrawn'|'won'|'lost'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_reverse_bids_auction").on(table.auctionId),
+  index("idx_reverse_bids_vendor").on(table.vendorId),
+]);
+
+// MM2 — Wishlist: buyer subscribes to a criteria + gets notified on match.
+export const wishlists = pgTable("wishlists", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  criteriaJson: jsonb("criteria_json").notNull(),
+  maxPriceCents: integer("max_price_cents"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_wishlists_user").on(table.userId),
+  index("idx_wishlists_active").on(table.active),
+]);
+
+export const wishlistMatches = pgTable("wishlist_matches", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  wishlistId: integer("wishlist_id").notNull().references(() => wishlists.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  notifiedAt: timestamp("notified_at"),
+  purchased: boolean("purchased").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_wishlist_match").on(table.wishlistId, table.leadId),
+  index("idx_wishlist_matches_wishlist").on(table.wishlistId),
+]);
+
+// MM3 — Trade-in credit: agent returns a stale lead for partial credit.
+export const leadTradeInCredits = pgTable("lead_tradein_credits", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orderId: integer("order_id").notNull().unique().references(() => orders.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  creditCents: integer("credit_cents").notNull(),
+  reason: varchar("reason", { length: 60 }),
+  status: varchar("status", { length: 20 }).notNull().default("issued"),
+  // 'issued'|'redeemed'|'expired'
+  redeemedAt: timestamp("redeemed_at"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_tradein_agent").on(table.agentUserId),
+]);
+
+// MM4 — Lead share syndication group.
+export const leadShares = pgTable("lead_shares", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  splitPct: decimal("split_pct", { precision: 5, scale: 2 }).notNull().default("50.00"),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_lead_shares_owner").on(table.ownerUserId),
+  index("idx_lead_shares_lead").on(table.leadId),
+]);
+
+export const leadShareMembers = pgTable("lead_share_members", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  shareId: integer("share_id").notNull().references(() => leadShares.id, { onDelete: "cascade" }),
+  memberUserId: varchar("member_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  acceptedAt: timestamp("accepted_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_share_member").on(table.shareId, table.memberUserId),
+  index("idx_share_members_user").on(table.memberUserId),
+]);
+
+// MM5 — Lead X-ray: cached aggregate stats per lead.
+export const leadXrayStats = pgTable("lead_xray_stats", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
+  views: integer("views").notNull().default(0),
+  uniqueViewers: integer("unique_viewers").notNull().default(0),
+  avgDwellSec: integer("avg_dwell_sec").notNull().default(0),
+  similarSoldCount: integer("similar_sold_count").notNull().default(0),
+  similarAvgCloseRatePct: integer("similar_avg_close_rate_pct").notNull().default(0),
+  computedAt: timestamp("computed_at").defaultNow(),
+}, (table) => [
+  index("idx_lead_xray_lead").on(table.leadId),
+]);
+
+// MM6 — Verified review (post-close).
+export const vendorReviews = pgTable("vendor_reviews", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
+  reviewerUserId: varchar("reviewer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+  rating: integer("rating").notNull(), // 1-5
+  body: text("body"),
+  verified: boolean("verified").notNull().default(false),
+  helpfulCount: integer("helpful_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_vendor_reviews_vendor").on(table.vendorId),
+  index("idx_vendor_reviews_rating").on(table.rating),
+  unique("uniq_vendor_review_per_order").on(table.orderId),
+]);
+
+// MM7 — Agent streak ledger (one row per day with activity).
+export const agentStreaks = pgTable("agent_streaks", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  streakDate: timestamp("streak_date").notNull(),
+  activityCount: integer("activity_count").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_agent_streak_day").on(table.agentUserId, table.streakDate),
+  index("idx_agent_streaks_agent").on(table.agentUserId),
+]);
+
+// MM7 — Daily challenges (issued and completed).
+export const dailyChallenges = pgTable("daily_challenges", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  challengeKind: varchar("challenge_kind", { length: 40 }).notNull(),
+  // 'first_call_under_2m'|'three_dispositions'|'five_dials'|'one_sale'
+  targetValue: integer("target_value").notNull(),
+  currentValue: integer("current_value").notNull().default(0),
+  rewardCents: integer("reward_cents").notNull().default(0),
+  forDate: timestamp("for_date").notNull(),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_daily_challenges_agent").on(table.agentUserId),
+  index("idx_daily_challenges_date").on(table.forDate),
+  unique("uniq_daily_challenge").on(table.agentUserId, table.challengeKind, table.forDate),
+]);
+
+// MM7 — Agent achievements (lifetime badges).
+export const agentAchievements = pgTable("agent_achievements", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  achievementKey: varchar("achievement_key", { length: 60 }).notNull(),
+  // 'first_sale'|'100_sales'|'streak_30'|'top_closer_state'
+  earnedAt: timestamp("earned_at").defaultNow(),
+  meta: jsonb("meta"),
+}, (table) => [
+  unique("uniq_agent_achievement").on(table.agentUserId, table.achievementKey),
+  index("idx_achievements_agent").on(table.agentUserId),
+]);
+
+// MM8 — "Won deals" public feed posts.
+export const winsFeedPosts = pgTable("wins_feed_posts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+  headline: varchar("headline", { length: 280 }).notNull(),
+  amountCents: integer("amount_cents"),
+  state: varchar("state", { length: 2 }),
+  isPublic: boolean("is_public").notNull().default(true),
+  reactionsCount: integer("reactions_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_wins_feed_created").on(table.createdAt),
+  index("idx_wins_feed_agent").on(table.agentUserId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Voice/AR (4 tables) — VR1, VR3, VR4, VR5
+// ──────────────────────────────────────────────────────
+
+// VR1 — Video call escalation sessions (LiveKit / Twilio Video).
+export const videoCallSessions = pgTable("video_call_sessions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  callLogId: integer("call_log_id").references(() => callLogs.id, { onDelete: "set null" }),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  roomSid: varchar("room_sid", { length: 100 }),
+  status: varchar("status", { length: 20 }).notNull().default("created"),
+  // 'created'|'in_progress'|'completed'|'failed'
+  startedAt: timestamp("started_at"),
+  endedAt: timestamp("ended_at"),
+  recordingUrl: text("recording_url"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_video_call_agent").on(table.agentUserId),
+  index("idx_video_call_lead").on(table.leadId),
+]);
+
+// VR3 — Voice clone for personalized voicemail drops.
+export const voiceClones = pgTable("voice_clones", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  providerVoiceId: varchar("provider_voice_id", { length: 200 }),
+  provider: varchar("provider", { length: 30 }).notNull().default("elevenlabs"),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  // 'pending'|'training'|'ready'|'failed'
+  sampleUrl: text("sample_url"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// VR5 — AI-narrated audio tour cache per lead.
+export const leadAudioTours = pgTable("lead_audio_tours", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
+  audioUrl: text("audio_url").notNull(),
+  transcript: text("transcript"),
+  durationSec: integer("duration_sec"),
+  generatedAt: timestamp("generated_at").defaultNow(),
+});
+
+// VR4 — Sentiment snapshots from call streams (every N seconds).
+export const sentimentSnapshots = pgTable("sentiment_snapshots", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  callLogId: integer("call_log_id").notNull().references(() => callLogs.id, { onDelete: "cascade" }),
+  offsetSec: integer("offset_sec").notNull(),
+  sentimentScore: decimal("sentiment_score", { precision: 4, scale: 3 }).notNull(), // -1.000..1.000
+  emotion: varchar("emotion", { length: 30 }),
+  // 'neutral'|'happy'|'angry'|'sad'|'confused'|'interested'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_sentiment_call").on(table.callLogId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Embedded SaaS (3 tables) — ES1, ES2, ES4
+// ──────────────────────────────────────────────────────
+
+// ES1 — Embeddable quote widget configs.
+export const quoteWidgets = pgTable("quote_widgets", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  widgetKey: varchar("widget_key", { length: 60 }).notNull().unique(),
+  name: varchar("name", { length: 200 }).notNull(),
+  vertical: varchar("vertical", { length: 30 }).notNull().default("medicare"),
+  themeJson: jsonb("theme_json"),
+  enabled: boolean("enabled").notNull().default(true),
+  embedsCount: integer("embeds_count").notNull().default(0),
+  submitsCount: integer("submits_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_quote_widgets_org").on(table.orgId),
+]);
+
+// ES2 — No-code landing pages.
+export const landingPages = pgTable("landing_pages", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  title: varchar("title", { length: 255 }).notNull(),
+  blocksJson: jsonb("blocks_json").notNull(),
+  published: boolean("published").notNull().default(false),
+  publishedAt: timestamp("published_at"),
+  viewsCount: integer("views_count").notNull().default(0),
+  leadsCount: integer("leads_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_landing_pages_org").on(table.orgId),
+  index("idx_landing_pages_published").on(table.published),
+]);
+
+// ES4 — Provisioned Twilio phone numbers (per agent or org).
+export const provisionedPhoneNumbers = pgTable("provisioned_phone_numbers", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  agentUserId: varchar("agent_user_id").references(() => users.id, { onDelete: "set null" }),
+  phoneNumber: varchar("phone_number", { length: 20 }).notNull().unique(),
+  twilioSid: varchar("twilio_sid", { length: 100 }),
+  capabilities: text("capabilities").array().notNull().default(sql`ARRAY[]::text[]`),
+  // 'voice'|'sms'|'mms'
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'released'|'suspended'
+  monthlyCostCents: integer("monthly_cost_cents"),
+  provisionedAt: timestamp("provisioned_at").defaultNow(),
+}, (table) => [
+  index("idx_phone_numbers_org").on(table.orgId),
+  index("idx_phone_numbers_agent").on(table.agentUserId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Data products (4 tables) — DP1-DP4
+// ──────────────────────────────────────────────────────
+
+// DP3 — MediScore API keys (B2B consumers).
+export const mediscoreApiKeys = pgTable("mediscore_api_keys", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  customerName: varchar("customer_name", { length: 255 }).notNull(),
+  keyHash: varchar("key_hash", { length: 255 }).notNull().unique(),
+  keyPrefix: varchar("key_prefix", { length: 20 }).notNull(),
+  monthlyQuota: integer("monthly_quota").notNull().default(10000),
+  pricePerCallCents: integer("price_per_call_cents").notNull().default(5),
+  active: boolean("active").notNull().default(true),
+  revokedAt: timestamp("revoked_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_mediscore_api_keys_prefix").on(table.keyPrefix),
+]);
+
+// DP3 — MediScore API usage log.
+export const mediscoreApiUsage = pgTable("mediscore_api_usage", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  apiKeyId: integer("api_key_id").notNull().references(() => mediscoreApiKeys.id, { onDelete: "cascade" }),
+  endpoint: varchar("endpoint", { length: 100 }).notNull(),
+  statusCode: integer("status_code").notNull(),
+  latencyMs: integer("latency_ms"),
+  billedCents: integer("billed_cents").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_mediscore_usage_key").on(table.apiKeyId),
+  index("idx_mediscore_usage_created").on(table.createdAt),
+]);
+
+// DP1/DP2 — Saleable data products (datasets, reports).
+export const dataProducts = pgTable("data_products", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  name: varchar("name", { length: 255 }).notNull(),
+  kind: varchar("kind", { length: 30 }).notNull(),
+  // 'dataset'|'report'|'api'|'dashboard'
+  description: text("description"),
+  priceCents: integer("price_cents").notNull().default(0),
+  cadence: varchar("cadence", { length: 20 }), // 'one_time'|'monthly'|'quarterly'|'annual'
+  sampleUrl: text("sample_url"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_data_products_kind").on(table.kind),
+]);
+
+export const dataProductSubscriptions = pgTable("data_product_subscriptions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  productId: integer("product_id").notNull().references(() => dataProducts.id, { onDelete: "cascade" }),
+  subscriberUserId: varchar("subscriber_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'paused'|'cancelled'
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_data_product_sub").on(table.productId, table.subscriberUserId),
+  index("idx_data_product_subs_user").on(table.subscriberUserId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Owned media (7 tables) — OM1, OM2, OM3, OM4, OM7
+// ──────────────────────────────────────────────────────
+
+// OM1 — Compliance webinars.
+export const webinars = pgTable("webinars", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  title: varchar("title", { length: 500 }).notNull(),
+  description: text("description"),
+  presenter: varchar("presenter", { length: 255 }),
+  startsAt: timestamp("starts_at").notNull(),
+  durationMin: integer("duration_min").notNull().default(60),
+  zoomUrl: text("zoom_url"),
+  replayUrl: text("replay_url"),
+  ceCredits: decimal("ce_credits", { precision: 3, scale: 1 }),
+  status: varchar("status", { length: 20 }).notNull().default("scheduled"),
+  // 'scheduled'|'live'|'completed'|'cancelled'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_webinars_starts").on(table.startsAt),
+  index("idx_webinars_status").on(table.status),
+]);
+
+export const webinarRegistrations = pgTable("webinar_registrations", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  webinarId: integer("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  email: varchar("email", { length: 255 }).notNull(),
+  attended: boolean("attended").notNull().default(false),
+  certificateUrl: text("certificate_url"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_webinar_reg").on(table.webinarId, table.email),
+  index("idx_webinar_regs_user").on(table.userId),
+]);
+
+// OM2 — Daily AI news brief.
+export const newsBriefs = pgTable("news_briefs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  briefDate: timestamp("brief_date").notNull(),
+  headline: varchar("headline", { length: 500 }).notNull(),
+  summary: text("summary").notNull(),
+  storiesJson: jsonb("stories_json"),
+  audioUrl: text("audio_url"),
+  publishedAt: timestamp("published_at"),
+  viewsCount: integer("views_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_news_brief_date").on(table.briefDate),
+  index("idx_news_briefs_published").on(table.publishedAt),
+]);
+
+// OM4 — Affiliates publishing program.
+export const affiliates = pgTable("affiliates", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  affiliateCode: varchar("affiliate_code", { length: 30 }).notNull().unique(),
+  payoutMethod: varchar("payout_method", { length: 20 }).notNull().default("stripe"),
+  taxFormUrl: text("tax_form_url"),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  // 'pending'|'active'|'suspended'|'cancelled'
+  totalEarnedCents: integer("total_earned_cents").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const affiliatePayouts = pgTable("affiliate_payouts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  affiliateId: integer("affiliate_id").notNull().references(() => affiliates.id, { onDelete: "cascade" }),
+  amountCents: integer("amount_cents").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  // 'pending'|'paid'|'failed'
+  stripeTransferId: varchar("stripe_transfer_id", { length: 200 }),
+  paidAt: timestamp("paid_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_affiliate_payouts_aff").on(table.affiliateId),
+  index("idx_affiliate_payouts_status").on(table.status),
+]);
+
+// OM7 — Mentor matches.
+export const mentorMatches = pgTable("mentor_matches", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  mentorUserId: varchar("mentor_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  menteeUserId: varchar("mentee_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 20 }).notNull().default("proposed"),
+  // 'proposed'|'accepted'|'declined'|'completed'|'cancelled'
+  matchScore: integer("match_score").notNull().default(0),
+  sessionsHeld: integer("sessions_held").notNull().default(0),
+  startedAt: timestamp("started_at"),
+  endedAt: timestamp("ended_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_mentor_mentee").on(table.mentorUserId, table.menteeUserId),
+  index("idx_mentor_matches_mentor").on(table.mentorUserId),
+  index("idx_mentor_matches_mentee").on(table.menteeUserId),
+]);
+
+// OM3 — Agent Academy certifications earned.
+export const agentCertifications = pgTable("agent_certifications", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  certKey: varchar("cert_key", { length: 60 }).notNull(),
+  // 'medicare_basic'|'aca_advanced'|'tcpa_specialist'|'agency_owner'
+  scorePct: integer("score_pct").notNull().default(0),
+  passedAt: timestamp("passed_at"),
+  certificateUrl: text("certificate_url"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_agent_cert").on(table.agentUserId, table.certKey),
+  index("idx_agent_certs_agent").on(table.agentUserId),
+]);
+
+// ──────────────────────────────────────────────────────
+// Dev ecosystem (3 tables) — DE2, DE4
+// ──────────────────────────────────────────────────────
+
+// DE2 — Public webhooks subscribed by orgs/integrations.
+export const publicWebhooks = pgTable("public_webhooks", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  targetUrl: text("target_url").notNull(),
+  secret: varchar("secret", { length: 128 }).notNull(),
+  eventTypes: text("event_types").array().notNull().default(sql`ARRAY[]::text[]`),
+  // 'lead.created'|'lead.sold'|'order.created'|'dispute.opened'|...
+  active: boolean("active").notNull().default(true),
+  lastDeliveredAt: timestamp("last_delivered_at"),
+  failureCount: integer("failure_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_public_webhooks_org").on(table.orgId),
+  index("idx_public_webhooks_active").on(table.active),
+]);
+
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  webhookId: integer("webhook_id").notNull().references(() => publicWebhooks.id, { onDelete: "cascade" }),
+  eventType: varchar("event_type", { length: 60 }).notNull(),
+  payload: jsonb("payload").notNull(),
+  statusCode: integer("status_code"),
+  responseBody: text("response_body"),
+  attempt: integer("attempt").notNull().default(1),
+  succeeded: boolean("succeeded").notNull().default(false),
+  deliveredAt: timestamp("delivered_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_webhook_deliveries_hook").on(table.webhookId),
+  index("idx_webhook_deliveries_created").on(table.createdAt),
+]);
+
+// DE4 — SDK install metrics (telemetry from npm/TS SDK).
+export const sdkInstallMetrics = pgTable("sdk_install_metrics", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  sdkName: varchar("sdk_name", { length: 60 }).notNull(),
+  sdkVersion: varchar("sdk_version", { length: 30 }).notNull(),
+  installSource: varchar("install_source", { length: 30 }), // 'npm'|'cdn'|'github'
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  count: integer("count").notNull().default(1),
+  reportedAt: timestamp("reported_at").defaultNow(),
+}, (table) => [
+  index("idx_sdk_install_name").on(table.sdkName),
+  index("idx_sdk_install_reported").on(table.reportedAt),
+]);
+
+// ──────────────────────────────────────────────────────
+// Out-there (5 tables) — OT1, OT3, OT4, OT5, OT6
+// ──────────────────────────────────────────────────────
+
+// OT1 — Obituary scraper signals → final expense pipeline.
+export const obituarySignals = pgTable("obituary_signals", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  source: varchar("source", { length: 100 }).notNull(),
+  state: varchar("state", { length: 2 }),
+  county: varchar("county", { length: 100 }),
+  decedentInitials: varchar("decedent_initials", { length: 8 }),
+  age: integer("age"),
+  publishedAt: timestamp("published_at"),
+  rawSnippet: text("raw_snippet"),
+  contactability: integer("contactability").notNull().default(0), // 0-100 heuristic
+  convertedToLeadId: integer("converted_to_lead_id").references(() => leads.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_obituary_state").on(table.state),
+  index("idx_obituary_published").on(table.publishedAt),
+]);
+
+// OT3 — Lead options/futures: option contract definitions.
+export const leadOptions = pgTable("lead_options", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  writerVendorId: integer("writer_vendor_id").references(() => vendors.id, { onDelete: "set null" }),
+  strikeCents: integer("strike_cents").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  criteriaJson: jsonb("criteria_json").notNull(),
+  premiumCents: integer("premium_cents").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  // 'open'|'bought'|'exercised'|'expired'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_lead_options_status").on(table.status),
+  index("idx_lead_options_expires").on(table.expiresAt),
+]);
+
+export const leadOptionContracts = pgTable("lead_option_contracts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  optionId: integer("option_id").notNull().references(() => leadOptions.id, { onDelete: "cascade" }),
+  holderUserId: varchar("holder_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  paidPremiumCents: integer("paid_premium_cents").notNull(),
+  exercisedAt: timestamp("exercised_at"),
+  exerciseLeadId: integer("exercise_lead_id").references(() => leads.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  // 'active'|'exercised'|'expired'
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_lead_option_contracts_holder").on(table.holderUserId),
+  index("idx_lead_option_contracts_option").on(table.optionId),
+]);
+
+// OT4 — Direct mail marketplace orders.
+export const directMailOrders = pgTable("direct_mail_orders", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  campaignName: varchar("campaign_name", { length: 200 }).notNull(),
+  targetCount: integer("target_count").notNull(),
+  zipsJson: jsonb("zips_json").notNull(),
+  pieceTemplate: varchar("piece_template", { length: 60 }),
+  pricePerPieceCents: integer("price_per_piece_cents").notNull(),
+  totalCents: integer("total_cents").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("draft"),
+  // 'draft'|'submitted'|'printing'|'mailed'|'delivered'|'cancelled'
+  mailedAt: timestamp("mailed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_direct_mail_buyer").on(table.buyerUserId),
+  index("idx_direct_mail_status").on(table.status),
+]);
+
+// OT5 — Carrier-direct binding pipelines (per org per carrier).
+export const carrierDirectPipelines = pgTable("carrier_direct_pipelines", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  carrierName: varchar("carrier_name", { length: 255 }).notNull(),
+  carrierProductCode: varchar("carrier_product_code", { length: 100 }),
+  pipelineKey: varchar("pipeline_key", { length: 100 }).notNull(),
+  apiEndpoint: text("api_endpoint"),
+  apiCredentialsJson: jsonb("api_credentials_json"),
+  status: varchar("status", { length: 20 }).notNull().default("inactive"),
+  // 'inactive'|'active'|'error'|'paused'
+  bindingsCount: integer("bindings_count").notNull().default(0),
+  lastBindingAt: timestamp("last_binding_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  unique("uniq_carrier_pipeline").on(table.orgId, table.pipelineKey),
+  index("idx_carrier_pipelines_org").on(table.orgId),
+]);
+
+// OT6 — Language packs for the Spanish-language (and future) vertical.
+export const languagePacks = pgTable("language_packs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  locale: varchar("locale", { length: 10 }).notNull().unique(),
+  // 'es-US'|'es-MX'|'zh-CN'|'vi-VN'|...
+  displayName: varchar("display_name", { length: 100 }).notNull(),
+  enabled: boolean("enabled").notNull().default(false),
+  translationsJson: jsonb("translations_json").notNull(),
+  coveragePct: integer("coverage_pct").notNull().default(0),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Wave 12a — Relations
+// ══════════════════════════════════════════════════════════════════════════
+export const creditLinesRelations = relations(creditLines, ({ one, many }) => ({
+  user: one(users, { fields: [creditLines.userId], references: [users.id] }),
+  org: one(organizations, { fields: [creditLines.orgId], references: [organizations.id] }),
+  repayments: many(creditRepayments),
+}));
+
+export const creditRepaymentsRelations = relations(creditRepayments, ({ one }) => ({
+  line: one(creditLines, { fields: [creditRepayments.lineId], references: [creditLines.id] }),
+  order: one(orders, { fields: [creditRepayments.orderId], references: [orders.id] }),
+}));
+
+export const commissionEscrowsRelations = relations(commissionEscrows, ({ one }) => ({
+  order: one(orders, { fields: [commissionEscrows.orderId], references: [orders.id] }),
+  agent: one(users, { fields: [commissionEscrows.agentUserId], references: [users.id] }),
+}));
+
+export const payPerCloseOrdersRelations = relations(payPerCloseOrders, ({ one }) => ({
+  lead: one(leads, { fields: [payPerCloseOrders.leadId], references: [leads.id] }),
+  agent: one(users, { fields: [payPerCloseOrders.agentUserId], references: [users.id] }),
+}));
+
+export const refundInsurancePoliciesRelations = relations(refundInsurancePolicies, ({ one }) => ({
+  order: one(orders, { fields: [refundInsurancePolicies.orderId], references: [orders.id] }),
+}));
+
+export const walletCardsRelations = relations(walletCards, ({ one }) => ({
+  user: one(users, { fields: [walletCards.userId], references: [users.id] }),
+}));
+
+export const doiComplaintsRelations = relations(doiComplaints, ({ one }) => ({
+  org: one(organizations, { fields: [doiComplaints.orgId], references: [organizations.id] }),
+  agent: one(users, { fields: [doiComplaints.agentUserId], references: [users.id] }),
+}));
+
+export const defensePacketsRelations = relations(defensePackets, ({ one }) => ({
+  complaint: one(doiComplaints, { fields: [defensePackets.complaintId], references: [doiComplaints.id] }),
+  org: one(organizations, { fields: [defensePackets.orgId], references: [organizations.id] }),
+}));
+
+export const reverseAuctionsRelations = relations(reverseAuctions, ({ one, many }) => ({
+  buyer: one(users, { fields: [reverseAuctions.buyerUserId], references: [users.id] }),
+  bids: many(reverseAuctionBids),
+}));
+
+export const reverseAuctionBidsRelations = relations(reverseAuctionBids, ({ one }) => ({
+  auction: one(reverseAuctions, { fields: [reverseAuctionBids.auctionId], references: [reverseAuctions.id] }),
+  vendor: one(vendors, { fields: [reverseAuctionBids.vendorId], references: [vendors.id] }),
+}));
+
+export const wishlistsRelations = relations(wishlists, ({ one, many }) => ({
+  user: one(users, { fields: [wishlists.userId], references: [users.id] }),
+  matches: many(wishlistMatches),
+}));
+
+export const wishlistMatchesRelations = relations(wishlistMatches, ({ one }) => ({
+  wishlist: one(wishlists, { fields: [wishlistMatches.wishlistId], references: [wishlists.id] }),
+  lead: one(leads, { fields: [wishlistMatches.leadId], references: [leads.id] }),
+}));
+
+export const leadSharesRelations = relations(leadShares, ({ one, many }) => ({
+  owner: one(users, { fields: [leadShares.ownerUserId], references: [users.id] }),
+  lead: one(leads, { fields: [leadShares.leadId], references: [leads.id] }),
+  members: many(leadShareMembers),
+}));
+
+export const leadShareMembersRelations = relations(leadShareMembers, ({ one }) => ({
+  share: one(leadShares, { fields: [leadShareMembers.shareId], references: [leadShares.id] }),
+  member: one(users, { fields: [leadShareMembers.memberUserId], references: [users.id] }),
+}));
+
+export const vendorReviewsRelations = relations(vendorReviews, ({ one }) => ({
+  vendor: one(vendors, { fields: [vendorReviews.vendorId], references: [vendors.id] }),
+  reviewer: one(users, { fields: [vendorReviews.reviewerUserId], references: [users.id] }),
+  order: one(orders, { fields: [vendorReviews.orderId], references: [orders.id] }),
+}));
+
+export const webinarsRelations = relations(webinars, ({ many }) => ({
+  registrations: many(webinarRegistrations),
+}));
+
+export const webinarRegistrationsRelations = relations(webinarRegistrations, ({ one }) => ({
+  webinar: one(webinars, { fields: [webinarRegistrations.webinarId], references: [webinars.id] }),
+  user: one(users, { fields: [webinarRegistrations.userId], references: [users.id] }),
+}));
+
+export const affiliatesRelations = relations(affiliates, ({ one, many }) => ({
+  user: one(users, { fields: [affiliates.userId], references: [users.id] }),
+  payouts: many(affiliatePayouts),
+}));
+
+export const affiliatePayoutsRelations = relations(affiliatePayouts, ({ one }) => ({
+  affiliate: one(affiliates, { fields: [affiliatePayouts.affiliateId], references: [affiliates.id] }),
+}));
+
+export const publicWebhooksRelations = relations(publicWebhooks, ({ one, many }) => ({
+  org: one(organizations, { fields: [publicWebhooks.orgId], references: [organizations.id] }),
+  deliveries: many(webhookDeliveries),
+}));
+
+export const webhookDeliveriesRelations = relations(webhookDeliveries, ({ one }) => ({
+  webhook: one(publicWebhooks, { fields: [webhookDeliveries.webhookId], references: [publicWebhooks.id] }),
+}));
+
+export const leadOptionsRelations = relations(leadOptions, ({ one, many }) => ({
+  writer: one(vendors, { fields: [leadOptions.writerVendorId], references: [vendors.id] }),
+  contracts: many(leadOptionContracts),
+}));
+
+export const leadOptionContractsRelations = relations(leadOptionContracts, ({ one }) => ({
+  option: one(leadOptions, { fields: [leadOptionContracts.optionId], references: [leadOptions.id] }),
+  holder: one(users, { fields: [leadOptionContracts.holderUserId], references: [users.id] }),
+  exerciseLead: one(leads, { fields: [leadOptionContracts.exerciseLeadId], references: [leads.id] }),
+}));
+
+// ══════════════════════════════════════════════════════════════════════════
+// Wave 12a — Type exports + insert schemas
+// ══════════════════════════════════════════════════════════════════════════
+export type InsertCreditLine = typeof creditLines.$inferInsert;
+export type CreditLine = typeof creditLines.$inferSelect;
+export type InsertCreditRepayment = typeof creditRepayments.$inferInsert;
+export type CreditRepayment = typeof creditRepayments.$inferSelect;
+export type InsertCommissionEscrow = typeof commissionEscrows.$inferInsert;
+export type CommissionEscrow = typeof commissionEscrows.$inferSelect;
+export type InsertPayPerCloseOrder = typeof payPerCloseOrders.$inferInsert;
+export type PayPerCloseOrder = typeof payPerCloseOrders.$inferSelect;
+export type InsertRefundInsurancePolicy = typeof refundInsurancePolicies.$inferInsert;
+export type RefundInsurancePolicy = typeof refundInsurancePolicies.$inferSelect;
+export type InsertWalletCard = typeof walletCards.$inferInsert;
+export type WalletCard = typeof walletCards.$inferSelect;
+
+export type InsertDoiComplaint = typeof doiComplaints.$inferInsert;
+export type DoiComplaint = typeof doiComplaints.$inferSelect;
+export type InsertDefensePacket = typeof defensePackets.$inferInsert;
+export type DefensePacket = typeof defensePackets.$inferSelect;
+export type InsertComplianceCertification = typeof complianceCertifications.$inferInsert;
+export type ComplianceCertification = typeof complianceCertifications.$inferSelect;
+export type InsertCmsFiling = typeof cmsFilings.$inferInsert;
+export type CmsFiling = typeof cmsFilings.$inferSelect;
+export type InsertPiiRetentionPolicy = typeof piiRetentionPolicies.$inferInsert;
+export type PiiRetentionPolicy = typeof piiRetentionPolicies.$inferSelect;
+export type InsertTcpaWatchdogEvent = typeof tcpaWatchdogEvents.$inferInsert;
+export type TcpaWatchdogEvent = typeof tcpaWatchdogEvents.$inferSelect;
+
+export type InsertReverseAuction = typeof reverseAuctions.$inferInsert;
+export type ReverseAuction = typeof reverseAuctions.$inferSelect;
+export type InsertReverseAuctionBid = typeof reverseAuctionBids.$inferInsert;
+export type ReverseAuctionBid = typeof reverseAuctionBids.$inferSelect;
+export type InsertWishlist = typeof wishlists.$inferInsert;
+export type Wishlist = typeof wishlists.$inferSelect;
+export type InsertWishlistMatch = typeof wishlistMatches.$inferInsert;
+export type WishlistMatch = typeof wishlistMatches.$inferSelect;
+export type InsertLeadTradeInCredit = typeof leadTradeInCredits.$inferInsert;
+export type LeadTradeInCredit = typeof leadTradeInCredits.$inferSelect;
+export type InsertLeadShare = typeof leadShares.$inferInsert;
+export type LeadShare = typeof leadShares.$inferSelect;
+export type InsertLeadShareMember = typeof leadShareMembers.$inferInsert;
+export type LeadShareMember = typeof leadShareMembers.$inferSelect;
+export type InsertLeadXrayStats = typeof leadXrayStats.$inferInsert;
+export type LeadXrayStats = typeof leadXrayStats.$inferSelect;
+export type InsertVendorReview = typeof vendorReviews.$inferInsert;
+export type VendorReview = typeof vendorReviews.$inferSelect;
+export type InsertAgentStreak = typeof agentStreaks.$inferInsert;
+export type AgentStreak = typeof agentStreaks.$inferSelect;
+export type InsertDailyChallenge = typeof dailyChallenges.$inferInsert;
+export type DailyChallenge = typeof dailyChallenges.$inferSelect;
+export type InsertAgentAchievement = typeof agentAchievements.$inferInsert;
+export type AgentAchievement = typeof agentAchievements.$inferSelect;
+export type InsertWinsFeedPost = typeof winsFeedPosts.$inferInsert;
+export type WinsFeedPost = typeof winsFeedPosts.$inferSelect;
+
+export type InsertVideoCallSession = typeof videoCallSessions.$inferInsert;
+export type VideoCallSession = typeof videoCallSessions.$inferSelect;
+export type InsertVoiceClone = typeof voiceClones.$inferInsert;
+export type VoiceClone = typeof voiceClones.$inferSelect;
+export type InsertLeadAudioTour = typeof leadAudioTours.$inferInsert;
+export type LeadAudioTour = typeof leadAudioTours.$inferSelect;
+export type InsertSentimentSnapshot = typeof sentimentSnapshots.$inferInsert;
+export type SentimentSnapshot = typeof sentimentSnapshots.$inferSelect;
+
+export type InsertQuoteWidget = typeof quoteWidgets.$inferInsert;
+export type QuoteWidget = typeof quoteWidgets.$inferSelect;
+export type InsertLandingPage = typeof landingPages.$inferInsert;
+export type LandingPage = typeof landingPages.$inferSelect;
+export type InsertProvisionedPhoneNumber = typeof provisionedPhoneNumbers.$inferInsert;
+export type ProvisionedPhoneNumber = typeof provisionedPhoneNumbers.$inferSelect;
+
+export type InsertMediscoreApiKey = typeof mediscoreApiKeys.$inferInsert;
+export type MediscoreApiKey = typeof mediscoreApiKeys.$inferSelect;
+export type InsertMediscoreApiUsage = typeof mediscoreApiUsage.$inferInsert;
+export type MediscoreApiUsage = typeof mediscoreApiUsage.$inferSelect;
+export type InsertDataProduct = typeof dataProducts.$inferInsert;
+export type DataProduct = typeof dataProducts.$inferSelect;
+export type InsertDataProductSubscription = typeof dataProductSubscriptions.$inferInsert;
+export type DataProductSubscription = typeof dataProductSubscriptions.$inferSelect;
+
+export type InsertWebinar = typeof webinars.$inferInsert;
+export type Webinar = typeof webinars.$inferSelect;
+export type InsertWebinarRegistration = typeof webinarRegistrations.$inferInsert;
+export type WebinarRegistration = typeof webinarRegistrations.$inferSelect;
+export type InsertNewsBrief = typeof newsBriefs.$inferInsert;
+export type NewsBrief = typeof newsBriefs.$inferSelect;
+export type InsertAffiliate = typeof affiliates.$inferInsert;
+export type Affiliate = typeof affiliates.$inferSelect;
+export type InsertAffiliatePayout = typeof affiliatePayouts.$inferInsert;
+export type AffiliatePayout = typeof affiliatePayouts.$inferSelect;
+export type InsertMentorMatch = typeof mentorMatches.$inferInsert;
+export type MentorMatch = typeof mentorMatches.$inferSelect;
+export type InsertAgentCertification = typeof agentCertifications.$inferInsert;
+export type AgentCertification = typeof agentCertifications.$inferSelect;
+
+export type InsertPublicWebhook = typeof publicWebhooks.$inferInsert;
+export type PublicWebhook = typeof publicWebhooks.$inferSelect;
+export type InsertWebhookDelivery = typeof webhookDeliveries.$inferInsert;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type InsertSdkInstallMetric = typeof sdkInstallMetrics.$inferInsert;
+export type SdkInstallMetric = typeof sdkInstallMetrics.$inferSelect;
+
+export type InsertObituarySignal = typeof obituarySignals.$inferInsert;
+export type ObituarySignal = typeof obituarySignals.$inferSelect;
+export type InsertLeadOption = typeof leadOptions.$inferInsert;
+export type LeadOption = typeof leadOptions.$inferSelect;
+export type InsertLeadOptionContract = typeof leadOptionContracts.$inferInsert;
+export type LeadOptionContract = typeof leadOptionContracts.$inferSelect;
+export type InsertDirectMailOrder = typeof directMailOrders.$inferInsert;
+export type DirectMailOrder = typeof directMailOrders.$inferSelect;
+export type InsertCarrierDirectPipeline = typeof carrierDirectPipelines.$inferInsert;
+export type CarrierDirectPipeline = typeof carrierDirectPipelines.$inferSelect;
+export type InsertLanguagePack = typeof languagePacks.$inferInsert;
+export type LanguagePack = typeof languagePacks.$inferSelect;
+
+export const insertCreditLineSchema = createInsertSchema(creditLines);
+export const insertCreditRepaymentSchema = createInsertSchema(creditRepayments);
+export const insertCommissionEscrowSchema = createInsertSchema(commissionEscrows);
+export const insertPayPerCloseOrderSchema = createInsertSchema(payPerCloseOrders);
+export const insertRefundInsurancePolicySchema = createInsertSchema(refundInsurancePolicies);
+export const insertWalletCardSchema = createInsertSchema(walletCards);
+export const insertDoiComplaintSchema = createInsertSchema(doiComplaints);
+export const insertDefensePacketSchema = createInsertSchema(defensePackets);
+export const insertComplianceCertificationSchema = createInsertSchema(complianceCertifications);
+export const insertCmsFilingSchema = createInsertSchema(cmsFilings);
+export const insertPiiRetentionPolicySchema = createInsertSchema(piiRetentionPolicies);
+export const insertTcpaWatchdogEventSchema = createInsertSchema(tcpaWatchdogEvents);
+export const insertReverseAuctionSchema = createInsertSchema(reverseAuctions);
+export const insertReverseAuctionBidSchema = createInsertSchema(reverseAuctionBids);
+export const insertWishlistSchema = createInsertSchema(wishlists);
+export const insertWishlistMatchSchema = createInsertSchema(wishlistMatches);
+export const insertLeadTradeInCreditSchema = createInsertSchema(leadTradeInCredits);
+export const insertLeadShareSchema = createInsertSchema(leadShares);
+export const insertLeadShareMemberSchema = createInsertSchema(leadShareMembers);
+export const insertLeadXrayStatsSchema = createInsertSchema(leadXrayStats);
+export const insertVendorReviewSchema = createInsertSchema(vendorReviews);
+export const insertAgentStreakSchema = createInsertSchema(agentStreaks);
+export const insertDailyChallengeSchema = createInsertSchema(dailyChallenges);
+export const insertAgentAchievementSchema = createInsertSchema(agentAchievements);
+export const insertWinsFeedPostSchema = createInsertSchema(winsFeedPosts);
+export const insertVideoCallSessionSchema = createInsertSchema(videoCallSessions);
+export const insertVoiceCloneSchema = createInsertSchema(voiceClones);
+export const insertLeadAudioTourSchema = createInsertSchema(leadAudioTours);
+export const insertSentimentSnapshotSchema = createInsertSchema(sentimentSnapshots);
+export const insertQuoteWidgetSchema = createInsertSchema(quoteWidgets);
+export const insertLandingPageSchema = createInsertSchema(landingPages);
+export const insertProvisionedPhoneNumberSchema = createInsertSchema(provisionedPhoneNumbers);
+export const insertMediscoreApiKeySchema = createInsertSchema(mediscoreApiKeys);
+export const insertMediscoreApiUsageSchema = createInsertSchema(mediscoreApiUsage);
+export const insertDataProductSchema = createInsertSchema(dataProducts);
+export const insertDataProductSubscriptionSchema = createInsertSchema(dataProductSubscriptions);
+export const insertWebinarSchema = createInsertSchema(webinars);
+export const insertWebinarRegistrationSchema = createInsertSchema(webinarRegistrations);
+export const insertNewsBriefSchema = createInsertSchema(newsBriefs);
+export const insertAffiliateSchema = createInsertSchema(affiliates);
+export const insertAffiliatePayoutSchema = createInsertSchema(affiliatePayouts);
+export const insertMentorMatchSchema = createInsertSchema(mentorMatches);
+export const insertAgentCertificationSchema = createInsertSchema(agentCertifications);
+export const insertPublicWebhookSchema = createInsertSchema(publicWebhooks);
+export const insertWebhookDeliverySchema = createInsertSchema(webhookDeliveries);
+export const insertSdkInstallMetricSchema = createInsertSchema(sdkInstallMetrics);
+export const insertObituarySignalSchema = createInsertSchema(obituarySignals);
+export const insertLeadOptionSchema = createInsertSchema(leadOptions);
+export const insertLeadOptionContractSchema = createInsertSchema(leadOptionContracts);
+export const insertDirectMailOrderSchema = createInsertSchema(directMailOrders);
+export const insertCarrierDirectPipelineSchema = createInsertSchema(carrierDirectPipelines);
+export const insertLanguagePackSchema = createInsertSchema(languagePacks);

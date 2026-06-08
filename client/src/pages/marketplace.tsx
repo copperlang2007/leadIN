@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
+import { LiveAuctionBanner } from "@/components/live-auction-banner";
 import type { Lead, Order } from "@/lib/types";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -51,7 +52,44 @@ export default function Marketplace() {
   const [isDetailsPurchasing, setIsDetailsPurchasing] = useState(false);
 
   // Subscribe to shared WebSocket context for real-time new leads (no new connection created)
-  const { subscribeToNewLeads } = useWebSocketContext();
+  const { subscribeToNewLeads, subscribeToAuctions } = useWebSocketContext();
+
+  // K1 — Live auction banners. Keyed by leadId so multiple concurrent
+  // auctions can be in flight. We only show a banner if the lead is in
+  // the candidate set for *this* user; the server enforces eligibility
+  // when the claim POST is received, but the client check spares users
+  // a useless button click.
+  const [activeAuctions, setActiveAuctions] = useState<Record<number, { closesAt: string }>>({});
+
+  useEffect(() => {
+    const unsubscribe = subscribeToAuctions((msg: any) => {
+      if (msg.type === "auction_opened") {
+        if (user?.id && Array.isArray(msg.candidateUserIds) && !msg.candidateUserIds.includes(user.id)) {
+          return; // not eligible — skip
+        }
+        setActiveAuctions(prev => ({ ...prev, [msg.leadId]: { closesAt: msg.closesAt } }));
+      } else if (msg.type === "auction_resolved") {
+        setActiveAuctions(prev => {
+          const next = { ...prev };
+          delete next[msg.leadId];
+          return next;
+        });
+        queryClient.invalidateQueries({
+          predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads"),
+        });
+      }
+    });
+    return unsubscribe;
+  }, [subscribeToAuctions, user?.id, queryClient]);
+
+  const handleAuctionExpired = (leadId: number) => {
+    setActiveAuctions(prev => {
+      if (!(leadId in prev)) return prev;
+      const next = { ...prev };
+      delete next[leadId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     const unsubscribe = subscribeToNewLeads((lead: any) => {
@@ -425,6 +463,19 @@ export default function Marketplace() {
                 </div>
               </div>
             </div>
+
+            {Object.keys(activeAuctions).length > 0 && (
+              <div className="mb-4 space-y-2" data-testid="live-auctions">
+                {Object.entries(activeAuctions).map(([leadId, info]) => (
+                  <LiveAuctionBanner
+                    key={leadId}
+                    leadId={Number(leadId)}
+                    closesAt={info.closesAt}
+                    onExpired={() => handleAuctionExpired(Number(leadId))}
+                  />
+                ))}
+              </div>
+            )}
 
             {isLoading ? (
               <div className="flex items-center justify-center py-20">

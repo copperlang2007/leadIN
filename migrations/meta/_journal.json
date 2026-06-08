@@ -36,6 +36,13 @@
       "when": 1780778287727,
       "tag": "0004_killer_features",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780880385248,
+      "tag": "0005_second_batch",
+      "breakpoints": true
     }
   ]
 }

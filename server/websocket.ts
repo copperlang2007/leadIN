@@ -165,8 +165,58 @@ export function broadcastLeadAssignment(payload: {
   });
 }
 
+// ──────────────────────────────────────────────────────
+// K1 — Speed-to-Lead auction broadcasts.
+// `auction_opened` fires when a high-MediScore lead is parked for the
+// 10s claim window. `auction_resolved` fires once the resolver picks a
+// winner (or determines no eligible claim arrived).
+// ──────────────────────────────────────────────────────
+export function broadcastAuctionOpened(payload: {
+  leadId: number;
+  orgId: string;
+  candidateUserIds: string[];
+  windowMs: number;
+  opensAt: string;
+  closesAt: string;
+}) {
+  if (!wss) return;
+  const message = JSON.stringify({ type: "auction_opened", ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
+export function broadcastAuctionResolved(payload: {
+  leadId: number;
+  winnerUserId: string | null;
+  matchScore: number;
+  reasons: string[];
+  outcome: "won" | "expired" | "fallback";
+}) {
+  if (!wss) return;
+  const message = JSON.stringify({ type: "auction_resolved", ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
 export function getActiveConnections(): number {
   return activeConnections;
+}
+
+// Wave 6b (K3) — Dialer AI assist whisper. Broadcast to all connected
+// sockets; the client filters by callLogId so only the agent on that call
+// renders the suggestion.
+export function broadcastAssistSuggestion(payload: {
+  callLogId: number;
+  suggestion: string;
+  triggerPhrase: string;
+}) {
+  if (!wss) return;
+  const message = JSON.stringify({ type: "assist_suggestion", ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
 }
 
 // Iterate every tracked client and request a graceful close with code 1001

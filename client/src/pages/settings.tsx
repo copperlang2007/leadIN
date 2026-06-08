@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,33 @@ import {
   Calendar,
   BadgeCheck,
   Trash2,
+  Plug,
 } from "lucide-react";
+
+interface OrgList {
+  activeOrgId: string | null;
+  memberships: { orgId: string; role: string; org: { id: string; name: string; slug: string } }[];
+}
+
+interface CrmConnection {
+  id: number;
+  provider: string;
+  status: string;
+  createdAt: string | null;
+  externalAccountId: string | null;
+}
+
+interface CrmConnectionsResponse {
+  connections: CrmConnection[];
+  providers: string[];
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  hubspot: "HubSpot",
+  salesforce: "Salesforce",
+  ghl: "GoHighLevel",
+  pipedrive: "Pipedrive",
+};
 
 const FUND_AMOUNTS = [25, 50, 100, 250];
 
@@ -100,6 +126,53 @@ export default function SettingsPage() {
     onError: () => {
       toast({ title: "Failed to update", variant: "destructive" });
     },
+  });
+
+  // CRM Integrations (Wave 6 K4) — scoped to the user's active org.
+  const { data: orgs } = useQuery<OrgList>({ queryKey: ["/api/orgs"] });
+  const activeOrgId = orgs?.activeOrgId ?? null;
+  const activeMembership = orgs?.memberships.find(m => m.orgId === activeOrgId);
+  const canManageCrm = !!activeMembership && (activeMembership.role === "owner" || activeMembership.role === "admin");
+
+  const { data: crm } = useQuery<CrmConnectionsResponse>({
+    queryKey: [`/api/orgs/${activeOrgId}/crm-connections`],
+    enabled: !!activeOrgId,
+  });
+
+  const connectCrmMutation = useMutation({
+    mutationFn: async (provider: string) => {
+      const res = await fetch(`/api/orgs/${activeOrgId}/crm-connections`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        // Dev stub: send a placeholder token. The real OAuth flow will
+        // POST back the exchanged access token instead.
+        body: JSON.stringify({ provider, accessToken: `dev-token-${provider}-${Date.now()}` }),
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Connect failed");
+      return res.json();
+    },
+    onSuccess: (_, provider) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orgs/${activeOrgId}/crm-connections`] });
+      toast({ title: `${PROVIDER_LABELS[provider] ?? provider} connected` });
+    },
+    onError: (e: Error) => toast({ title: "Connect failed", description: e.message, variant: "destructive" }),
+  });
+
+  const disconnectCrmMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/orgs/${activeOrgId}/crm-connections/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error((await res.json()).message || "Disconnect failed");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orgs/${activeOrgId}/crm-connections`] });
+      toast({ title: "CRM disconnected" });
+    },
+    onError: (e: Error) => toast({ title: "Disconnect failed", description: e.message, variant: "destructive" }),
   });
 
   const deleteAccountMutation = useMutation({
@@ -394,6 +467,71 @@ export default function SettingsPage() {
             </a>
           </CardContent>
         </Card>
+
+        {/* CRM Integrations (Wave 6 K4) */}
+        {activeOrgId && (
+          <Card data-testid="card-crm-integrations">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Plug className="h-4 w-4 text-primary" />
+                CRM Integrations
+              </CardTitle>
+              <CardDescription>
+                Auto-sync purchased leads to your CRM as contacts + deals. Deal-close
+                events flow back to update agent reputation.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {(crm?.providers ?? ["hubspot", "salesforce", "ghl", "pipedrive"]).map((provider) => {
+                const connected = crm?.connections.find(c => c.provider === provider);
+                return (
+                  <div
+                    key={provider}
+                    className="flex items-center justify-between rounded-lg border px-4 py-3"
+                    data-testid={`row-crm-${provider}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium">
+                        {PROVIDER_LABELS[provider] ?? provider}
+                      </span>
+                      {connected && (
+                        <Badge variant="secondary" className="gap-1 text-xs">
+                          <CheckCircle className="h-3 w-3 text-green-500" />
+                          Connected
+                        </Badge>
+                      )}
+                    </div>
+                    {connected ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!canManageCrm || disconnectCrmMutation.isPending}
+                        onClick={() => disconnectCrmMutation.mutate(connected.id)}
+                        data-testid={`button-disconnect-${provider}`}
+                      >
+                        Disconnect
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        disabled={!canManageCrm || connectCrmMutation.isPending}
+                        onClick={() => connectCrmMutation.mutate(provider)}
+                        data-testid={`button-connect-${provider}`}
+                      >
+                        Connect
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+              {!canManageCrm && (
+                <p className="text-xs text-muted-foreground">
+                  Only org owners and admins can manage CRM connections.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Delete Account */}
         <Card className="border-destructive/30" data-testid="card-delete-account">

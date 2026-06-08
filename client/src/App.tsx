@@ -22,6 +22,7 @@ import OrgAdmin from "@/pages/org-admin";
 import Analytics from "@/pages/analytics";
 import Pricing from "@/pages/pricing";
 import SavedLists from "@/pages/saved-lists";
+import TcpaPage from "@/pages/tcpa";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -52,6 +53,7 @@ function Router() {
       <Route path="/analytics" component={Analytics} />
       <Route path="/pricing" component={Pricing} />
       <Route path="/saved" component={SavedLists} />
+      <Route path="/tcpa" component={TcpaPage} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
       <Route component={NotFound} />

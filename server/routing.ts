@@ -20,6 +20,10 @@ export interface AgentCandidate {
   conversionRate: number; // 0..1
   acceptingLeads: boolean;
   verified: boolean;
+  // Optional — passed in by `routeLeadToBestAgent` after a SQL aggregate.
+  // Defaults to 0 so existing callers/tests don't have to know about it.
+  // Clamped at the caller to [-50, 100].
+  reputationScore?: number;
 }
 
 export interface RankedCandidate {
@@ -77,6 +81,16 @@ export function rankCandidates(lead: RoutableLead, candidates: AgentCandidate[])
     if (a.appointedCarriers.some(c => c.toLowerCase() === lead.source.toLowerCase())) {
       score += 5;
       reasons.push(`carrier:${lead.source}`);
+    }
+
+    // Reputation contributes at half-weight so a rep range of [-50, 100]
+    // translates to a routing nudge of [-25, +50] — meaningful but not
+    // dominant against territory/conversion-rate signal.
+    const rep = a.reputationScore ?? 0;
+    if (rep !== 0) {
+      const repBonus = Math.round(rep * 0.5);
+      score += repBonus;
+      reasons.push(`reputation:${rep}`);
     }
 
     if (!best || score > best.score) {
