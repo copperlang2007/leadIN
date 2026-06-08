@@ -26,6 +26,11 @@ import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
 import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
 import { startNiprRenewalCron, verifyAgentLicense } from "./niprSync";
+import {
+  attemptDeliveryForLead,
+  startSmartMatchCycleCron,
+  SMART_MATCH_TIERS,
+} from "./smartMatch";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
@@ -144,6 +149,8 @@ export async function registerRoutes(
   startDncRecheckCron();
   startEmailDigestCron();
   startNiprRenewalCron();
+  // Wave 7 (T3) — daily reset of smart-match monthly cycles.
+  startSmartMatchCycleCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -902,6 +909,97 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
+  // Smart-Match Subscriptions (Wave 7 — T3)
+  //
+  // Flat-rate monthly plan: "give me N matching leads/month". Subscriptions
+  // are created against a fixed tier table; the ingest path auto-delivers
+  // matching leads to the highest-remaining-quota subscriber.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/smart-match/tiers", (_req, res) => {
+    res.json({ tiers: SMART_MATCH_TIERS });
+  });
+
+  app.post("/api/smart-match", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const quotaRaw = Number(req.body?.monthlyLeadQuota);
+      const filterRaw = req.body?.filterCriteria;
+      if (!Number.isFinite(quotaRaw)) {
+        return res.status(400).json({ message: "monthlyLeadQuota required" });
+      }
+      const tier = SMART_MATCH_TIERS.find(t => t.quota === quotaRaw);
+      if (!tier) {
+        return res.status(400).json({
+          message: `Invalid quota; must be one of: ${SMART_MATCH_TIERS.map(t => t.quota).join(", ")}`,
+        });
+      }
+      if (filterRaw && (typeof filterRaw !== "object" || Array.isArray(filterRaw))) {
+        return res.status(400).json({ message: "filterCriteria must be an object" });
+      }
+
+      // Rate-limit subscription creation to thwart spam-create / mis-clicks.
+      if (!(await takeToken(`smartmatch-create:${userId}`, 5, 1 / 60))) {
+        return res.status(429).json({ message: "Too many subscription attempts" });
+      }
+
+      const created = await storage.createSmartMatchSubscription({
+        agentUserId: userId,
+        monthlyLeadQuota: tier.quota,
+        monthlyPriceCents: tier.priceCents,
+        filterCriteria: (filterRaw ?? {}) as Record<string, unknown>,
+      });
+
+      recordAudit({
+        actorUserId: userId,
+        action: "smartmatch.create",
+        targetKind: "smart_match_subscription",
+        targetId: String(created.id),
+        metadata: { quota: tier.quota, priceCents: tier.priceCents },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.status(201).json(created);
+    } catch (err: any) {
+      console.error("Error creating smart-match subscription:", err);
+      res.status(500).json({ message: err?.message || "Failed to create subscription" });
+    }
+  });
+
+  app.get("/api/smart-match", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const subs = await storage.listSmartMatchSubscriptions(userId);
+      res.json(subs);
+    } catch (err: any) {
+      console.error("Error listing smart-match subscriptions:", err);
+      res.status(500).json({ message: err?.message || "Failed to list subscriptions" });
+    }
+  });
+
+  app.delete("/api/smart-match/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return res.status(400).json({ message: "Invalid subscription id" });
+      }
+      const cancelled = await storage.cancelSmartMatchSubscription(id, userId);
+      if (!cancelled) {
+        return res.status(404).json({ message: "Subscription not found" });
+      }
+      recordAudit({
+        actorUserId: userId,
+        action: "smartmatch.cancel",
+        targetKind: "smart_match_subscription",
+        targetId: String(id),
+      }).catch(err => console.error("[audit] failed:", err));
+      res.json(cancelled);
+    } catch (err: any) {
+      console.error("Error cancelling smart-match subscription:", err);
+      res.status(500).json({ message: err?.message || "Failed to cancel subscription" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
   // TCPA defense insurance (Wave 6b — K2)
   // ──────────────────────────────────────────────────────
   // Orgs hold at most one active policy at a time. Members file claims
@@ -1315,6 +1413,27 @@ export async function registerRoutes(
           }
         })
         .catch(err => console.error("Routing error:", err));
+
+      // T3 — smart-match flat-rate delivery. Best-effort; will no-op if the
+      // org routing engine already grabbed the lead, or if no active sub
+      // matches. We re-read the lead from storage so we see any state
+      // changes (e.g. assignedToUserId) that the routing engine wrote.
+      (async () => {
+        try {
+          const fresh = await storage.getLead(lead.id);
+          if (!fresh) return;
+          const delivery = await attemptDeliveryForLead(fresh);
+          if (delivery) {
+            broadcastLeadAssignment({
+              agentUserId: delivery.agentUserId,
+              leadId: lead.id,
+              matchScore: 100,
+            });
+          }
+        } catch (err: any) {
+          console.error("[smart-match] post-ingest delivery error:", err?.message);
+        }
+      })();
 
       res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
     } catch (error: any) {

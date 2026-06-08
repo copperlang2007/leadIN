@@ -30,6 +30,8 @@ import {
   crmSyncEvents,
   agentReputationEvents,
   leadTradeInCredits,
+  smartMatchSubscriptions,
+  type SmartMatchSubscription,
   type CallLog,
   type InsertCallLog,
   type Transcript,
@@ -412,6 +414,21 @@ export interface IStorage {
     expiresAt?: Date | null;
   }): Promise<LeadTradeInCredit>;
   redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T3) — smart-match subscriptions
+  // ──────────────────────────────────────────────────────
+  createSmartMatchSubscription(input: {
+    agentUserId: string;
+    orgId?: string | null;
+    monthlyLeadQuota: number;
+    monthlyPriceCents: number;
+    filterCriteria: Record<string, unknown>;
+  }): Promise<SmartMatchSubscription>;
+  listSmartMatchSubscriptions(userId?: string): Promise<SmartMatchSubscription[]>;
+  cancelSmartMatchSubscription(id: number, agentUserId: string): Promise<SmartMatchSubscription | null>;
+  decrementSmartMatchQuota(id: number): Promise<void>;
+  resetSmartMatchCycle(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2965,6 +2982,30 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async createSmartMatchSubscription(input: {
+    agentUserId: string;
+    orgId?: string | null;
+    monthlyLeadQuota: number;
+    monthlyPriceCents: number;
+    filterCriteria: Record<string, unknown>;
+  }): Promise<SmartMatchSubscription> {
+    const [row] = await db
+      .insert(smartMatchSubscriptions)
+      .values({
+        agentUserId: input.agentUserId,
+        orgId: input.orgId ?? null,
+        monthlyLeadQuota: input.monthlyLeadQuota,
+        monthlyPriceCents: input.monthlyPriceCents,
+        filterCriteria: input.filterCriteria,
+        status: "active",
+        cyclesDelivered: 0,
+        leadsDeliveredThisCycle: 0,
+        cycleStartedAt: new Date(),
+      })
+      .returning();
+    return row;
+  }
+
   async redeemTradeInCredit(creditId: number, leadId: number): Promise<LeadTradeInCredit> {
     // Mark redeemed atomically. The actual wallet discount is applied by
     // the route layer (which then calls purchaseLead with reduced balance
@@ -2984,6 +3025,60 @@ export class DatabaseStorage implements IStorage {
     }
     void leadId;
     return row;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 7 (T3) — smart-match subscriptions
+  // ──────────────────────────────────────────────────────
+  async listSmartMatchSubscriptions(userId?: string): Promise<SmartMatchSubscription[]> {
+    // Active-only, ordered by id for determinism. The picker tolerates any
+    // order but tests + UI expect a stable shape.
+    const conditions = userId
+      ? and(eq(smartMatchSubscriptions.status, "active"), eq(smartMatchSubscriptions.agentUserId, userId))
+      : eq(smartMatchSubscriptions.status, "active");
+    return await db
+      .select()
+      .from(smartMatchSubscriptions)
+      .where(conditions)
+      .orderBy(smartMatchSubscriptions.id);
+  }
+
+  async cancelSmartMatchSubscription(id: number, agentUserId: string): Promise<SmartMatchSubscription | null> {
+    // Only the owning agent can cancel — guards against IDOR via the path
+    // param. Returns null when the row doesn't exist or belongs to someone
+    // else, so the route can map that to 404.
+    const [row] = await db
+      .update(smartMatchSubscriptions)
+      .set({ status: "cancelled" })
+      .where(
+        and(
+          eq(smartMatchSubscriptions.id, id),
+          eq(smartMatchSubscriptions.agentUserId, agentUserId),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  async decrementSmartMatchQuota(id: number): Promise<void> {
+    // "Decrement" in spec terms = bump the delivered counter by one. The
+    // remaining-quota view is computed as quota - delivered, so this is
+    // the right column to nudge.
+    await db
+      .update(smartMatchSubscriptions)
+      .set({ leadsDeliveredThisCycle: sql`${smartMatchSubscriptions.leadsDeliveredThisCycle} + 1` })
+      .where(eq(smartMatchSubscriptions.id, id));
+  }
+
+  async resetSmartMatchCycle(id: number): Promise<void> {
+    await db
+      .update(smartMatchSubscriptions)
+      .set({
+        leadsDeliveredThisCycle: 0,
+        cyclesDelivered: sql`${smartMatchSubscriptions.cyclesDelivered} + 1`,
+        cycleStartedAt: new Date(),
+      })
+      .where(eq(smartMatchSubscriptions.id, id));
   }
 }
 
