@@ -13,6 +13,7 @@ import {
 import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections, broadcastAssistSuggestion } from "./websocket";
 import { startCallForLead, processTranscriptChunk } from "./dialer";
+import { gateCallAgainstDnc } from "./dncAtDial";
 import { verifyWebhook as verifyTwilioWebhook, twilioWebhookUrl, isTwilioLive } from "./lib/twilio";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
@@ -2429,6 +2430,16 @@ ${allUrls
       const leadId = Number(req.body?.leadId);
       if (!Number.isFinite(leadId) || leadId <= 0) {
         return res.status(400).json({ message: "leadId is required" });
+      }
+      // Wave 7 (T8) — real-time DNC re-check right before dialling. If the
+      // phone is now on the suppression list we refuse the call and have
+      // already updated lead.dncFlagged + written an audit row.
+      const gate = await gateCallAgainstDnc(leadId, userId);
+      if (!gate.allowed) {
+        return res.status(403).json({
+          message: gate.reason || "call blocked by DNC",
+          dncBlocked: true,
+        });
       }
       const result = await startCallForLead(userId, leadId);
       res.json(result);
