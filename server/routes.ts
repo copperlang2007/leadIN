@@ -717,6 +717,193 @@ export async function registerRoutes(
   });
 
   // ──────────────────────────────────────────────────────
+  // TCPA defense insurance (Wave 6b — K2)
+  // ──────────────────────────────────────────────────────
+  // Orgs hold at most one active policy at a time. Members file claims
+  // against it for litigation/defense costs; platform admins approve or
+  // deny. Per-claim and aggregate limits are enforced in storage.
+  app.post("/api/orgs/:orgId/tcpa-policy", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+
+      const { carrierName, perClaimLimitCents, aggregateLimitCents, endsAt } = req.body ?? {};
+      const carrier = typeof carrierName === "string" ? carrierName.trim() || null : null;
+      const perClaim = perClaimLimitCents !== undefined ? Number(perClaimLimitCents) : undefined;
+      const aggregate = aggregateLimitCents !== undefined ? Number(aggregateLimitCents) : undefined;
+      if (perClaim !== undefined && (!Number.isFinite(perClaim) || perClaim < 0)) {
+        return res.status(400).json({ message: "perClaimLimitCents must be a non-negative integer" });
+      }
+      if (aggregate !== undefined && (!Number.isFinite(aggregate) || aggregate < 0)) {
+        return res.status(400).json({ message: "aggregateLimitCents must be a non-negative integer" });
+      }
+      let endsAtDate: Date | null = null;
+      if (endsAt) {
+        const d = new Date(endsAt);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ message: "endsAt must be a valid date" });
+        }
+        endsAtDate = d;
+      }
+
+      const policy = await storage.createTcpaPolicy({
+        orgId,
+        carrierName: carrier,
+        perClaimLimitCents: perClaim,
+        aggregateLimitCents: aggregate,
+        endsAt: endsAtDate,
+      });
+
+      recordAudit({
+        actorUserId: userId,
+        orgId,
+        action: "tcpa_policy.create",
+        targetKind: "tcpa_policy",
+        targetId: String(policy.id),
+        metadata: {
+          carrierName: policy.carrierName,
+          perClaimLimitCents: policy.perClaimLimitCents,
+          aggregateLimitCents: policy.aggregateLimitCents,
+        },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.status(201).json(policy);
+    } catch (err: any) {
+      console.error("Error creating TCPA policy:", err);
+      res.status(500).json({ message: err?.message || "Failed to create policy" });
+    }
+  });
+
+  app.get("/api/orgs/:orgId/tcpa-policy", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) {
+        return res.status(403).json({ message: "Not a member of this organization" });
+      }
+      const policy = await storage.getActivePolicyForOrg(orgId);
+      res.json(policy ?? null);
+    } catch (err: any) {
+      console.error("Error fetching TCPA policy:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch policy" });
+    }
+  });
+
+  app.post("/api/orgs/:orgId/tcpa-claims", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) {
+        return res.status(403).json({ message: "Not a member of this organization" });
+      }
+
+      const claimReason = typeof req.body?.claimReason === "string" ? req.body.claimReason.trim() : "";
+      const amountClaimedRaw = Number(req.body?.amountClaimedCents);
+      const orderIdRaw = req.body?.orderId;
+      if (!claimReason) {
+        return res.status(400).json({ message: "claimReason is required" });
+      }
+      if (!Number.isFinite(amountClaimedRaw) || amountClaimedRaw <= 0) {
+        return res.status(400).json({ message: "amountClaimedCents must be a positive integer" });
+      }
+      const orderId = orderIdRaw === undefined || orderIdRaw === null || orderIdRaw === ""
+        ? null
+        : Number(orderIdRaw);
+      if (orderId !== null && (!Number.isFinite(orderId) || orderId <= 0)) {
+        return res.status(400).json({ message: "orderId must be a positive integer if provided" });
+      }
+
+      const claim = await storage.fileTcpaClaim({
+        orgId,
+        agentUserId: userId,
+        claimReason,
+        amountClaimedCents: Math.floor(amountClaimedRaw),
+        orderId,
+      });
+      res.status(201).json(claim);
+    } catch (err: any) {
+      if (/no active TCPA policy/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      console.error("Error filing TCPA claim:", err);
+      res.status(500).json({ message: err?.message || "Failed to file claim" });
+    }
+  });
+
+  app.get("/api/orgs/:orgId/tcpa-claims", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (!role) {
+        return res.status(403).json({ message: "Not a member of this organization" });
+      }
+      const claims = await storage.listTcpaClaims(orgId);
+      res.json(claims);
+    } catch (err: any) {
+      console.error("Error listing TCPA claims:", err);
+      res.status(500).json({ message: err?.message || "Failed to list claims" });
+    }
+  });
+
+  app.post("/api/admin/tcpa-claims/:id/resolve", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (user?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const claimId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(claimId) || claimId <= 0) {
+        return res.status(400).json({ message: "Invalid claim id" });
+      }
+      const action = req.body?.action;
+      if (action !== "approved" && action !== "denied") {
+        return res.status(400).json({ message: "action must be 'approved' or 'denied'" });
+      }
+      let amountPaidCents: number | undefined;
+      if (action === "approved") {
+        const raw = Number(req.body?.amountPaidCents);
+        if (!Number.isFinite(raw) || raw <= 0) {
+          return res.status(400).json({ message: "amountPaidCents must be a positive integer for approvals" });
+        }
+        amountPaidCents = Math.floor(raw);
+      }
+
+      const updated = await storage.resolveTcpaClaim({ claimId, action, amountPaidCents });
+
+      recordAudit({
+        actorUserId: userId,
+        action: `tcpa_claim.${action === "approved" ? "approve" : "deny"}`,
+        targetKind: "tcpa_claim",
+        targetId: String(claimId),
+        metadata: {
+          policyId: updated.policyId,
+          amountClaimedCents: updated.amountClaimedCents,
+          amountPaidCents: updated.amountPaidCents,
+        },
+      }).catch(err => console.error("[audit] failed:", err));
+
+      res.json(updated);
+    } catch (err: any) {
+      if (/not found/i.test(err?.message ?? "")) {
+        return res.status(404).json({ message: err.message });
+      }
+      if (/cannot be re-resolved|aggregate limit|positive integer|Per-claim limit/i.test(err?.message ?? "")) {
+        return res.status(409).json({ message: err.message });
+      }
+      console.error("Error resolving TCPA claim:", err);
+      res.status(500).json({ message: err?.message || "Failed to resolve claim" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
   // Balance / Stripe Checkout Routes
   // ──────────────────────────────────────────────────────
   // Direct balance top-up is intentionally disabled.
