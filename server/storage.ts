@@ -23,6 +23,13 @@ import {
   leadDisputes,
   tcpaPolicies,
   tcpaClaims,
+  callLogs,
+  transcripts,
+  conversationAssists,
+  type CallLog,
+  type InsertCallLog,
+  type Transcript,
+  type ConversationAssist,
   type User,
   type UpsertUser,
   type UserProfile,
@@ -289,6 +296,30 @@ export interface IStorage {
     amountPaidCents?: number;
   }): Promise<TcpaClaim>;
   listTcpaClaims(orgId: string): Promise<TcpaClaim[]>;
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K3): dialer / call logs / transcripts / AI assists
+  // ──────────────────────────────────────────────────────
+  createCallLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    status: string;
+  }): Promise<CallLog>;
+  updateCallLog(
+    callLogId: number,
+    fields: Partial<Pick<InsertCallLog, "twilioSid" | "status" | "durationSec" | "recordingUrl" | "endedAt">>,
+  ): Promise<CallLog | undefined>;
+  getCallLogsForAgent(
+    agentUserId: string,
+    opts?: { leadId?: number; limit?: number },
+  ): Promise<CallLog[]>;
+  appendTranscript(callLogId: number, text: string): Promise<Transcript>;
+  recordConversationAssist(input: {
+    callLogId: number;
+    triggerPhrase: string;
+    suggestion: string;
+  }): Promise<ConversationAssist>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2318,6 +2349,92 @@ export class DatabaseStorage implements IStorage {
       .where(eq(tcpaPolicies.orgId, orgId))
       .orderBy(desc(tcpaClaims.filedAt));
     return rows.map((r) => r.claim);
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K3) — dialer storage methods
+  // ──────────────────────────────────────────────────────
+
+  async createCallLog(input: {
+    agentUserId: string;
+    leadId?: number | null;
+    twilioSid?: string | null;
+    status: string;
+  }): Promise<CallLog> {
+    const [row] = await db
+      .insert(callLogs)
+      .values({
+        agentUserId: input.agentUserId,
+        leadId: input.leadId ?? null,
+        twilioSid: input.twilioSid ?? null,
+        status: input.status,
+      })
+      .returning();
+    return row;
+  }
+
+  async updateCallLog(
+    callLogId: number,
+    fields: Partial<Pick<InsertCallLog, "twilioSid" | "status" | "durationSec" | "recordingUrl" | "endedAt">>,
+  ): Promise<CallLog | undefined> {
+    if (Object.keys(fields).length === 0) {
+      const [row] = await db.select().from(callLogs).where(eq(callLogs.id, callLogId));
+      return row;
+    }
+    const [row] = await db
+      .update(callLogs)
+      .set(fields)
+      .where(eq(callLogs.id, callLogId))
+      .returning();
+    return row;
+  }
+
+  async getCallLogsForAgent(
+    agentUserId: string,
+    opts: { leadId?: number; limit?: number } = {},
+  ): Promise<CallLog[]> {
+    const conditions: any[] = [eq(callLogs.agentUserId, agentUserId)];
+    if (typeof opts.leadId === "number") conditions.push(eq(callLogs.leadId, opts.leadId));
+    const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+    return await db
+      .select()
+      .from(callLogs)
+      .where(and(...conditions))
+      .orderBy(desc(callLogs.startedAt))
+      .limit(limit);
+  }
+
+  /**
+   * Append transcript text for a call. The schema has a UNIQUE constraint
+   * on call_log_id (one row per call) so we upsert: insert on first chunk,
+   * concat on subsequent chunks. Newlines separate utterances.
+   */
+  async appendTranscript(callLogId: number, text: string): Promise<Transcript> {
+    const [row] = await db
+      .insert(transcripts)
+      .values({ callLogId, text })
+      .onConflictDoUpdate({
+        target: transcripts.callLogId,
+        set: { text: sql`${transcripts.text} || '\n' || ${text}` },
+      })
+      .returning();
+    return row;
+  }
+
+  async recordConversationAssist(input: {
+    callLogId: number;
+    triggerPhrase: string;
+    suggestion: string;
+  }): Promise<ConversationAssist> {
+    const [row] = await db
+      .insert(conversationAssists)
+      .values({
+        callLogId: input.callLogId,
+        triggerPhrase: input.triggerPhrase,
+        suggestion: input.suggestion,
+      })
+      .returning();
+    return row;
   }
 }
 

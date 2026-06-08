@@ -11,7 +11,9 @@ import {
   createDisputeSchema,
 } from "@shared/schema";
 import { fromError } from "zod-validation-error";
-import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections } from "./websocket";
+import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections, broadcastAssistSuggestion } from "./websocket";
+import { startCallForLead, processTranscriptChunk } from "./dialer";
+import { verifyWebhook as verifyTwilioWebhook, twilioWebhookUrl, isTwilioLive } from "./lib/twilio";
 import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
@@ -2244,6 +2246,118 @@ ${allUrls
       res.send(xml);
     } catch (error) {
       res.status(500).send("<?xml version='1.0'?><urlset/>");
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Wave 6b (K3) — Click-to-call dialer + AI conversation assist
+  // ──────────────────────────────────────────────────────
+
+  // POST /api/dialer/call  — start a call from the agent to a lead.
+  app.post("/api/dialer/call", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = Number(req.body?.leadId);
+      if (!Number.isFinite(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "leadId is required" });
+      }
+      const result = await startCallForLead(userId, leadId);
+      res.json(result);
+    } catch (err: any) {
+      console.error("dialer.call error:", err);
+      res.status(500).json({ message: err?.message || "Failed to start call" });
+    }
+  });
+
+  // POST /api/dialer/webhook  — Twilio status callbacks.
+  // Twilio posts application/x-www-form-urlencoded with CallSid + CallStatus.
+  // We verify the X-Twilio-Signature when a real auth token is configured;
+  // in stub mode (no token) we accept the event so dev/CI can drive it.
+  app.post("/api/dialer/webhook", async (req: any, res) => {
+    try {
+      const fullUrl = twilioWebhookUrl(req);
+      const valid = verifyTwilioWebhook(
+        { headers: req.headers, body: req.body, url: req.url },
+        fullUrl,
+      );
+      if (!valid && isTwilioLive()) {
+        return res.status(403).json({ message: "invalid signature" });
+      }
+      const sid: string | undefined = req.body?.CallSid;
+      const status: string | undefined = req.body?.CallStatus;
+      const duration = Number(req.body?.CallDuration);
+      const recordingUrl: string | undefined = req.body?.RecordingUrl;
+      if (!sid) return res.status(400).json({ message: "CallSid required" });
+
+      // Look up call_log by twilioSid via a direct query (no method needed
+      // — this is the only consumer).
+      const { db } = await import("./db");
+      const { callLogs } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+      const [row] = await db.select().from(callLogs).where(eq(callLogs.twilioSid, sid));
+      if (!row) {
+        // Webhook arrived before our update; ack so Twilio doesn't retry.
+        return res.json({ ok: true, ignored: true });
+      }
+      await storage.updateCallLog(row.id, {
+        status: status || row.status,
+        durationSec: Number.isFinite(duration) ? duration : undefined,
+        recordingUrl: recordingUrl ?? undefined,
+        endedAt: status === "completed" || status === "failed" || status === "no-answer" || status === "busy"
+          ? new Date()
+          : undefined,
+      });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("dialer.webhook error:", err);
+      res.status(500).json({ message: err?.message || "webhook failed" });
+    }
+  });
+
+  // POST /api/dialer/transcript  — push live transcript chunks.
+  // Body: { callLogId, text, partial? }. Authed: only the owning agent.
+  app.post("/api/dialer/transcript", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const callLogId = Number(req.body?.callLogId);
+      const text: string = String(req.body?.text ?? "").slice(0, 5000);
+      const partial: boolean = Boolean(req.body?.partial);
+      if (!Number.isFinite(callLogId) || !text.trim()) {
+        return res.status(400).json({ message: "callLogId and text are required" });
+      }
+      const calls = await storage.getCallLogsForAgent(userId, { leadId: undefined, limit: 500 });
+      const owns = calls.some((c) => c.id === callLogId);
+      if (!owns) return res.status(403).json({ message: "not your call" });
+
+      const transcriptRow = await storage.appendTranscript(callLogId, text);
+      const result = await processTranscriptChunk(
+        { callLogId, transcript: transcriptRow.text, partial },
+        {
+          recordAssist: (input) => storage.recordConversationAssist(input).then(() => undefined),
+          broadcast: (payload) => broadcastAssistSuggestion(payload),
+        },
+      );
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      console.error("dialer.transcript error:", err);
+      res.status(500).json({ message: err?.message || "transcript ingest failed" });
+    }
+  });
+
+  // GET /api/dialer/calls?leadId=  — call history for the current agent.
+  app.get("/api/dialer/calls", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadIdRaw = req.query?.leadId;
+      const leadId = leadIdRaw !== undefined ? Number(leadIdRaw) : undefined;
+      if (leadIdRaw !== undefined && !Number.isFinite(leadId)) {
+        return res.status(400).json({ message: "leadId must be a number" });
+      }
+      const calls = await storage.getCallLogsForAgent(userId, { leadId, limit: 100 });
+      res.json(calls);
+    } catch (err: any) {
+      console.error("dialer.calls error:", err);
+      res.status(500).json({ message: err?.message || "failed to fetch calls" });
     }
   });
 
