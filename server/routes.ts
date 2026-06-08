@@ -32,6 +32,7 @@ import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
+import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -1530,6 +1531,48 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Error updating agent capacity:", err);
       res.status(500).json({ message: "Failed to update agent settings" });
+    }
+  });
+
+  // Agent reputation (self-service).
+  //
+  // Returns the trailing-90d reputation score plus the recent event stream
+  // so the dashboard can show a stat card and (optionally) drill-down history.
+  app.get("/api/agent/me/reputation", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const score = await storage.computeAgentReputation(userId);
+      const events = await storage.getReputationEvents(userId, 50);
+      res.json({
+        score,
+        windowDays: REPUTATION_WINDOW_DAYS,
+        events,
+        weights: REPUTATION_WEIGHTS,
+      });
+    } catch (err) {
+      console.error("Error fetching reputation:", err);
+      res.status(500).json({ message: "Failed to fetch reputation" });
+    }
+  });
+
+  // Top agents in an org by reputation (owner/admin only). Used by the
+  // org-admin leaderboard view. Excludes unverified agents and agents with
+  // fewer than 3 events in the trailing 90 days (see TOP_AGENT_MIN_EVENTS).
+  app.get("/api/orgs/:orgId/agents/top", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(userId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(50, Math.trunc(rawLimit)) : 10;
+      const top = await getTopAgentsForOrg(orgId, limit);
+      res.json({ orgId, windowDays: REPUTATION_WINDOW_DAYS, agents: top });
+    } catch (err) {
+      console.error("Error listing top agents:", err);
+      res.status(500).json({ message: "Failed to list top agents" });
     }
   });
 

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Link } from "wouter";
-import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon } from "lucide-react";
+import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Lead } from "@/lib/types";
@@ -167,8 +167,17 @@ function AgentSettingsCard({
   );
 }
 
+interface ReputationResponse {
+  score: number;
+  windowDays: number;
+  events: Array<{ id: number; eventType: string; weight: number; createdAt: string | null }>;
+}
+
 export default function AgentDashboard() {
   const { data, isLoading } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
+  // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the
+  // main dashboard render. If it fails or hasn't loaded yet we show "—".
+  const { data: reputation } = useQuery<ReputationResponse>({ queryKey: ["/api/agent/me/reputation"] });
 
   if (isLoading || !data) {
     return (
@@ -228,11 +237,17 @@ export default function AgentDashboard() {
           </Card>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard icon={Inbox} label="Open pipeline" value={data.stats.openLeads.toString()} sub={`Cap: ${data.profile?.capacityLimit ?? "—"}`} />
           <StatCard icon={Target} label="Purchased leads" value={data.stats.purchasedLeads.toString()} />
           <StatCard icon={DollarSign} label="Total spend" value={`$${data.stats.totalSpent}`} sub={`Avg CPL $${data.stats.averageCpl}`} />
           <StatCard icon={TrendingUp} label="Est. commissions" value={`$${data.stats.estimatedCommissions}`} sub={`${data.stats.conversionRate}% conv.`} />
+          <StatCard
+            icon={Award}
+            label="Reputation"
+            value={reputation ? reputation.score.toString() : "—"}
+            sub={reputation ? `${reputation.events.length} events / ${reputation.windowDays}d` : "Trailing 90d"}
+          />
         </div>
 
         {data.profile && (
