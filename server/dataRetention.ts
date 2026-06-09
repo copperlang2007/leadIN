@@ -92,6 +92,15 @@ export async function runDataRetentionSweep(now: Date = new Date()): Promise<Ret
   let leadsScrubbed = 0;
 
   for (const policy of policies) {
+    // Safety: a zero or negative retention window would scrub every lead
+    // immediately. Refuse to touch anything and surface the misconfig.
+    if (policy.leadPiiDays <= 0) {
+      log.warn("[data-retention] refusing to sweep — leadPiiDays must be > 0", {
+        orgId: policy.orgId,
+        leadPiiDays: policy.leadPiiDays,
+      });
+      continue;
+    }
     const cutoff = daysAgo(policy.leadPiiDays, now);
     try {
       const count = await scrubOrgLeadPii(policy.orgId, cutoff);

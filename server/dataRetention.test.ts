@@ -169,6 +169,26 @@ describe("runDataRetentionSweep", () => {
     expect(inserts).toHaveLength(0);
   });
 
+  it("refuses to sweep when leadPiiDays is zero or negative", async () => {
+    const { store, updateCalls } = makeRetentionStore({
+      policies: [
+        { id: 1, orgId: "org-a", leadPiiDays: 0, autoDeleteEnabled: true },
+        { id: 2, orgId: "org-b", leadPiiDays: -1, autoDeleteEnabled: true },
+      ],
+    });
+    resetRetention = __setRetentionStoreForTesting(store);
+    const { store: audit, inserts } = makeAuditStore();
+    resetAudit = __setAuditStoreForTesting(audit);
+
+    const result = await runDataRetentionSweep();
+    expect(result.policiesEvaluated).toBe(2);
+    expect(result.orgsScrubbed).toBe(0);
+    expect(result.leadsScrubbed).toBe(0);
+    // No scrub UPDATEs (table === leads) and no audit rows.
+    expect(updateCalls.filter((c) => c.table === leads)).toHaveLength(0);
+    expect(inserts).toHaveLength(0);
+  });
+
   it("uses the policy.leadPiiDays as the retention window", async () => {
     // Different policies should produce different cutoffs. The test
     // captures the policy fields used; the actual cutoff math is
