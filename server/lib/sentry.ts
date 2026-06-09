@@ -34,7 +34,6 @@ let initialized = false;
 function logDisabledOnce(): void {
   if (disabledLogged) return;
   disabledLogged = true;
-  // eslint-disable-next-line no-console
   console.log("[sentry] disabled — set SENTRY_DSN to enable");
 }
 
@@ -58,7 +57,6 @@ export async function initSentry(): Promise<void> {
     const specifier = "@sentry/node";
     const mod: any = await import(specifier).catch(() => null);
     if (!mod) {
-      // eslint-disable-next-line no-console
       console.log("[sentry] @sentry/node not installed — running as no-op");
       return;
     }
@@ -69,7 +67,6 @@ export async function initSentry(): Promise<void> {
     });
     sdk = mod;
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error("[sentry] init failed:", err);
   }
 }

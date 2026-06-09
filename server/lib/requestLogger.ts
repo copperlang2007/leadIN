@@ -29,7 +29,6 @@ export interface RequestLoggerOptions {
 }
 
 function defaultSink(line: RequestLogLine): void {
-  // eslint-disable-next-line no-console
   console.log(JSON.stringify(line));
 }
 
