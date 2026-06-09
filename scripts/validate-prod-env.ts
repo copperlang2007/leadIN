@@ -50,6 +50,7 @@ export const PROD_ENV_RULES: EnvRule[] = [
 export interface ValidationResult {
   ok: boolean;
   isProd: boolean;
+  ruleCount: number;
   missing: Array<{ key: string; reason: string }>;
   warnings: string[];
 }
@@ -98,14 +99,14 @@ export function validateEnv(
     warnings.push("REDIS_URL unset — rate limiter will fall back to in-memory (not safe across instances).");
   }
 
-  return { ok: missing.length === 0, isProd, missing, warnings };
+  return { ok: missing.length === 0, isProd, ruleCount: rules.length, missing, warnings };
 }
 
 export function formatResult(result: ValidationResult): string {
   const lines: string[] = [];
   lines.push(result.isProd ? "🔒 Production env check" : "🛠  Non-prod env check");
   if (result.missing.length === 0) {
-    lines.push(`✅ all required env vars present (${PROD_ENV_RULES.length} rules evaluated)`);
+    lines.push(`✅ all required env vars present (${result.ruleCount} rules evaluated)`);
   } else {
     lines.push(`❌ ${result.missing.length} missing:`);
     for (const m of result.missing) lines.push(`   - ${m.key}: ${m.reason}`);
@@ -129,10 +130,7 @@ async function main(): Promise<void> {
 }
 
 // Only run main() when invoked directly, not when imported by server boot.
-const invokedDirectly =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  /validate-prod-env\.(ts|js)$/.test(process.argv[1]);
-if (invokedDirectly) {
+const entry = typeof process !== "undefined" ? process.argv[1] ?? "" : "";
+if (entry.endsWith("validate-prod-env.ts") || entry.endsWith("validate-prod-env.js")) {
   void main();
 }

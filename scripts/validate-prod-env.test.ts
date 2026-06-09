@@ -82,10 +82,17 @@ describe("validateEnv", () => {
 });
 
 describe("formatResult", () => {
-  it("renders ok state with rule count", () => {
+  it("renders ok state with rule count from result, not from PROD_ENV_RULES", () => {
     const out = formatResult(validateEnv(baseProd()));
     expect(out).toContain("Production");
     expect(out).toContain(`${PROD_ENV_RULES.length} rules`);
+  });
+
+  it("uses the actual rule count when called with a custom rules array", () => {
+    const customRules = [{ key: "DATABASE_URL", requiredInProd: true }];
+    const r = validateEnv(baseProd(), customRules);
+    expect(r.ruleCount).toBe(1);
+    expect(formatResult(r)).toContain("1 rules evaluated");
   });
 
   it("renders missing keys with their reason", () => {
