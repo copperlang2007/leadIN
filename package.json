@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
-    "check:env": "tsx scripts/check-env-example.ts"
+    "check:env": "tsx scripts/check-env-example.ts",
+    "check:prod-env": "tsx scripts/validate-prod-env.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["server/**/*.test.ts", "shared/**/*.test.ts", "client/src/**/*.test.ts"],
+    include: ["server/**/*.test.ts", "shared/**/*.test.ts", "client/src/**/*.test.ts", "scripts/**/*.test.ts"],
   },
   resolve: {
     alias: {
