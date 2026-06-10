@@ -7,8 +7,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Link } from "wouter";
-import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award } from "lucide-react";
+import { Link, useLocation } from "wouter";
+import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award, Sparkles } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Lead } from "@/lib/types";
@@ -174,6 +175,7 @@ interface ReputationResponse {
 }
 
 export default function AgentDashboard() {
+  const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
   // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the
   // main dashboard render. If it fails or hasn't loaded yet we show "—".
@@ -283,9 +285,23 @@ export default function AgentDashboard() {
           </CardHeader>
           <CardContent>
             {data.assignedLeads.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-8 text-center">
-                No assigned leads yet. New high-scoring leads will appear here automatically.
-              </p>
+              <div className="text-center py-12 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="dashboard-no-assigned-leads">
+                <div className="inline-flex h-14 w-14 rounded-full bg-background border items-center justify-center mb-3">
+                  <Sparkles className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold mb-1">No assigned leads yet</h3>
+                <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
+                  Routing assigns high-scoring leads automatically based on your license, territory, and conversion history. New ones will appear here in real time.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate("/marketplace")}
+                  data-testid="dashboard-browse-marketplace"
+                >
+                  Browse the marketplace
+                </Button>
+              </div>
             ) : (
               <div className="space-y-2">
                 {data.assignedLeads.map(lead => (
