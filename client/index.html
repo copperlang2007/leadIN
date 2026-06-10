@@ -2,21 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- Removed maximum-scale=1 — blocking zoom is a WCAG 1.4.4
+         (Resize Text) violation. Mobile users with low vision rely on it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>LeadMarket - Verified Insurance Lead Marketplace</title>
-    
-    <meta property="og:title" content="LeadMarket - Premier Insurance Lead Exchange" />
-    <meta property="og:description" content="The trusted marketplace for verified Medicare Advantage and Supplement leads. Authenticated provenance, expert filtering, and compatibility matching." />
+    <title>LeadMarket — Verified Insurance Lead Marketplace</title>
+
+    <!-- Indexable SEO description. Critical for Google snippet rendering. -->
+    <meta name="description" content="Buy verified Medicare, ACA, and Final Expense leads with full provenance, TCPA-safe outreach, smart-match scoring, and replacement credits for bad contact info." />
+    <meta name="theme-color" content="#1a56db" />
+
+    <!-- Open Graph for Slack / LinkedIn / Facebook unfurls. -->
+    <meta property="og:title" content="LeadMarket — Verified Insurance Lead Marketplace" />
+    <meta property="og:description" content="The trusted marketplace for verified Medicare, ACA, and Final Expense leads. Full provenance, smart-match scoring, and replacement credits when contact info doesn't pan out." />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="https://replit.com/public/images/opengraph.png" />
+    <meta property="og:site_name" content="LeadMarket" />
+    <meta property="og:url" content="https://leadmarket.app" />
+    <meta property="og:image" content="/og-image.png" />
+
+    <!-- Twitter / X card. -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@replit" />
-    <meta name="twitter:title" content="LeadMarket" />
-    <meta name="twitter:description" content="Buy and sell verified insurance leads with confidence." />
-    <meta name="twitter:image" content="https://replit.com/public/images/opengraph.png" />
+    <meta name="twitter:title" content="LeadMarket — Verified Insurance Lead Marketplace" />
+    <meta name="twitter:description" content="Buy verified Medicare, ACA, and Final Expense leads with full provenance and replacement credits." />
+    <meta name="twitter:image" content="/og-image.png" />
 
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
 
     <!-- Google Analytics 4 -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-LEADMARKET01"></script>
@@ -34,6 +45,13 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Show a friendly message when JS is disabled instead of a blank page. -->
+    <noscript>
+      <div style="padding:2rem;max-width:600px;margin:4rem auto;font-family:system-ui,sans-serif;text-align:center">
+        <h1 style="font-size:1.5rem;margin-bottom:1rem">LeadMarket requires JavaScript</h1>
+        <p style="color:#666">Please enable JavaScript in your browser to use the marketplace.</p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
