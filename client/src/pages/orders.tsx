@@ -358,6 +358,7 @@ export default function Orders() {
               label: "Browse marketplace",
               onClick: () => navigate("/marketplace"),
               testId: "orders-empty-cta",
+              trackCta: "orders-empty-browse",
             }}
             data-testid="orders-empty"
           />

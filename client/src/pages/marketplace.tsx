@@ -544,11 +544,13 @@ export default function Marketplace() {
                         label: "Set up smart-match",
                         onClick: () => (window.location.href = "/smart-match"),
                         testId: "empty-smart-match-cta",
+                        trackCta: "marketplace-empty-smart-match",
                       }}
                       secondaryAction={{
                         label: "Update your territory",
                         onClick: () => (window.location.href = "/agent-onboarding"),
                         testId: "empty-onboarding-cta",
+                        trackCta: "marketplace-empty-onboarding",
                       }}
                       data-testid="marketplace-empty"
                     />

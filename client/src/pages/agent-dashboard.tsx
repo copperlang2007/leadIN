@@ -294,6 +294,7 @@ export default function AgentDashboard() {
                   onClick: () => navigate("/marketplace"),
                   variant: "outline",
                   testId: "dashboard-browse-marketplace",
+                  trackCta: "dashboard-empty-browse",
                 }}
                 compact
                 data-testid="dashboard-no-assigned-leads"
