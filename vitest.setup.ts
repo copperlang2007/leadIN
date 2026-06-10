@@ -17,6 +17,5 @@ process.on("unhandledRejection", (err: unknown) => {
     /only requests to HTTPS are allowed/.test(e?.message ?? "");
   if (isOidc) return; // swallow
   // For anything else, surface it like Node's default behaviour would.
-   
   console.error("Unhandled rejection in test:", err);
 });

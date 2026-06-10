@@ -152,7 +152,6 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
     return () => {
       cancelled = true;
     };
-     
   }, [open, leadId]);
 
   async function handleStartCall() {
