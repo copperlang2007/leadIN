@@ -248,7 +248,7 @@ export default function Pricing() {
                 </Badge>
               )}
               <CardHeader className="pb-4">
-                <CardTitle>{tier.name}</CardTitle>
+                <CardTitle data-testid={`tier-title-${tier.id}`}>{tier.name}</CardTitle>
                 <CardDescription>
                   <span className="text-3xl font-bold text-foreground">{tier.price}</span>
                   <span className="text-sm ml-1">{tier.cadence}</span>
