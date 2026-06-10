@@ -10,9 +10,11 @@ import { test, expect } from "@playwright/test";
 test.describe("pricing page", () => {
   test("renders three subscription tiers", async ({ page }) => {
     await page.goto("/pricing");
-    // The three named tiers from STRIPE_PRICE_*.
-    for (const tier of ["Starter", "Growth", "Scale"]) {
-      await expect(page.getByRole("heading", { name: new RegExp(tier, "i") })).toBeVisible();
+    // CardTitle renders as a styled div, not an h2, so getByRole('heading')
+    // can't find it. Lock onto stable data-testids on the tier title rather
+    // than visible text — copy can change without breaking the test.
+    for (const id of ["starter", "growth", "scale"]) {
+      await expect(page.getByTestId(`tier-title-${id}`)).toBeVisible();
     }
   });
 
