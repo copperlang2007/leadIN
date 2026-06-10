@@ -101,6 +101,7 @@ import {
   type ReputationEventType,
 } from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
+import { toUsd, divUsd, mulUsd } from "./lib/money";
 import { splitRevenue } from "./vendorPayouts";
 import {
   addRefundToBalance,
@@ -1822,21 +1823,24 @@ export class DatabaseStorage implements IStorage {
       .where(eq(orders.userId, agentUserId));
 
     const purchased = Number(purchasedRow?.count ?? 0);
-    const totalSpent = parseFloat(purchasedRow?.total ?? "0");
-    const averageCpl = purchased > 0 ? (totalSpent / purchased) : 0;
+    // Drift-safe: pull the SUM as a string straight into Decimal — never
+    // route through parseFloat which can lose precision on long decimals.
+    const totalSpentUsd = toUsd(purchasedRow?.total ?? "0");
+    const averageCplUsd = divUsd(totalSpentUsd, purchased);
 
     const profile = await this.getAgentProfile(agentUserId);
     const conv = parseFloat(profile?.conversionRate ?? "0");
 
-    // Rough commission estimate: $400 avg first-year commission per closed lead
-    const estimated = purchased * conv * 400;
+    // Rough commission estimate: $400 avg first-year commission per closed lead.
+    // mulUsd is binary — chain for the three-factor product to stay drift-safe.
+    const estimatedUsd = mulUsd(mulUsd(purchased, profile?.conversionRate ?? "0"), 400);
 
     return {
       openLeads: Number(openRow?.count ?? 0),
       purchasedLeads: purchased,
-      totalSpent: totalSpent.toFixed(2),
-      averageCpl: averageCpl.toFixed(2),
-      estimatedCommissions: estimated.toFixed(2),
+      totalSpent: totalSpentUsd,
+      averageCpl: averageCplUsd,
+      estimatedCommissions: estimatedUsd,
       conversionRate: (conv * 100).toFixed(1),
     };
   }
@@ -1870,7 +1874,7 @@ export class DatabaseStorage implements IStorage {
       totalLeads: Number(totalRow?.count ?? 0),
       assignedLeads: Number(assignedRow?.count ?? 0),
       soldLeads: Number(soldRow?.count ?? 0),
-      totalSpent: (parseFloat(spendRow?.total ?? "0")).toFixed(2),
+      totalSpent: toUsd(spendRow?.total ?? "0"),
       activeAgents: Number(agentRow?.count ?? 0),
     };
   }
