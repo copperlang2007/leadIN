@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { FileText, Plus, Trash2, Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { FileText, Plus, Trash2, Loader2, Bookmark } from "lucide-react";
 import type { Lead } from "@/lib/types";
 
 interface SavedList {
@@ -105,9 +106,23 @@ export default function SavedLists() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {isLoading ? (
-            <p className="text-sm text-muted-foreground col-span-2">Loading…</p>
+            // Skeleton cards match the SavedList card footprint so the
+            // page shape stays stable while data streams in.
+            <>
+              {[0, 1].map((i) => (
+                <Skeleton key={i} className="h-32 w-full rounded-lg" />
+              ))}
+            </>
           ) : lists.length === 0 ? (
-            <p className="text-sm text-muted-foreground col-span-2 text-center py-12">No saved lists yet.</p>
+            <div className="col-span-2 text-center py-12 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="saved-lists-empty">
+              <div className="inline-flex h-14 w-14 rounded-full bg-background border items-center justify-center mb-3">
+                <Bookmark className="h-6 w-6 text-primary" />
+              </div>
+              <h3 className="font-semibold mb-1">No saved lists yet</h3>
+              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                Bookmark interesting leads from the marketplace and group them here. Useful for tracking warm prospects across multiple sessions.
+              </p>
+            </div>
           ) : (
             lists.map(l => (
               <Card key={l.id} className={openListId === l.id ? "ring-2 ring-primary" : ""}>
