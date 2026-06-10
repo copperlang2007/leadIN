@@ -7,7 +7,17 @@ import reactHooks from "eslint-plugin-react-hooks";
 // by the formatter elsewhere.
 export default [
   {
-    ignores: ["node_modules/**", "dist/**", "migrations/**", "**/*.test.ts", "client/src/components/ui/**"],
+    ignores: [
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "migrations/**",
+      "**/*.test.ts",
+      "client/src/components/ui/**",
+      // Worktrees are short-lived agent sandboxes that mirror real source.
+      // Linting them double-counts warnings against the same files.
+      ".claude/worktrees/**",
+    ],
   },
   {
     files: ["**/*.ts", "**/*.tsx"],

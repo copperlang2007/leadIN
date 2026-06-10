@@ -19,7 +19,7 @@ import {
   AccordionItem,
   AccordionTrigger
 } from "@/components/ui/accordion";
-import { Filter, X, ArrowUpDown, ChevronDown, CheckCircle2, Loader2 } from "lucide-react";
+import { Filter, X, ArrowUpDown, CheckCircle2, Loader2 } from "lucide-react";
 import {
   Drawer,
   DrawerClose,

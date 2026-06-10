@@ -1,20 +1,12 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, Wifi, WifiOff, Loader2, Plus, DollarSign, BookOpen, Briefcase, TrendingUp, Sparkles } from "lucide-react";
+import { Search, Bell, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, WifiOff, Loader2, Plus, DollarSign, BookOpen, Briefcase, TrendingUp, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { useWebSocketContext, type WSStatus } from "@/hooks/useWebSocketContext";
+import { useWebSocketContext } from "@/hooks/useWebSocketContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 

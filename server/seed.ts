@@ -1,6 +1,5 @@
 import { db } from "./db";
 import { vendors, leads } from "@shared/schema";
-import { sql } from "drizzle-orm";
 
 const VENDORS_DATA = [
   { name: "Apex Lead Gen", rating: "4.8", verified: true },

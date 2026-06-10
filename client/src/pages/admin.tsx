@@ -10,7 +10,7 @@ import { useLocation } from "wouter";
 import { useEffect } from "react";
 import {
   ShieldCheck, TrendingUp, Package, Activity, Wifi, Users,
-  Flag, Trash2, AlertTriangle, CheckCircle2, RefreshCw
+  Flag, Trash2, AlertTriangle, RefreshCw
 } from "lucide-react";
 import type { Lead } from "@/lib/types";
 

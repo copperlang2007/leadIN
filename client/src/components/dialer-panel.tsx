@@ -152,7 +152,6 @@ export function DialerPanel({ leadId, open, onClose }: DialerPanelProps) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, leadId]);
 
   async function handleStartCall() {

@@ -2,7 +2,7 @@
 // Pure read-only aggregations. Admin-only.
 
 import { db } from "./db";
-import { behavioralEvents, leads, orders, users, organizations, agentProfiles } from "@shared/schema";
+import { behavioralEvents, leads, orders, organizations, agentProfiles } from "@shared/schema";
 import { and, eq, gte, sql, count, countDistinct } from "drizzle-orm";
 
 export interface FunnelSnapshot {

@@ -5,7 +5,7 @@
 
 import { db } from "./db";
 import { keywordSignals } from "@shared/schema";
-import { eq, sql, desc } from "drizzle-orm";
+import { sql, desc } from "drizzle-orm";
 import { registerCron } from "./lib/cronRegistry";
 import { withAdvisoryLock } from "./lib/lock";
 
