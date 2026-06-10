@@ -10,9 +10,12 @@ import { test, expect } from "@playwright/test";
 test.describe("pricing page", () => {
   test("renders three subscription tiers", async ({ page }) => {
     await page.goto("/pricing");
-    // The three named tiers from STRIPE_PRICE_*.
+    // CardTitle in pricing.tsx renders as a styled div, not an h2 —
+    // getByRole('heading') wouldn't find it. Match the tier name text
+    // directly with an anchored regex so we don't false-match other
+    // places the name appears in marketing copy.
     for (const tier of ["Starter", "Growth", "Scale"]) {
-      await expect(page.getByRole("heading", { name: new RegExp(tier, "i") })).toBeVisible();
+      await expect(page.getByText(new RegExp(`^${tier}$`, "i")).first()).toBeVisible();
     }
   });
 
