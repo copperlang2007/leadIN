@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { TrendingUp, TrendingDown, Minus, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, BarChart3, Search, Inbox } from "lucide-react";
 import { useState, useEffect } from "react";
 import { PermissionRequired } from "@/components/permission-required";
 
@@ -96,8 +96,9 @@ function ScorecardTable({
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground py-4 text-center">
-            No leads in the last 30 days.
+          <div className="text-center py-10 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="scorecard-row-empty">
+            <Inbox className="h-6 w-6 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">No leads in the last 30 days.</p>
           </div>
         ) : (
           <Table>
@@ -204,8 +205,14 @@ export default function VendorScorecard() {
 
         {!enabled ? (
           <Card>
-            <CardContent className="py-10 text-center text-muted-foreground">
-              Enter a vendor id above to view their scorecard.
+            <CardContent className="py-16 text-center" data-testid="scorecard-no-vendor-selected">
+              <div className="inline-flex h-14 w-14 rounded-full bg-muted border items-center justify-center mb-3">
+                <Search className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <h3 className="font-semibold mb-1">Select a vendor</h3>
+              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                Enter a vendor id above and we'll pull their 30-day performance breakdown — ingestion volume, conversion rate, dispute rate, and per-source revenue.
+              </p>
             </CardContent>
           </Card>
         ) : isLoading || !data ? (
