@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Briefcase, MapPin, FileBadge, Building2, Loader2, Save, ShieldCheck, AlertTriangle } from "lucide-react";
+import { Briefcase, MapPin, FileBadge, Building2, Loader2, Save, ShieldCheck, AlertTriangle, Check, ArrowRight, Sparkles } from "lucide-react";
 
 const ALL_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
@@ -137,6 +137,33 @@ export default function AgentOnboarding() {
 
   const hasActiveOrg = !!orgs?.activeOrgId;
 
+  // Derive completion of each onboarding step so the stepper updates as
+  // the user fills in fields. We use the in-flight local state, not the
+  // server-side profile, so the progress bar moves before the user hits Save.
+  const steps = [
+    { key: "org", label: "Create agency", done: hasActiveOrg, icon: Building2 },
+    {
+      key: "license",
+      label: "Add licensing",
+      done: hasActiveOrg && licensedStates.length > 0 && licenseNumber.trim().length > 0,
+      icon: FileBadge,
+    },
+    {
+      key: "carriers",
+      label: "Carrier appointments",
+      done: hasActiveOrg && appointedCarriers.length > 0,
+      icon: ShieldCheck,
+    },
+    {
+      key: "territory",
+      label: "Territory",
+      done: hasActiveOrg && (territoryZips.trim().length > 0 || territoryCounties.trim().length > 0 || licensedStates.length > 0),
+      icon: MapPin,
+    },
+  ];
+  const completedCount = steps.filter((s) => s.done).length;
+  const allComplete = completedCount === steps.length;
+
   return (
     <Layout>
       <div className="max-w-4xl mx-auto space-y-6">
@@ -148,6 +175,46 @@ export default function AgentOnboarding() {
             Set up your licensing, carrier appointments, and territory so the routing engine can match you with leads.
           </p>
         </div>
+
+        {/* Progress stepper — always visible so the user knows where
+            they are. Tiles wrap on mobile, stay horizontal on desktop. */}
+        <Card className="bg-muted/30">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-medium">
+                {allComplete ? "All set — you're live in the marketplace" : `Step ${completedCount + 1} of ${steps.length}`}
+              </span>
+              <span className="text-sm text-muted-foreground" data-testid="onboarding-progress-pct">
+                {Math.round((completedCount / steps.length) * 100)}%
+              </span>
+            </div>
+            <div className="h-2 bg-background rounded-full overflow-hidden mb-4">
+              <div
+                className="h-full bg-primary transition-all duration-500"
+                style={{ width: `${(completedCount / steps.length) * 100}%` }}
+              />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {steps.map((s) => (
+                <div
+                  key={s.key}
+                  className={`flex items-center gap-2 text-sm p-2 rounded-lg ${
+                    s.done ? "text-foreground" : "text-muted-foreground"
+                  }`}
+                >
+                  <div
+                    className={`h-7 w-7 rounded-full flex items-center justify-center shrink-0 ${
+                      s.done ? "bg-emerald-500 text-white" : "bg-background border"
+                    }`}
+                  >
+                    {s.done ? <Check className="h-4 w-4" /> : <s.icon className="h-4 w-4" />}
+                  </div>
+                  <span className="font-medium truncate">{s.label}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
 
         {!hasActiveOrg && (
           <Card>
@@ -298,12 +365,35 @@ export default function AgentOnboarding() {
               </CardContent>
             </Card>
 
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-3">
               <Button onClick={() => saveProfileMutation.mutate()} disabled={saveProfileMutation.isPending}>
                 {saveProfileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
                 Save profile
               </Button>
             </div>
+
+            {/* Show a 'next step' card once every onboarding step is
+                done. Sends the user straight to the marketplace —
+                eliminates the dead-end at the bottom of the form. */}
+            {allComplete && (
+              <Card className="bg-gradient-to-br from-emerald-50 to-primary/5 dark:from-emerald-950/30 dark:to-primary/10 border-emerald-200 dark:border-emerald-900">
+                <CardContent className="pt-6 flex flex-col md:flex-row items-start md:items-center gap-4">
+                  <div className="h-12 w-12 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
+                    <Sparkles className="h-6 w-6 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-lg font-bold mb-1">You're set — let's find you leads</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Routing is now scoring incoming leads against your profile. Head to the marketplace to see what's available.
+                    </p>
+                  </div>
+                  <Button onClick={() => (window.location.href = "/marketplace")} data-testid="onboarding-complete-cta">
+                    Open marketplace
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
           </>
         )}
       </div>
