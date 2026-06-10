@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Sparkles, Trash2, Loader2, Zap } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
 
 interface SmartMatchSubscription {
@@ -239,15 +240,13 @@ export default function SmartMatchPage() {
                 ))}
               </div>
             ) : subs.length === 0 ? (
-              <div className="text-center py-10 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="smart-match-empty">
-                <div className="inline-flex h-12 w-12 rounded-full bg-background border items-center justify-center mb-3">
-                  <Zap className="h-5 w-5 text-primary" />
-                </div>
-                <h3 className="font-semibold mb-1">No active subscriptions yet</h3>
-                <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                  Set up a smart-match subscription above and we'll auto-route matching leads straight to you — no marketplace scrolling required.
-                </p>
-              </div>
+              <EmptyState
+                icon={Zap}
+                title="No active subscriptions yet"
+                description="Set up a smart-match subscription above and we'll auto-route matching leads straight to you — no marketplace scrolling required."
+                compact
+                data-testid="smart-match-empty"
+              />
             ) : (
               <div className="space-y-3">
                 {subs.map(s => {
