@@ -43,9 +43,11 @@ describe("createIdempotencyTracker", () => {
     expect(t.markSeenOnce("evt_4")).toBe(false);
   });
 
-  it("treats an empty event id as already seen (defensive)", () => {
+  it("fails safe on empty event id by reporting duplicate (skip)", () => {
     const t = createIdempotencyTracker();
-    expect(t.markSeenOnce("")).toBe(true); // returns true per docs but doesn't cache
+    // Returning false makes the caller short-circuit, preventing a
+    // malformed payload from bypassing dedup.
+    expect(t.markSeenOnce("")).toBe(false);
     expect(t.size()).toBe(0);
   });
 
