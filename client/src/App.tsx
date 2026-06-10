@@ -36,7 +36,10 @@ function Router() {
         <Route path="/blog/:slug" component={BlogPost} />
         <Route path="/pricing" component={Pricing} />
         <Route path="/" component={Landing} />
-        <Route component={Landing} />
+        {/* Unknown routes should render NotFound, not silently fall back to
+            Landing. A guest hitting a stale link previously got a confusing
+            'why am I on the marketing page?' moment. */}
+        <Route component={NotFound} />
       </Switch>
     );
   }
@@ -44,6 +47,10 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Marketplace} />
+      {/* /marketplace as an alias for the home route so external links,
+          empty-state CTAs, and bookmarked URLs all resolve to the same
+          page. Without this, links to '/marketplace' would hit NotFound. */}
+      <Route path="/marketplace" component={Marketplace} />
       <Route path="/architect" component={ArchitectBlueprint} />
       <Route path="/orders" component={Orders} />
       <Route path="/profile" component={Profile} />
