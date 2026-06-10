@@ -10,6 +10,7 @@ import { log as logger, newRequestId } from "./logger";
 import { closePool } from "./db";
 import { createShutdownHandler } from "./shutdown";
 import { redactPii } from "@shared/pii";
+import { initSentry, captureException } from "./lib/sentry";
 export { createShutdownHandler } from "./shutdown";
 export type { ShutdownDeps } from "./shutdown";
 
@@ -150,11 +151,21 @@ function installShutdownHandlers(): void {
 }
 
 (async () => {
+  // Initialise Sentry as early as possible so any error during route
+  // registration or vite setup is reported. No-op when SENTRY_DSN is unset.
+  await initSentry();
+
   await registerRoutes(httpServer, app);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
+
+    // Report 5xx errors to Sentry (no-op when unconfigured). 4xx errors
+    // are usually client mistakes, not server bugs — don't flood the dashboard.
+    if (status >= 500) {
+      captureException(err, { req });
+    }
 
     res.status(status).json({ message });
     throw err;
