@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +48,7 @@ interface OrgList {
 export default function AgentOnboarding() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
 
   const { data: orgs } = useQuery<OrgList>({ queryKey: ["/api/orgs"] });
   const { data: profile, isLoading } = useQuery<AgentProfile | null>({
@@ -162,6 +164,7 @@ export default function AgentOnboarding() {
     },
   ];
   const completedCount = steps.filter((s) => s.done).length;
+  const progressPct = Math.round((completedCount / steps.length) * 100);
   const allComplete = completedCount === steps.length;
 
   return (
@@ -185,13 +188,15 @@ export default function AgentOnboarding() {
                 {allComplete ? "All set — you're live in the marketplace" : `Step ${completedCount + 1} of ${steps.length}`}
               </span>
               <span className="text-sm text-muted-foreground" data-testid="onboarding-progress-pct">
-                {Math.round((completedCount / steps.length) * 100)}%
+                {progressPct}%
               </span>
             </div>
             <div className="h-2 bg-background rounded-full overflow-hidden mb-4">
+              {/* transition-[width] is narrower than transition-all — only
+                  the width animates, which is all that ever changes here. */}
               <div
-                className="h-full bg-primary transition-all duration-500"
-                style={{ width: `${(completedCount / steps.length) * 100}%` }}
+                className="h-full bg-primary transition-[width] duration-500"
+                style={{ width: `${progressPct}%` }}
               />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -387,7 +392,7 @@ export default function AgentOnboarding() {
                       Routing is now scoring incoming leads against your profile. Head to the marketplace to see what's available.
                     </p>
                   </div>
-                  <Button onClick={() => (window.location.href = "/marketplace")} data-testid="onboarding-complete-cta">
+                  <Button onClick={() => navigate("/marketplace")} data-testid="onboarding-complete-cta">
                     Open marketplace
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
