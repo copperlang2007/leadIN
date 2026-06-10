@@ -17,7 +17,12 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 2 : undefined,
-  reporter: process.env.CI ? [["github"], ["list"]] : "list",
+  // CI always emits an HTML report into playwright-report/ so the
+  // upload-artifact step has something to upload. `open: 'never'`
+  // keeps the report from auto-opening locally.
+  reporter: process.env.CI
+    ? [["github"], ["list"], ["html", { outputFolder: "playwright-report", open: "never" }]]
+    : [["list"], ["html", { outputFolder: "playwright-report", open: "never" }]],
   use: {
     baseURL: BASE,
     trace: "on-first-retry",
