@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import type { Order } from "@/lib/types";
+import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -349,20 +350,17 @@ export default function Orders() {
             ))}
           </div>
         ) : orders.length === 0 ? (
-          // Polished empty state: real CTA instead of just descriptive
-          // text. Sends new buyers directly into the conversion funnel.
-          <div className="text-center py-20 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="orders-empty">
-            <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
-              <ShoppingBag className="h-7 w-7 text-primary" />
-            </div>
-            <h3 className="text-xl font-bold mb-2">No orders yet</h3>
-            <p className="text-muted-foreground mb-6 max-w-md mx-auto">
-              Once you purchase your first lead, it'll show up here with status, disputes, and replacement credits all in one place.
-            </p>
-            <Button onClick={() => navigate("/marketplace")} data-testid="orders-empty-cta">
-              Browse marketplace
-            </Button>
-          </div>
+          <EmptyState
+            icon={ShoppingBag}
+            title="No orders yet"
+            description="Once you purchase your first lead, it'll show up here with status, disputes, and replacement credits all in one place."
+            action={{
+              label: "Browse marketplace",
+              onClick: () => navigate("/marketplace"),
+              testId: "orders-empty-cta",
+            }}
+            data-testid="orders-empty"
+          />
         ) : (
           <div className="space-y-3">
             {orders.map((order) => {
