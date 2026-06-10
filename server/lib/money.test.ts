@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toUsd, addUsd, divUsd, mulUsd, centsToUsd } from "./money.js";
+import { toUsd, addUsd, divUsd, mulUsd, mulUsdMany, centsToUsd } from "./money.js";
 
 describe("toUsd", () => {
   it("formats numbers and strings to 2 decimals", () => {
@@ -55,10 +55,26 @@ describe("mulUsd", () => {
     // 0.1 * 0.2 in native float = 0.020000000000000004
     expect(mulUsd("0.1", "0.2")).toBe("0.02");
   });
+});
 
-  it("computes purchased * conv * commission cleanly", () => {
-    // mulUsd is binary — chain for three-way products.
-    expect(mulUsd(mulUsd(15, "0.07"), 400)).toBe("420.00");
+describe("mulUsdMany", () => {
+  it("multiplies three factors without intermediate rounding", () => {
+    // Chaining mulUsd would have rounded "0.045 * 15" → "0.68" before the
+    // ×400, giving 272.00. The single-round version gives 270.00 — the
+    // mathematically correct answer for 15 × 0.045 × 400.
+    expect(mulUsdMany(15, "0.045", 400)).toBe("270.00");
+  });
+
+  it("returns 0.00 for an empty product", () => {
+    expect(mulUsdMany()).toBe("0.00");
+  });
+
+  it("zeroes out when any factor is 0", () => {
+    expect(mulUsdMany(100, 0, 50)).toBe("0.00");
+  });
+
+  it("handles two-factor case", () => {
+    expect(mulUsdMany("0.1", "0.2")).toBe("0.02");
   });
 });
 

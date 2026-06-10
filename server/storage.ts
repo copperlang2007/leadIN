@@ -101,7 +101,7 @@ import {
   type ReputationEventType,
 } from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
-import { toUsd, divUsd, mulUsd } from "./lib/money";
+import { toUsd, divUsd, mulUsdMany } from "./lib/money";
 import { splitRevenue } from "./vendorPayouts";
 import {
   addRefundToBalance,
@@ -1823,17 +1823,18 @@ export class DatabaseStorage implements IStorage {
       .where(eq(orders.userId, agentUserId));
 
     const purchased = Number(purchasedRow?.count ?? 0);
-    // Drift-safe: pull the SUM as a string straight into Decimal — never
-    // route through parseFloat which can lose precision on long decimals.
-    const totalSpentUsd = toUsd(purchasedRow?.total ?? "0");
-    const averageCplUsd = divUsd(totalSpentUsd, purchased);
+    // Drift-safe: pass the raw SUM string straight through to the helpers
+    // so intermediate values keep full precision until the final rounding.
+    const totalRaw = purchasedRow?.total ?? "0";
+    const totalSpentUsd = toUsd(totalRaw);
+    const averageCplUsd = divUsd(totalRaw, purchased);
 
     const profile = await this.getAgentProfile(agentUserId);
     const conv = parseFloat(profile?.conversionRate ?? "0");
 
     // Rough commission estimate: $400 avg first-year commission per closed lead.
-    // mulUsd is binary — chain for the three-factor product to stay drift-safe.
-    const estimatedUsd = mulUsd(mulUsd(purchased, profile?.conversionRate ?? "0"), 400);
+    // mulUsdMany keeps all three factors at full precision and rounds once.
+    const estimatedUsd = mulUsdMany(purchased, profile?.conversionRate ?? "0", 400);
 
     return {
       openLeads: Number(openRow?.count ?? 0),

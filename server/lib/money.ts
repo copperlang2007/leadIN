@@ -49,11 +49,30 @@ export function divUsd(numerator: MoneyInput, denominator: MoneyInput, decimals 
 }
 
 /**
- * Multiply two currency inputs. Useful for `purchased * avgCommission`
- * style projections.
+ * Multiply a monetary value by another monetary value or dimensionless
+ * factor. Typical use is `money × scalar` (e.g. `purchased * avgCommission`
+ * or `money * 400`) — exactly one operand may be non-currency.
+ *
+ * Rounds to 2 decimals. For three-or-more-factor products, prefer
+ * `mulUsdMany` so intermediate rounding doesn't accumulate.
  */
 export function mulUsd(a: MoneyInput, b: MoneyInput): string {
   return toDecimal(a).times(toDecimal(b)).toFixed(2);
+}
+
+/**
+ * Multiply any number of monetary / scalar factors and round once at
+ * the end. Use instead of chaining `mulUsd` so intermediate values
+ * keep full precision.
+ *
+ * Example: `mulUsdMany(purchased, conversionRate, 400)` for a three-
+ * factor commission projection.
+ */
+export function mulUsdMany(...values: MoneyInput[]): string {
+  if (values.length === 0) return "0.00";
+  let product = new Decimal(1);
+  for (const v of values) product = product.times(toDecimal(v));
+  return product.toFixed(2);
 }
 
 /** Integer cents → USD string. Clamps negatives to 0.00. */
