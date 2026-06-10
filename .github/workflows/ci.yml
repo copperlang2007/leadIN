@@ -55,3 +55,7 @@ jobs:
             echo "Applying $f"
             psql -h localhost -U postgres -d leadmarket_ci -v ON_ERROR_STOP=1 -f "$f"
           done
+      - name: Integration tests (live Postgres)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/leadmarket_ci
+        run: npm run test:integration
