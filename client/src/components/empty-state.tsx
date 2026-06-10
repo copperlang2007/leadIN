@@ -23,12 +23,16 @@ export interface EmptyStateProps {
     /** Defaults to "default" — set "outline" for secondary contexts. */
     variant?: "default" | "outline";
     testId?: string;
+    /** Optional GA conversion-tracking id. Becomes `data-track-cta` on
+     *  the rendered button. */
+    trackCta?: string;
   };
   /** Optional secondary action — renders next to the primary. */
   secondaryAction?: {
     label: string;
     onClick: () => void;
     testId?: string;
+    trackCta?: string;
   };
   /** Compact mode for nested empty states (smaller padding, smaller icon).
    *  Use inside Cards; the default size suits page-level empty states. */
@@ -68,6 +72,7 @@ export function EmptyState({
               size={compact ? "sm" : "default"}
               onClick={action.onClick}
               data-testid={action.testId}
+              data-track-cta={action.trackCta}
             >
               {action.label}
             </Button>
@@ -78,6 +83,7 @@ export function EmptyState({
               size={compact ? "sm" : "default"}
               onClick={secondaryAction.onClick}
               data-testid={secondaryAction.testId}
+              data-track-cta={secondaryAction.trackCta}
             >
               {secondaryAction.label}
             </Button>
