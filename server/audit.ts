@@ -18,7 +18,9 @@ import { adminAuditLog, type AdminAuditEntry, type InsertAdminAuditEntry } from 
 import { log } from "./logger";
 
 export interface RecordAuditInput {
-  actorUserId: string;
+  // Pass null for system actors (cron jobs, sweeps, etc) that have no
+  // user row to attribute the action to. The DB column is nullable.
+  actorUserId: string | null;
   orgId?: string | null;
   action: string;
   targetKind?: string | null;

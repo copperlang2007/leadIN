@@ -11,6 +11,7 @@
     "check": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run server/__integration__",
     "lint": "eslint .",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",

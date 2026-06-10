@@ -108,12 +108,15 @@ export async function runDataRetentionSweep(now: Date = new Date()): Promise<Ret
         orgsScrubbed += 1;
         leadsScrubbed += count;
         await recordAudit({
-          actorUserId: "system:data-retention",
+          // Null actor — the data retention cron has no user identity.
+          // adminAuditLog.actor_user_id is nullable and FK-set-null on delete,
+          // so this is the correct shape for system actions.
+          actorUserId: null,
           orgId: policy.orgId,
           action: "data_retention.lead_pii_scrubbed",
           targetKind: "org",
           targetId: policy.orgId,
-          metadata: { leadCount: count, cutoff: cutoff.toISOString() },
+          metadata: { source: "system:data-retention", leadCount: count, cutoff: cutoff.toISOString() },
         }).catch(() => {
           /* recordAudit already swallows — this catch is defensive */
         });
