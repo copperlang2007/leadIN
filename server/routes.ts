@@ -51,6 +51,7 @@ import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { stripeWebhookIdempotency } from "./lib/eventIdempotency";
+import { getMetricsSnapshot } from "./lib/metrics";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
   autoIssueReplacement,
@@ -2626,6 +2627,23 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error listing audit log:", error);
       res.status(500).json({ message: "Failed to list audit log" });
+    }
+  });
+
+  // Admin-only in-process metrics snapshot. Plain JSON so the operator
+  // can curl it or wire it into a custom dashboard. For Prometheus-style
+  // scraping, a follow-up can serialise the same counters into text format.
+  app.get("/api/admin/metrics", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (!user || user.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      res.json(getMetricsSnapshot());
+    } catch (error) {
+      console.error("Error fetching metrics snapshot:", error);
+      res.status(500).json({ message: "Failed to fetch metrics" });
     }
   });
 
