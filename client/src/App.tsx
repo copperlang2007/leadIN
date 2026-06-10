@@ -47,6 +47,10 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Marketplace} />
+      {/* /marketplace as an alias for the home route so external links,
+          empty-state CTAs, and bookmarked URLs all resolve to the same
+          page. Without this, links to '/marketplace' would hit NotFound. */}
+      <Route path="/marketplace" component={Marketplace} />
       <Route path="/architect" component={ArchitectBlueprint} />
       <Route path="/orders" component={Orders} />
       <Route path="/profile" component={Profile} />
