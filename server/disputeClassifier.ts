@@ -105,7 +105,7 @@ export async function classifyDispute(input: ClassifierInput): Promise<Classific
   let response: { text: string; modelUsed: string };
   try {
     response = await chat({ system, user, maxTokens: 200 });
-  } catch (err: any) {
+  } catch {
     // Network / API failure: graceful fallback.
     const fb = fallbackFromReason(input.reason);
     return { ...fb, modelUsed: "stub-fallback" };

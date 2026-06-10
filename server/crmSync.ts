@@ -12,7 +12,7 @@
 
 import type { CrmAdapter, CrmLeadInput, CrmProvider } from "./lib/crm.js";
 import { getAdapter as defaultGetAdapter } from "./lib/crm.js";
-import type { CrmConnection, CrmSyncEvent, Lead, Order } from "@shared/schema";
+import type { CrmConnection, CrmSyncEvent, Order } from "@shared/schema";
 
 // The orchestrator only needs a narrow slice of storage so tests can
 // stub it in-memory without booting Drizzle.

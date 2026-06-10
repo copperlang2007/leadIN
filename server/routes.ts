@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import { type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import {
@@ -134,7 +134,7 @@ export async function adminHealthHandler(req: any, res: any) {
 }
 
 function stripPII(lead: any) {
-  const { consumerName, consumerPhone, consumerEmail, consumerAddress, ...rest } = lead;
+  const { consumerName: _name, consumerPhone: _phone, consumerEmail: _email, consumerAddress: _addr, ...rest } = lead;
   return {
     ...rest,
     consumerName: null,
@@ -2384,7 +2384,7 @@ export async function registerRoutes(
     try {
       const rows = await getTopOpportunityKeywords(20);
       res.json(rows);
-    } catch (err) {
+    } catch {
       res.status(500).json({ message: "Failed to fetch keyword signals" });
     }
   });
@@ -2453,14 +2453,6 @@ export async function registerRoutes(
   // ──────────────────────────────────────────────────────
   // Admin Routes
   // ──────────────────────────────────────────────────────
-
-  function isAdmin(req: any, res: any, next: any) {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    // We'll check role from DB in each handler for security
-    next();
-  }
 
   app.get("/api/admin/stats", isAuthenticated, async (req: any, res) => {
     try {
@@ -2686,7 +2678,7 @@ export async function registerRoutes(
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
       res.json({ isAdmin: user?.role === "admin" });
-    } catch (error) {
+    } catch {
       res.status(500).json({ message: "Failed to check admin status" });
     }
   });
@@ -2750,7 +2742,7 @@ export async function registerRoutes(
     try {
       const articles = await storage.getContentArticles(true);
       res.json(articles);
-    } catch (error) {
+    } catch {
       res.status(500).json({ message: "Failed to fetch articles" });
     }
   });
@@ -2763,7 +2755,7 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Article not found" });
       }
       res.json(article);
-    } catch (error) {
+    } catch {
       res.status(500).json({ message: "Failed to fetch article" });
     }
   });
@@ -2779,7 +2771,7 @@ export async function registerRoutes(
       await generateAndPublishArticle();
       const count = await storage.getPublishedArticleCount();
       res.json({ success: true, publishedCount: count });
-    } catch (error) {
+    } catch {
       res.status(500).json({ message: "Content generation failed" });
     }
   });
@@ -2794,7 +2786,7 @@ export async function registerRoutes(
       }
       const articles = await storage.getContentArticles(false);
       res.json(articles);
-    } catch (error) {
+    } catch {
       res.status(500).json({ message: "Failed to fetch articles" });
     }
   });
@@ -2841,7 +2833,7 @@ ${allUrls
       res.setHeader("Content-Type", "application/xml");
       res.setHeader("Cache-Control", "public, max-age=3600");
       res.send(xml);
-    } catch (error) {
+    } catch {
       res.status(500).send("<?xml version='1.0'?><urlset/>");
     }
   });

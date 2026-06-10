@@ -19,7 +19,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // eslint-disable-next-line no-console
+     
     console.error("React render error:", error, info);
     // Could POST to a /api/errors endpoint later — not required for this agent.
   }

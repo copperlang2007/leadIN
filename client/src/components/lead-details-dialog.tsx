@@ -123,7 +123,6 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
   if (!lead) return null;
 
   const displayLead = (isPurchased && revealedLead) ? revealedLead : lead;
-  const hasPII = !!(displayLead.consumerName || displayLead.consumerPhone || displayLead.consumerEmail || displayLead.consumerAddress);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

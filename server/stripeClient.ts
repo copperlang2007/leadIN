@@ -1,7 +1,5 @@
 import Stripe from "stripe";
 
-let stripeInstance: Stripe | null = null;
-
 export async function getUncachableStripeClient(): Promise<Stripe> {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey) {

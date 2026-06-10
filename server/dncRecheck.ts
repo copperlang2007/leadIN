@@ -4,7 +4,7 @@
 
 import { db } from "./db";
 import { leads } from "@shared/schema";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { checkDnc } from "./dncCompliance";
 import { recomputeAndPersistMediScore } from "./mediscore";
 import { registerCron } from "./lib/cronRegistry";

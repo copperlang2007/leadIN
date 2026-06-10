@@ -3,7 +3,7 @@
 // surface the breakdown (active_signals count) for buyers.
 
 import { db } from "./db";
-import { eq, and, gte, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { leads, cmsPlanSignals, behavioralEvents, keywordSignals } from "@shared/schema";
 
 export interface MediScoreSignal {
