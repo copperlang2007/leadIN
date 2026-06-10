@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2, AlertTriangle } from "lucide-react";
+import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2, AlertTriangle, Users, Store } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { PermissionRequired } from "@/components/permission-required";
@@ -317,7 +317,15 @@ export default function OrgAdmin() {
                 Couldn't load agents: {agentsError.message}
               </p>
             ) : agents.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">No agents in this organization yet.</p>
+              <div className="text-center py-10 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="org-admin-no-agents">
+                <div className="inline-flex h-12 w-12 rounded-full bg-background border items-center justify-center mb-3">
+                  <Users className="h-5 w-5 text-primary" />
+                </div>
+                <h3 className="font-semibold mb-1">No agents in this org yet</h3>
+                <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                  Invite agents from the user list above, or share the org's signup link. As soon as they accept, their profile shows up here with conversion and capacity stats.
+                </p>
+              </div>
             ) : (
               <div className="space-y-2">
                 {agents.map(a => {
@@ -557,7 +565,15 @@ export default function OrgAdmin() {
               {balancesLoading ? (
                 <Skeleton className="h-32" />
               ) : vendorBalances.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-6 text-center">No vendors yet.</p>
+                <div className="text-center py-10 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="org-admin-no-vendors">
+                  <div className="inline-flex h-12 w-12 rounded-full bg-background border items-center justify-center mb-3">
+                    <Store className="h-5 w-5 text-primary" />
+                  </div>
+                  <h3 className="font-semibold mb-1">No vendor payouts yet</h3>
+                  <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                    Vendor balances will appear here as soon as your first lead sale settles. Pending and paid totals refresh nightly.
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-1">
                   <div className="grid grid-cols-12 gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
