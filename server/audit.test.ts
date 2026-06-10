@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { adminAuditLog } from "@shared/schema";
 import {
   recordAudit,
+  recordLeadRevealAudit,
   listAudit,
   __setAuditStoreForTesting,
   type AuditStore,
@@ -155,6 +156,64 @@ describe("recordAudit", () => {
       targetId: "42",
       metadata: { keyPrefix: "lcp_abc" },
     });
+  });
+});
+
+describe("recordLeadRevealAudit", () => {
+  let reset: (() => void) | undefined;
+
+  afterEach(() => {
+    reset?.();
+    reset = undefined;
+    vi.restoreAllMocks();
+  });
+
+  it("writes a row with the canonical lead.pii_reveal shape", async () => {
+    const { store, insertCalls } = makeMockStore();
+    reset = __setAuditStoreForTesting(store);
+
+    await recordLeadRevealAudit({
+      actorUserId: "u-7",
+      leadId: 42,
+      orgId: "org-1",
+      ip: "203.0.113.5",
+      userAgent: "Mozilla/5.0",
+    });
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values).toEqual({
+      actorUserId: "u-7",
+      orgId: "org-1",
+      action: "lead.pii_reveal",
+      targetKind: "lead",
+      targetId: "42",
+      metadata: { ip: "203.0.113.5", userAgent: "Mozilla/5.0" },
+    });
+  });
+
+  it("normalises missing ip/userAgent/orgId to null", async () => {
+    const { store, insertCalls } = makeMockStore();
+    reset = __setAuditStoreForTesting(store);
+
+    await recordLeadRevealAudit({ actorUserId: "u-7", leadId: "99" });
+
+    expect(insertCalls[0].values).toEqual({
+      actorUserId: "u-7",
+      orgId: null,
+      action: "lead.pii_reveal",
+      targetKind: "lead",
+      targetId: "99",
+      metadata: { ip: null, userAgent: null },
+    });
+  });
+
+  it("never throws when the underlying insert fails", async () => {
+    const { store } = makeMockStore({ insertThrows: true });
+    reset = __setAuditStoreForTesting(store);
+
+    await expect(
+      recordLeadRevealAudit({ actorUserId: "u-7", leadId: 1 }),
+    ).resolves.toBeUndefined();
   });
 });
 

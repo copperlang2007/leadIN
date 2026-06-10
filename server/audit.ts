@@ -107,6 +107,32 @@ function clampLimit(raw: number | undefined): number {
   return Math.floor(n);
 }
 
+// Convenience wrapper for the PII-reveal audit, which has a fixed shape
+// (action, targetKind) and a small set of metadata fields. Centralised
+// here so every caller emits the same row shape — invaluable for compliance
+// queries that need to count "all PII reveals last 30 days".
+export interface LeadRevealAuditInput {
+  actorUserId: string;
+  leadId: number | string;
+  orgId?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+}
+
+export async function recordLeadRevealAudit(input: LeadRevealAuditInput): Promise<void> {
+  await recordAudit({
+    actorUserId: input.actorUserId,
+    orgId: input.orgId ?? null,
+    action: "lead.pii_reveal",
+    targetKind: "lead",
+    targetId: String(input.leadId),
+    metadata: {
+      ip: input.ip ?? null,
+      userAgent: input.userAgent ?? null,
+    },
+  });
+}
+
 // Re-export for tests that want to assert on the SQL helpers without
 // re-importing drizzle.
 export const __internals = { sql, eq, and, desc };

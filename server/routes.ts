@@ -45,7 +45,7 @@ import {
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
-import { recordAudit, listAudit } from "./audit";
+import { recordAudit, listAudit, recordLeadRevealAudit } from "./audit";
 import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
@@ -476,6 +476,16 @@ export async function registerRoutes(
           return res.status(403).json({ message: "Lead not available to your organization" });
         }
       }
+
+      // Audit the PII reveal before we hand it out. recordAudit swallows its
+      // own errors so a failure here cannot block the response.
+      await recordLeadRevealAudit({
+        actorUserId: userId,
+        leadId,
+        orgId: lead.orgId ?? null,
+        ip: req.ip ?? null,
+        userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
+      });
 
       // Return full lead with PII
       res.json(lead);
