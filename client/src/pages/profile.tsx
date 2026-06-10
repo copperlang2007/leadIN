@@ -115,9 +115,19 @@ export default function Profile() {
     JSON.stringify([...licensedStates].sort()) !== JSON.stringify([...(profile?.licensedStates || [])].sort()) ||
     JSON.stringify([...preferredTypes].sort()) !== JSON.stringify([...(profile?.preferredTypes || [])].sort());
 
+  // Format the balance via Decimal-equivalent string handling to avoid
+  // the classic 0.1+0.2 float drift on user-visible money.
+  const balanceDisplay = (() => {
+    const raw = user?.balance ?? "0";
+    const n = parseFloat(String(raw));
+    return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+  })();
+
   return (
     <Layout>
-      <div className="max-w-4xl mx-auto space-y-6 pb-12">
+      {/* pb-24 leaves room for the sticky save bar so the last card
+          isn't covered when the user scrolls to the bottom. */}
+      <div className="max-w-4xl mx-auto space-y-6 pb-24">
         <div>
           <h1 className="text-3xl font-display font-bold tracking-tight flex items-center gap-2">
             <User className="h-7 w-7 text-primary" />
@@ -150,8 +160,8 @@ export default function Profile() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1">Account Balance</p>
-              <p className="font-mono font-bold text-primary text-lg">
-                ${user?.balance ? parseFloat(user.balance).toFixed(2) : "0.00"}
+              <p className="font-mono font-bold text-primary text-lg" data-testid="profile-balance">
+                ${balanceDisplay}
               </p>
             </div>
             <div>
@@ -299,11 +309,19 @@ export default function Profile() {
           </CardContent>
         </Card>
 
-        {/* Save Button */}
-        <div className="flex justify-end gap-3">
-          {hasChanges && (
-            <p className="text-xs text-muted-foreground self-center">You have unsaved changes.</p>
-          )}
+      </div>
+
+      {/* Sticky save bar. Appears only when the user has unsaved changes
+          so it doesn't take up vertical space otherwise. The translate
+          transition slides it up from off-screen. */}
+      <div
+        className={`fixed bottom-0 left-0 right-0 md:left-64 z-40 bg-card border-t shadow-lg
+          transition-transform duration-300
+          ${hasChanges ? "translate-y-0" : "translate-y-full"}`}
+        aria-hidden={!hasChanges}
+      >
+        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">You have unsaved changes</p>
           <Button
             onClick={() => saveMutation.mutate()}
             disabled={saveMutation.isPending || !hasChanges}
@@ -313,7 +331,7 @@ export default function Profile() {
             {saveMutation.isPending ? (
               <><Loader2 className="h-4 w-4 animate-spin" /> Saving...</>
             ) : (
-              <><Save className="h-4 w-4" /> Save Profile</>
+              <><Save className="h-4 w-4" /> Save profile</>
             )}
           </Button>
         </div>
