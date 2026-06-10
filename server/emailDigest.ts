@@ -8,6 +8,7 @@ import { and, eq, gte, sql, count, inArray } from "drizzle-orm";
 import { leads, orders, leadAssignments, orgMembers, users, organizations } from "@shared/schema";
 import { sendEmail } from "./emailNotifications";
 import { registerCron } from "./lib/cronRegistry";
+import { toUsd } from "./lib/money";
 
 interface OrgDigest {
   orgName: string;
@@ -56,7 +57,7 @@ function digestHtml(d: OrgDigest): string {
       <tr><td style="padding: 6px 12px;">Of which DNC-flagged</td><td style="padding: 6px 12px; text-align: right; color: #c14b4b;">${d.dncFlagged}</td></tr>
       <tr><td style="padding: 6px 12px;">Routed assignments</td><td style="padding: 6px 12px; text-align: right; font-weight: 600;">${d.newAssignments}</td></tr>
       <tr><td style="padding: 6px 12px;">Purchases</td><td style="padding: 6px 12px; text-align: right; font-weight: 600;">${d.orders}</td></tr>
-      <tr><td style="padding: 6px 12px;">Revenue</td><td style="padding: 6px 12px; text-align: right; font-weight: 600;">$${parseFloat(d.revenue).toFixed(2)}</td></tr>
+      <tr><td style="padding: 6px 12px;">Revenue</td><td style="padding: 6px 12px; text-align: right; font-weight: 600;">$${toUsd(d.revenue)}</td></tr>
     </table>
   `;
 }
