@@ -23,9 +23,12 @@ test.describe("navigation", () => {
 
   test("landing → pricing → landing round-trips cleanly", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: /see pricing/i }).click();
+    // .first() against strict-mode duplicates added by the landing footer
+     // CTA in #26 and the public footer in #37.
+    await page.getByRole("button", { name: /see pricing/i }).first().click();
     await expect(page).toHaveURL(/\/pricing$/);
-    // Logo / brand link returns to the landing page.
+    // Logo / brand link returns to the landing page. .first() picks the
+    // header LeadMarket link (vs the footer brand block).
     const brand = page.getByRole("link", { name: /LeadMarket/i }).first();
     await brand.click();
     await expect(page).toHaveURL(/\/$/);
