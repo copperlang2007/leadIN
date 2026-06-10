@@ -100,14 +100,14 @@ export default function Blog() {
           {!isLoading && articles.length === 0 && (
             <div
               data-testid="blog-empty"
-              className="text-center py-20 text-slate-500"
+              className="text-center py-20 px-6 border border-dashed rounded-xl bg-muted/20"
             >
-              <Rss className="h-10 w-10 mx-auto mb-4 opacity-40" />
-              <p className="text-lg font-medium text-slate-400">
-                No articles yet
-              </p>
-              <p className="text-sm mt-1">
-                The content engine will publish the first article shortly.
+              <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
+                <Rss className="h-7 w-7 text-primary" />
+              </div>
+              <h3 className="text-xl font-bold mb-2">No articles yet</h3>
+              <p className="text-muted-foreground max-w-md mx-auto">
+                The content engine publishes new posts as it pulls in industry signals. Check back shortly — or follow us on social for instant notifications.
               </p>
             </div>
           )}
