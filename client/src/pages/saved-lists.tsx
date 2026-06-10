@@ -156,9 +156,10 @@ export default function SavedLists() {
             </CardHeader>
             <CardContent>
               {openList.leads.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  Empty. From the marketplace, save a lead via the detail dialog (coming soon).
-                </p>
+                <div className="text-sm text-muted-foreground py-6 px-4 text-center border border-dashed rounded-lg bg-muted/10" data-testid="open-list-empty">
+                  <p className="mb-1 font-medium text-foreground">No leads in this list yet</p>
+                  <p>From the marketplace, open any lead and click the bookmark icon to save it here.</p>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {openList.leads.map(lead => (
