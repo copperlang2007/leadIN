@@ -21,14 +21,26 @@ import { db } from "../db";
 import { users, organizations, vendors, leads, stripeCheckoutSessions } from "@shared/schema";
 import { randomBytes } from "crypto";
 
-export const LIVE = process.env.LIVE_DB_TESTS === "1" && !!process.env.DATABASE_URL;
+// LIVE is true when either the env flag is set explicitly, OR the test
+// runner was invoked via `npm run test:integration` (which sets
+// npm_lifecycle_event). The script-name path avoids needing POSIX-only
+// `LIVE_DB_TESTS=1 vitest run` inline assignment in package.json, so the
+// command works on Windows shells too.
+export const LIVE =
+  (process.env.LIVE_DB_TESTS === "1" ||
+    process.env.npm_lifecycle_event === "test:integration") &&
+  !!process.env.DATABASE_URL;
 
 /** A fresh id suitable for varchar primary keys. */
 export function freshId(prefix: string): string {
   return `${prefix}_${Date.now()}_${randomBytes(4).toString("hex")}`;
 }
 
-/** Ensure the DB is reachable. Skip helper for `beforeAll`. */
+/**
+ * Throws when the DB is unreachable. Use in `beforeAll` to fail fast
+ * before each integration test wastes time hitting timeouts. Skip
+ * semantics live on the `describe.skipIf(!LIVE)` block, not here.
+ */
 export async function assertDbReachable(): Promise<void> {
   await db.execute(sql`SELECT 1`);
 }
