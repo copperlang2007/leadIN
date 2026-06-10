@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   ArrowRight,
 } from "lucide-react";
+import { Footer } from "@/components/footer";
 import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_background.png";
 
 const STATS = [
@@ -309,6 +310,8 @@ export default function Landing() {
           </Button>
         </div>
       </div>
+
+      <Footer />
     </div>
   );
 }

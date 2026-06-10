@@ -7,6 +7,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { Footer } from "@/components/footer";
 
 type SubscriptionTier = "starter" | "growth" | "scale";
 
@@ -277,6 +278,8 @@ export default function Pricing() {
           </p>
         </div>
       </div>
+
+      <Footer />
     </div>
   );
 }
