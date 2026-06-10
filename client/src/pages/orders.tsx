@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +29,6 @@ import {
   Calendar,
   MapPin,
   Building2,
-  AlertCircle,
   Download,
   Phone,
   AtSign,
@@ -102,6 +102,7 @@ const REASON_LABELS: Record<DisputeReason, string> = {
 const NOTES_MAX = 2000;
 
 export default function Orders() {
+  const [, navigate] = useLocation();
   const { data: orders = [], isLoading } = useQuery<OrderWithLead[]>({
     queryKey: ["/api/orders"],
   });
@@ -348,12 +349,19 @@ export default function Orders() {
             ))}
           </div>
         ) : orders.length === 0 ? (
-          <div className="text-center py-24 border border-dashed rounded-lg">
-            <AlertCircle className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
-            <h3 className="text-lg font-semibold">No orders yet</h3>
-            <p className="text-muted-foreground text-sm mt-1">
-              Head to the marketplace to purchase your first lead.
+          // Polished empty state: real CTA instead of just descriptive
+          // text. Sends new buyers directly into the conversion funnel.
+          <div className="text-center py-20 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="orders-empty">
+            <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
+              <ShoppingBag className="h-7 w-7 text-primary" />
+            </div>
+            <h3 className="text-xl font-bold mb-2">No orders yet</h3>
+            <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+              Once you purchase your first lead, it'll show up here with status, disputes, and replacement credits all in one place.
             </p>
+            <Button onClick={() => navigate("/marketplace")} data-testid="orders-empty-cta">
+              Browse marketplace
+            </Button>
           </div>
         ) : (
           <div className="space-y-3">
