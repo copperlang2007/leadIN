@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import { FileText, Plus, Trash2, Loader2, Bookmark } from "lucide-react";
 import type { Lead } from "@/lib/types";
 
@@ -114,14 +115,14 @@ export default function SavedLists() {
               ))}
             </>
           ) : lists.length === 0 ? (
-            <div className="col-span-2 text-center py-12 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="saved-lists-empty">
-              <div className="inline-flex h-14 w-14 rounded-full bg-background border items-center justify-center mb-3">
-                <Bookmark className="h-6 w-6 text-primary" />
-              </div>
-              <h3 className="font-semibold mb-1">No saved lists yet</h3>
-              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                Bookmark interesting leads from the marketplace and group them here. Useful for tracking warm prospects across multiple sessions.
-              </p>
+            <div className="col-span-2">
+              <EmptyState
+                icon={Bookmark}
+                title="No saved lists yet"
+                description="Bookmark interesting leads from the marketplace and group them here. Useful for tracking warm prospects across multiple sessions."
+                compact
+                data-testid="saved-lists-empty"
+              />
             </div>
           ) : (
             lists.map(l => (
