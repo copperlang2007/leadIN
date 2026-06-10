@@ -50,6 +50,7 @@ import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
+import { stripeWebhookIdempotency } from "./lib/eventIdempotency";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
   autoIssueReplacement,
@@ -182,6 +183,14 @@ export async function registerRoutes(
 
       const rawBody = req.rawBody as Buffer;
       const event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
+
+      // Idempotency guard: Stripe retries on slow / failed responses.
+      // First sighting → process; subsequent → respond 200 immediately
+      // without re-running side effects.
+      if (!stripeWebhookIdempotency.markSeenOnce(event.id)) {
+        console.log(`Stripe webhook duplicate (event ${event.id}, type ${event.type}) — skipping`);
+        return res.json({ received: true, duplicate: true });
+      }
 
       if (event.type === "checkout.session.completed") {
         const session = event.data.object as any;
