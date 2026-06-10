@@ -36,7 +36,10 @@ function Router() {
         <Route path="/blog/:slug" component={BlogPost} />
         <Route path="/pricing" component={Pricing} />
         <Route path="/" component={Landing} />
-        <Route component={Landing} />
+        {/* Unknown routes should render NotFound, not silently fall back to
+            Landing. A guest hitting a stale link previously got a confusing
+            'why am I on the marketing page?' moment. */}
+        <Route component={NotFound} />
       </Switch>
     );
   }
