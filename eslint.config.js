@@ -17,6 +17,9 @@ export default [
       // Worktrees are short-lived agent sandboxes that mirror real source.
       // Linting them double-counts warnings against the same files.
       ".claude/worktrees/**",
+      // Playwright artifacts.
+      "test-results/**",
+      "playwright-report/**",
     ],
   },
   {

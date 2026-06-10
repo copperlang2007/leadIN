@@ -13,3 +13,7 @@ vite.config.ts.*
 coverage
 .claude/
 .ci-migrations/
+# Playwright artifacts — local runs only, never committed.
+test-results/
+playwright-report/
+.playwright/
