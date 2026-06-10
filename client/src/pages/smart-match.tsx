@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Trash2, Loader2 } from "lucide-react";
+import { Sparkles, Trash2, Loader2, Zap } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 
 interface SmartMatchSubscription {
@@ -230,11 +231,23 @@ export default function SmartMatchPage() {
           </CardHeader>
           <CardContent>
             {isLoading ? (
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              // Skeleton stack matches subscription card height — three
+              // rows so the visual weight stays consistent during refetch.
+              <div className="space-y-3">
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-20 w-full rounded-lg" />
+                ))}
               </div>
             ) : subs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active subscriptions yet.</p>
+              <div className="text-center py-10 px-6 border border-dashed rounded-xl bg-muted/20" data-testid="smart-match-empty">
+                <div className="inline-flex h-12 w-12 rounded-full bg-background border items-center justify-center mb-3">
+                  <Zap className="h-5 w-5 text-primary" />
+                </div>
+                <h3 className="font-semibold mb-1">No active subscriptions yet</h3>
+                <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                  Set up a smart-match subscription above and we'll auto-route matching leads straight to you — no marketplace scrolling required.
+                </p>
+              </div>
             ) : (
               <div className="space-y-3">
                 {subs.map(s => {
