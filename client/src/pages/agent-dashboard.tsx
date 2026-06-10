@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
@@ -175,6 +175,7 @@ interface ReputationResponse {
 }
 
 export default function AgentDashboard() {
+  const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
   // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the
   // main dashboard render. If it fails or hasn't loaded yet we show "—".
@@ -292,11 +293,14 @@ export default function AgentDashboard() {
                 <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
                   Routing assigns high-scoring leads automatically based on your license, territory, and conversion history. New ones will appear here in real time.
                 </p>
-                <Link href="/marketplace">
-                  <Button variant="outline" size="sm" data-testid="dashboard-browse-marketplace">
-                    Browse the marketplace
-                  </Button>
-                </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate("/marketplace")}
+                  data-testid="dashboard-browse-marketplace"
+                >
+                  Browse the marketplace
+                </Button>
               </div>
             ) : (
               <div className="space-y-2">
