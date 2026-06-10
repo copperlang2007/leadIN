@@ -19,7 +19,8 @@ import {
   AccordionItem,
   AccordionTrigger
 } from "@/components/ui/accordion";
-import { Filter, X, ArrowUpDown, CheckCircle2, Loader2 } from "lucide-react";
+import { Filter, X, ArrowUpDown, CheckCircle2, Search, Sparkles } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Drawer,
   DrawerClose,
@@ -478,8 +479,24 @@ export default function Marketplace() {
             )}
 
             {isLoading ? (
-              <div className="flex items-center justify-center py-20">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              // Skeleton grid that mirrors the lead-card layout. Far less
+              // jarring than a centered spinner — the user sees the page
+              // shape immediately and content streams in.
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+                {[0, 1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="bg-card border rounded-lg p-5 space-y-4">
+                    <div className="flex items-start justify-between">
+                      <Skeleton className="h-6 w-24" />
+                      <Skeleton className="h-6 w-16" />
+                    </div>
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-4 w-1/2" />
+                    <div className="flex gap-2 pt-2">
+                      <Skeleton className="h-9 flex-1" />
+                      <Skeleton className="h-9 w-20" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
               <>
@@ -498,18 +515,61 @@ export default function Marketplace() {
                   ))}
                 </div>
 
-                {leads.length === 0 && (
-                  <div className="text-center py-20 bg-muted/20 rounded-lg border border-dashed border-border">
-                    <h3 className="text-lg font-medium">No leads found</h3>
-                    <p className="text-muted-foreground">Try adjusting your filters to see more results.</p>
-                    <Button
-                      variant="link"
-                      onClick={() => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); }}
-                    >
-                      Clear all filters
-                    </Button>
-                  </div>
-                )}
+                {leads.length === 0 && (() => {
+                  // Two empty-state shapes:
+                  // 1. Filters active → user can fix it. Show clear-filters CTA.
+                  // 2. No filters but still 0 leads → marketplace is genuinely
+                  //    quiet for this user (no licensed states, no matches in
+                  //    their territory). Steer toward smart-match or settings.
+                  const hasFilters = selectedTypes.length > 0 || selectedStates.length > 0 || priceRange[0] !== 0 || priceRange[1] !== 100;
+                  return (
+                    <div className="text-center py-20 px-6 bg-muted/20 rounded-xl border border-dashed border-border" data-testid="marketplace-empty">
+                      <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
+                        {hasFilters ? <Search className="h-7 w-7 text-muted-foreground" /> : <Sparkles className="h-7 w-7 text-primary" />}
+                      </div>
+                      {hasFilters ? (
+                        <>
+                          <h3 className="text-xl font-bold mb-2">No leads match those filters</h3>
+                          <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+                            Loosen up the criteria or clear them entirely — new leads land in the marketplace every few minutes.
+                          </p>
+                          <Button
+                            variant="default"
+                            onClick={() => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); }}
+                            data-testid="empty-clear-filters"
+                          >
+                            <X className="h-4 w-4 mr-2" />
+                            Clear all filters
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="text-xl font-bold mb-2">The marketplace is warming up</h3>
+                          <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+                            No leads match your licensed states or territory right now. Set up a smart-match subscription
+                            and we'll route fresh leads to you the moment they ingest.
+                          </p>
+                          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                            <Button
+                              variant="default"
+                              onClick={() => (window.location.href = "/smart-match")}
+                              data-testid="empty-smart-match-cta"
+                            >
+                              Set up smart-match
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => (window.location.href = "/agent-onboarding")}
+                              data-testid="empty-onboarding-cta"
+                            >
+                              Update your territory
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
