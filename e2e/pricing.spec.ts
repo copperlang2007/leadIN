@@ -10,12 +10,11 @@ import { test, expect } from "@playwright/test";
 test.describe("pricing page", () => {
   test("renders three subscription tiers", async ({ page }) => {
     await page.goto("/pricing");
-    // CardTitle in pricing.tsx renders as a styled div, not an h2 —
-    // getByRole('heading') wouldn't find it. Match the tier name text
-    // directly with an anchored regex so we don't false-match other
-    // places the name appears in marketing copy.
-    for (const tier of ["Starter", "Growth", "Scale"]) {
-      await expect(page.getByText(new RegExp(`^${tier}$`, "i")).first()).toBeVisible();
+    // CardTitle renders as a styled div, not an h2, so getByRole('heading')
+    // can't find it. Lock onto stable data-testids on the tier title rather
+    // than visible text — copy can change without breaking the test.
+    for (const id of ["starter", "growth", "scale"]) {
+      await expect(page.getByTestId(`tier-title-${id}`)).toBeVisible();
     }
   });
 
