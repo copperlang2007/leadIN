@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BookOpen, Calendar, ChevronRight, Rss, ShieldCheck } from "lucide-react";
 import { format } from "date-fns";
+import { EmptyState } from "@/components/empty-state";
 
 interface Article {
   id: number;
@@ -98,18 +99,12 @@ export default function Blog() {
 
           {/* Empty state */}
           {!isLoading && articles.length === 0 && (
-            <div
+            <EmptyState
+              icon={Rss}
+              title="No articles yet"
+              description="The content engine publishes new posts as it pulls in industry signals. Check back shortly — or follow us on social for instant notifications."
               data-testid="blog-empty"
-              className="text-center py-20 px-6 border border-dashed rounded-xl bg-muted/20"
-            >
-              <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
-                <Rss className="h-7 w-7 text-primary" />
-              </div>
-              <h3 className="text-xl font-bold mb-2">No articles yet</h3>
-              <p className="text-muted-foreground max-w-md mx-auto">
-                The content engine publishes new posts as it pulls in industry signals. Check back shortly — or follow us on social for instant notifications.
-              </p>
-            </div>
+            />
           )}
 
           {/* Loading skeletons */}
