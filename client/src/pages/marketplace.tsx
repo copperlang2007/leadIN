@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/accordion";
 import { Filter, X, ArrowUpDown, CheckCircle2, Search, Sparkles } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/empty-state";
 import {
   Drawer,
   DrawerClose,
@@ -522,52 +523,35 @@ export default function Marketplace() {
                   //    quiet for this user (no licensed states, no matches in
                   //    their territory). Steer toward smart-match or settings.
                   const hasFilters = selectedTypes.length > 0 || selectedStates.length > 0 || priceRange[0] !== 0 || priceRange[1] !== 100;
-                  return (
-                    <div className="text-center py-20 px-6 bg-muted/20 rounded-xl border border-dashed border-border" data-testid="marketplace-empty">
-                      <div className="inline-flex h-16 w-16 rounded-full bg-background border items-center justify-center mb-4">
-                        {hasFilters ? <Search className="h-7 w-7 text-muted-foreground" /> : <Sparkles className="h-7 w-7 text-primary" />}
-                      </div>
-                      {hasFilters ? (
-                        <>
-                          <h3 className="text-xl font-bold mb-2">No leads match those filters</h3>
-                          <p className="text-muted-foreground mb-6 max-w-md mx-auto">
-                            Loosen up the criteria or clear them entirely — new leads land in the marketplace every few minutes.
-                          </p>
-                          <Button
-                            variant="default"
-                            onClick={() => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); }}
-                            data-testid="empty-clear-filters"
-                          >
-                            <X className="h-4 w-4 mr-2" />
-                            Clear all filters
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <h3 className="text-xl font-bold mb-2">The marketplace is warming up</h3>
-                          <p className="text-muted-foreground mb-6 max-w-md mx-auto">
-                            No leads match your licensed states or territory right now. Set up a smart-match subscription
-                            and we'll route fresh leads to you the moment they ingest.
-                          </p>
-                          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                            <Button
-                              variant="default"
-                              onClick={() => (window.location.href = "/smart-match")}
-                              data-testid="empty-smart-match-cta"
-                            >
-                              Set up smart-match
-                            </Button>
-                            <Button
-                              variant="outline"
-                              onClick={() => (window.location.href = "/agent-onboarding")}
-                              data-testid="empty-onboarding-cta"
-                            >
-                              Update your territory
-                            </Button>
-                          </div>
-                        </>
-                      )}
-                    </div>
+                  return hasFilters ? (
+                    <EmptyState
+                      icon={Search}
+                      title="No leads match those filters"
+                      description="Loosen up the criteria or clear them entirely — new leads land in the marketplace every few minutes."
+                      action={{
+                        label: "Clear all filters",
+                        onClick: () => { setSelectedTypes([]); setSelectedStates([]); setPriceRange([0, 100]); },
+                        testId: "empty-clear-filters",
+                      }}
+                      data-testid="marketplace-empty"
+                    />
+                  ) : (
+                    <EmptyState
+                      icon={Sparkles}
+                      title="The marketplace is warming up"
+                      description="No leads match your licensed states or territory right now. Set up a smart-match subscription and we'll route fresh leads to you the moment they ingest."
+                      action={{
+                        label: "Set up smart-match",
+                        onClick: () => (window.location.href = "/smart-match"),
+                        testId: "empty-smart-match-cta",
+                      }}
+                      secondaryAction={{
+                        label: "Update your territory",
+                        onClick: () => (window.location.href = "/agent-onboarding"),
+                        testId: "empty-onboarding-cta",
+                      }}
+                      data-testid="marketplace-empty"
+                    />
                   );
                 })()}
               </>
