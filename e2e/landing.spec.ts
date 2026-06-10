@@ -11,8 +11,10 @@ test.describe("landing page", () => {
   test("renders headline + primary CTAs above the fold", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/insurance leads/i);
-    await expect(page.getByRole("button", { name: /get started/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /see pricing/i })).toBeVisible();
+    // Landing now has two "Get Started Free" buttons (hero + final CTA
+     // section). .first() locks onto the hero one which is above the fold.
+    await expect(page.getByRole("button", { name: /get started/i }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /see pricing/i }).first()).toBeVisible();
   });
 
   test("trust badges are present", async ({ page }) => {
@@ -22,7 +24,7 @@ test.describe("landing page", () => {
 
   test("See Pricing CTA navigates to /pricing", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: /see pricing/i }).click();
+    await page.getByRole("button", { name: /see pricing/i }).first().click();
     await expect(page).toHaveURL(/\/pricing$/);
   });
 
@@ -30,7 +32,9 @@ test.describe("landing page", () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     // CTAs stack but stay visible.
-    await expect(page.getByRole("button", { name: /get started/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /see pricing/i })).toBeVisible();
+    // Landing now has two "Get Started Free" buttons (hero + final CTA
+     // section). .first() locks onto the hero one which is above the fold.
+    await expect(page.getByRole("button", { name: /get started/i }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /see pricing/i }).first()).toBeVisible();
   });
 });
