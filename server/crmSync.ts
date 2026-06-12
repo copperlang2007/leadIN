@@ -12,6 +12,7 @@
 
 import type { CrmAdapter, CrmLeadInput, CrmProvider } from "./lib/crm.js";
 import { getAdapter as defaultGetAdapter } from "./lib/crm.js";
+import { crmReputationIdempotency } from "./lib/eventIdempotency.js";
 import type { CrmConnection, CrmSyncEvent, Order } from "@shared/schema";
 
 // The orchestrator only needs a narrow slice of storage so tests can
@@ -325,6 +326,14 @@ export async function handleInboundWebhook(
   const order = await storage.getOrderById(orderId).catch(() => undefined);
   if (!order || !order.userId) {
     return { matched: true, repEmitted: false, reason: "order_not_found" };
+  }
+
+  // Dedup at the application level so a replayed closed-won webhook
+  // can't pump up an agent's reputation indefinitely. Even a properly
+  // signed webhook from a real CRM can fire twice on retry.
+  const idempotencyKey = `${provider}:${normalised.externalId}`;
+  if (!crmReputationIdempotency.markSeenOnce(idempotencyKey)) {
+    return { matched: true, repEmitted: false, reason: "rep_already_emitted" };
   }
 
   try {

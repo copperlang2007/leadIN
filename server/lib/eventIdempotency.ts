@@ -108,3 +108,11 @@ export function createIdempotencyTracker(opts: CreateOpts = {}): IdempotencyTrac
 // Module-level default — what the Stripe webhook handler uses. Tests
 // can spin up isolated trackers via createIdempotencyTracker().
 export const stripeWebhookIdempotency: IdempotencyTracker = createIdempotencyTracker();
+
+// CRM reputation-event dedup. Key = `${provider}:${externalId}` so the
+// same provider deal can't fire +10 rep events on every replay. Same
+// trade-off as the Stripe one — per-process; multi-pod hardening is a
+// shared follow-up. Sized smaller because rep events are lower volume.
+export const crmReputationIdempotency: IdempotencyTracker = createIdempotencyTracker({
+  maxEntries: 2_000,
+});

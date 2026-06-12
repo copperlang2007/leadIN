@@ -12,6 +12,7 @@ function baseProd(): NodeJS.ProcessEnv {
     STRIPE_PRICE_STARTER: "price_s",
     STRIPE_PRICE_GROWTH: "price_g",
     STRIPE_PRICE_SCALE: "price_x",
+    CRM_WEBHOOK_SECRET: "crm-secret",
     SENTRY_DSN: "https://abc@sentry.io/1",
     REDIS_URL: "redis://x",
   } as NodeJS.ProcessEnv;
