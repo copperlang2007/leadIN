@@ -5,25 +5,20 @@
 // e.g. `new Error("User with phone +1-555-1234 already exists")` from a
 // duplicate-key violation, or a TrustedForm 4xx that quotes the lead's
 // email — that data lands in stdout, Sentry, and any log shipper
-// downstream. `redactPii` from shared/pii covers the structural case
-// (objects with PII-named keys) but doesn't scrub the *string* of a
-// raw error message.
+// downstream.
 //
 // safeError takes anything throwable and returns a stable, JSON-safe
 // shape with the message string scrubbed of SSN-shaped, phone-shaped,
-// and email-shaped substrings. Non-Error throws (strings, numbers,
-// undefined) get a sentinel.
+// and email-shaped substrings via the shared `redactPiiString` helper.
+// Single source of truth for PII patterns lives in @shared/pii so the
+// structural (`redactPii`) and free-text (`redactPiiString`) redactors
+// can't drift.
 
-const SSN_VALUE_RE = /\b\d{3}-?\d{2}-?\d{4}\b/g;
-// US phone shapes. Note: no leading \b — that's a zero-width word
-// boundary which DOESN'T match before `+`, so `+1-555-123-4567` would
-// otherwise have its `+1` left intact. Trailing \b anchors the end so
-// we don't gobble digits from longer numeric strings.
-const PHONE_VALUE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g;
-// Conservative email regex — matches typical addresses without trying
-// to cover RFC edge cases. False negatives are fine here; we'd rather
-// keep an unusual address than over-redact a legit error message.
-const EMAIL_VALUE_RE = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g;
+import { redactPiiString } from "@shared/pii";
+
+// Re-exported so existing callers / tests don't have to change their
+// import paths after the centralisation.
+export { redactPiiString };
 
 export interface SafeError {
   name: string;
@@ -34,15 +29,6 @@ export interface SafeError {
   // the most common vector for stack-embedded PII (e.g. a hostname or
   // file path containing a user id).
   stack?: string;
-}
-
-/** Replace SSN-shaped, phone-shaped, and email-shaped substrings with [REDACTED]. */
-export function redactPiiString(input: string): string {
-  if (typeof input !== "string" || input.length === 0) return input;
-  return input
-    .replace(SSN_VALUE_RE, "[REDACTED]")
-    .replace(PHONE_VALUE_RE, "[REDACTED]")
-    .replace(EMAIL_VALUE_RE, "[REDACTED]");
 }
 
 /**
