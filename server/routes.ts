@@ -51,6 +51,7 @@ import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { stripeWebhookIdempotency } from "./lib/eventIdempotency";
+import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
@@ -1753,19 +1754,35 @@ export async function registerRoutes(
   });
 
   // Inbound CRM webhook.
-  // SECURITY NOTE: Each provider ships its own signature scheme — HubSpot
-  // uses `X-HubSpot-Signature-v3` (HMAC over method+URI+body+timestamp),
-  // Salesforce signs platform events with the connected app cert, GHL
-  // signs with a shared webhook secret, Pipedrive supports HTTP basic auth.
-  // For dev / E2E we accept any body and trust the payload — a production
-  // K4 follow-up wires `crypto.timingSafeEqual` checks per provider before
-  // calling `handleInboundWebhook`.
+  //
+  // Shared-secret HMAC guard via verifyCrmWebhook — the operator sets
+  // CRM_WEBHOOK_SECRET and the sending CRM (or a thin proxy) signs the
+  // body with HMAC-SHA256 in X-LCP-Signature. When unset, we pass
+  // through with a one-time warning so dev / E2E stay green; the
+  // prod-env validator gates this in production.
+  //
+  // Provider-native signatures (HubSpot v3 HMAC over method+URI+body
+  // +timestamp, Salesforce platform-event cert, GHL secret, Pipedrive
+  // basic auth) are a per-provider follow-up that bolts on top of this
+  // guard — each one needs its own contract decision.
   app.post("/api/crm/webhook/:provider", async (req: any, res) => {
     try {
       const { provider } = req.params;
       if (!getCrmAdapter(provider)) {
         return res.status(404).json({ message: "Unknown provider" });
       }
+
+      // Never reconstruct the body from req.body — JSON.stringify can produce
+      // different bytes than what the CRM signed (key order, whitespace,
+      // numeric formatting), guaranteeing silent verification failures.
+      // express.json's verify callback (server/index.ts) populates rawBody
+      // on every JSON request; if it's missing here we're misconfigured.
+      const rawBody = req.rawBody as Buffer | undefined;
+      const verify = verifyCrmWebhook(rawBody, req.headers);
+      if (!verify.ok) {
+        return res.status(verify.status).json({ message: "Webhook signature check failed", reason: verify.reason });
+      }
+
       const result = await handleInboundWebhook(provider, req.body, { storage });
       res.json(result);
     } catch (err) {

@@ -30,6 +30,7 @@ export const PROD_ENV_RULES: EnvRule[] = [
   { key: "APP_URL", requiredInProd: true, note: "canonical public URL — prevents host-header spoofing" },
   { key: "STRIPE_SECRET_KEY", requiredInProd: true, note: "Stripe server key" },
   { key: "STRIPE_WEBHOOK_SECRET", requiredInProd: true, note: "Stripe webhook signing secret" },
+  { key: "CRM_WEBHOOK_SECRET", requiredInProd: true, note: "HMAC secret for inbound CRM webhooks (X-LCP-Signature)" },
   { key: "STRIPE_PRICE_STARTER", requiredInProd: true, note: "Stripe price id for Starter plan" },
   { key: "STRIPE_PRICE_GROWTH", requiredInProd: true, note: "Stripe price id for Growth plan" },
   { key: "STRIPE_PRICE_SCALE", requiredInProd: true, note: "Stripe price id for Scale plan" },

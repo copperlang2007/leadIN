@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { syncOrderToCrms, handleInboundWebhook, parseWebhookPayload, isClosedWon } from "./crmSync.js";
+import { crmReputationIdempotency } from "./lib/eventIdempotency.js";
 import type { CrmAdapter } from "./lib/crm.js";
 import type { CrmSyncStorage } from "./crmSync.js";
 import type { CrmConnection, CrmSyncEvent, Order } from "@shared/schema";
@@ -306,6 +307,9 @@ describe("isClosedWon", () => {
 describe("handleInboundWebhook", () => {
   let s: ReturnType<typeof makeStubStorage>;
   beforeEach(() => {
+    // The reputation idempotency tracker is module-level; reset it so each
+    // test sees a clean cache. The Stripe equivalent does the same dance.
+    crmReputationIdempotency.clear();
     s = makeStubStorage();
     s.leads.set(7, { id: 7 });
     s.orders.set(100, makeOrder());
@@ -378,5 +382,41 @@ describe("handleInboundWebhook", () => {
     const inEvents = s.events.filter(e => e.direction === "in");
     expect(inEvents).toHaveLength(1);
     expect(inEvents[0].resourceType).toBe("deal");
+  });
+
+  it("dedups: a replayed closed_won webhook does not double-emit reputation", async () => {
+    const payload = { resourceType: "deal", externalId: "deal_contact_7_5000", status: "closed_won" } as const;
+
+    const first = await handleInboundWebhook("hubspot", payload, { storage: s.storage, logger: silentLogger });
+    expect(first.repEmitted).toBe(true);
+    expect(s.reputationEvents).toHaveLength(1);
+
+    // Replay the exact same payload — Stripe-style retry or attacker replay.
+    const second = await handleInboundWebhook("hubspot", payload, { storage: s.storage, logger: silentLogger });
+    expect(second).toMatchObject({ matched: true, repEmitted: false, reason: "rep_already_emitted" });
+    expect(s.reputationEvents).toHaveLength(1);
+  });
+
+  it("dedup key is per-(provider, externalId): same externalId from a different provider can still emit", async () => {
+    // Pre-record an outbound deal event under a different provider for the SAME externalId,
+    // so the second handler call has something to match too.
+    s.events.push({
+      id: 2,
+      connectionId: 1,
+      direction: "out",
+      resourceType: "deal",
+      resourceId: "100",
+      externalId: "deal_contact_7_5000",
+      status: "success",
+      errorMessage: null,
+      createdAt: new Date(),
+    } as CrmSyncEvent);
+
+    const payload = { resourceType: "deal", externalId: "deal_contact_7_5000", status: "closed_won" } as const;
+    const a = await handleInboundWebhook("hubspot", payload, { storage: s.storage, logger: silentLogger });
+    const b = await handleInboundWebhook("salesforce", payload, { storage: s.storage, logger: silentLogger });
+    expect(a.repEmitted).toBe(true);
+    expect(b.repEmitted).toBe(true);
+    expect(s.reputationEvents).toHaveLength(2);
   });
 });
