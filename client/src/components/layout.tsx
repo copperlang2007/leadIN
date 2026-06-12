@@ -15,7 +15,7 @@ interface AddFundsDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function AddFundsDialog({ open, onOpenChange }: AddFundsDialogProps) {
+export function AddFundsDialog({ open, onOpenChange }: AddFundsDialogProps) {
   const [amount, setAmount] = useState("100");
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();

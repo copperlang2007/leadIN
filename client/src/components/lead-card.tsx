@@ -6,55 +6,25 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { CheckCircle2, Clock, MapPin, Activity, Lock, AlertTriangle, Sparkles } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import verifiedIcon from "@assets/generated_images/verified_trust_shield_icon.png";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useToast } from "@/hooks/use-toast";
 
 interface LeadCardProps {
   lead: Lead;
   licensedStates: string[];
   onCompare: (lead: Lead) => void;
   onViewDetails: (lead: Lead) => void;
+  // Defer the purchase call upward so the marketplace can route every
+  // "Buy" click through the same confirm + insufficient-balance recovery
+  // flow. Previously each card owned its own mutation and bypassed both.
+  onRequestPurchase: (leadId: number, price: string) => void;
   isSelectedForCompare: boolean;
   isPurchased?: boolean;
   isNew?: boolean;
 }
 
-export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSelectedForCompare, isPurchased, isNew }: LeadCardProps) {
+export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, onRequestPurchase, isSelectedForCompare, isPurchased, isNew }: LeadCardProps) {
   const isStateMatch = licensedStates.includes(lead.state);
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
 
   const compatibilityColor = lead.compatibilityScore > 85 ? "border-l-success" : lead.compatibilityScore > 65 ? "border-l-warning" : "border-l-muted";
-
-  const purchaseMutation = useMutation({
-    mutationFn: async () => {
-      const response = await fetch(`/api/leads/${lead.id}/purchase`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Purchase failed');
-      }
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Purchase successful!",
-        description: `You've purchased lead #${lead.id} for $${lead.price}`,
-      });
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
-      queryClient.invalidateQueries({ queryKey: ['/api/auth/user'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Purchase failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
 
   return (
     <Card className={`group relative overflow-hidden transition-all duration-200 hover:shadow-md border-l-4 ${compatibilityColor} ${isNew ? "ring-2 ring-emerald-500 animate-in fade-in slide-in-from-top-4 duration-500" : ""}`}>
@@ -203,11 +173,10 @@ export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, isSel
           <Button
             size="sm"
             className="flex-[2] text-xs font-semibold shadow-sm"
-            onClick={() => purchaseMutation.mutate()}
-            disabled={purchaseMutation.isPending}
+            onClick={() => onRequestPurchase(lead.id, lead.price)}
             data-testid={`button-purchase-${lead.id}`}
           >
-            {purchaseMutation.isPending ? "Processing..." : "Purchase Lead"}
+            Purchase Lead
           </Button>
         )}
       </CardFooter>

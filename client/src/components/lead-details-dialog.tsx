@@ -76,7 +76,13 @@ function PIIField({ label, value, icon: Icon }: { label: string; value: string |
 }
 
 export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPurchase, isPurchasing }: LeadDetailsDialogProps) {
-  const { data: revealedLead, isLoading: isRevealing } = useQuery<Lead>({
+  const {
+    data: revealedLead,
+    isLoading: isRevealing,
+    isError: revealFailed,
+    refetch: retryReveal,
+    isFetching: isRefetchingReveal,
+  } = useQuery<Lead>({
     queryKey: [`/api/leads/${lead?.id}/reveal`],
     enabled: !!lead?.id && isPurchased,
     retry: false,
@@ -210,6 +216,40 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
                       <Lock className="h-3.5 w-3.5" />
                       Purchase this lead to reveal full consumer contact information
                     </p>
+                  </div>
+                )}
+
+                {/*
+                  Red-team P2 fix: a failed reveal used to silently fall back to
+                  the gated values, leaving the user to think the lead had no
+                  contact info. Surface the failure + a retry instead.
+                */}
+                {isPurchased && revealFailed && (
+                  <div
+                    className="mt-3 p-3 bg-destructive/10 rounded border border-destructive/30"
+                    data-testid={`reveal-failed-${lead.id}`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
+                      <div className="flex-1 text-xs space-y-2">
+                        <p className="text-destructive font-medium">
+                          Couldn't fetch consumer contact info.
+                        </p>
+                        <p className="text-muted-foreground">
+                          The lead is purchased — this is a network/server issue, not a
+                          billing problem. Your wallet was not re-charged.
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void retryReveal()}
+                          disabled={isRefetchingReveal}
+                          data-testid={`button-retry-reveal-${lead.id}`}
+                        >
+                          {isRefetchingReveal ? "Retrying…" : "Retry"}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
