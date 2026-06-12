@@ -8,6 +8,8 @@ import type { Lead, Order } from "@/lib/types";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useWebSocketContext } from "@/hooks/useWebSocketContext";
+import { AddFundsDialog } from "@/components/layout";
+import { PurchaseConfirmDialog } from "@/components/purchase-confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +54,12 @@ export default function Marketplace() {
   const [detailsLead, setDetailsLead] = useState<Lead | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isDetailsPurchasing, setIsDetailsPurchasing] = useState(false);
+  // Purchase confirm + add-funds dead-end recovery (red-team P2 / #3).
+  // pendingPurchase = the lead we asked the user to confirm.
+  // addFundsOpen   = surfaced when /purchase 400s with "Insufficient balance",
+  //                  giving them a direct path instead of a bare error toast.
+  const [pendingPurchase, setPendingPurchase] = useState<{ leadId: number; price: string } | null>(null);
+  const [addFundsOpen, setAddFundsOpen] = useState(false);
 
   // Subscribe to shared WebSocket context for real-time new leads (no new connection created)
   const { subscribeToNewLeads, subscribeToAuctions } = useWebSocketContext();
@@ -167,6 +175,10 @@ export default function Marketplace() {
 
   const licensedStates = user?.profile?.licensedStates || [];
 
+  // The wallet-debit POST. Splits two paths off the response shape so
+  // a known-good error like "Insufficient balance" doesn't fall into
+  // the same opaque toast as a 500. handlePurchase is the network call;
+  // requestPurchase is what the UI buttons call (it opens the confirm).
   const handlePurchase = async (leadId: number, price: string) => {
     try {
       const response = await fetch(`/api/leads/${leadId}/purchase`, {
@@ -174,8 +186,17 @@ export default function Marketplace() {
         credentials: 'include',
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Purchase failed');
+        const error = await response.json().catch(() => ({}));
+        const message = (error.message ?? '').toString();
+        // Server error string is `Insufficient balance` (server/storage.ts:709).
+        // Recognise it and surface a recoverable dead-end instead of the
+        // bare "Purchase failed" toast, which left agents stuck.
+        if (response.status === 400 && /insufficient balance/i.test(message)) {
+          setPendingPurchase(null);
+          setAddFundsOpen(true);
+          return;
+        }
+        throw new Error(message || 'Purchase failed');
       }
 
       toast({
@@ -189,6 +210,7 @@ export default function Marketplace() {
       setIsCompareOpen(false);
       setSelectedLeads([]);
       setIsDetailsOpen(false);
+      setPendingPurchase(null);
     } catch (error: any) {
       toast({
         title: "Purchase failed",
@@ -198,10 +220,21 @@ export default function Marketplace() {
     }
   };
 
-  const handleDialogPurchase = async () => {
+  // Public entry point for any "Buy" CTA. Opens the confirm dialog so
+  // a single mis-click can't debit the wallet.
+  const requestPurchase = (leadId: number, price: string) => {
+    setPendingPurchase({ leadId, price });
+  };
+
+  const handleDialogPurchase = () => {
     if (!detailsLead) return;
+    requestPurchase(detailsLead.id, detailsLead.price);
+  };
+
+  const confirmPurchase = async () => {
+    if (!pendingPurchase) return;
     setIsDetailsPurchasing(true);
-    await handlePurchase(detailsLead.id, detailsLead.price);
+    await handlePurchase(pendingPurchase.leadId, pendingPurchase.price);
     setIsDetailsPurchasing(false);
   };
 
@@ -509,6 +542,7 @@ export default function Marketplace() {
                       licensedStates={licensedStates}
                       onCompare={toggleCompare}
                       onViewDetails={handleViewDetails}
+                      onRequestPurchase={requestPurchase}
                       isSelectedForCompare={!!selectedLeads.find(l => l.id === lead.id)}
                       isPurchased={purchasedLeadIds.has(lead.id)}
                       isNew={newLeadIds.has(lead.id)}
@@ -649,7 +683,7 @@ export default function Marketplace() {
                           {!purchasedLeadIds.has(lead.id) && (
                             <Button
                               className="w-full mt-4"
-                              onClick={() => handlePurchase(lead.id, lead.price)}
+                              onClick={() => requestPurchase(lead.id, lead.price)}
                               data-testid={`button-purchase-compare-${lead.id}`}
                             >
                               Purchase Lead
@@ -684,6 +718,18 @@ export default function Marketplace() {
         onPurchase={handleDialogPurchase}
         isPurchasing={isDetailsPurchasing}
       />
+
+      <PurchaseConfirmDialog
+        open={!!pendingPurchase}
+        onOpenChange={(o) => !o && setPendingPurchase(null)}
+        leadId={pendingPurchase?.leadId ?? null}
+        price={pendingPurchase?.price ?? "0"}
+        balance={parseFloat(user?.balance ?? "0")}
+        onConfirm={confirmPurchase}
+        isPending={isDetailsPurchasing}
+      />
+
+      <AddFundsDialog open={addFundsOpen} onOpenChange={setAddFundsOpen} />
     </Layout>
   );
 }
