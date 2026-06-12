@@ -533,12 +533,14 @@ export async function registerRoutes(
       const lead = await storage.getLead(leadId);
       if (!lead) return res.status(404).json({ message: "Lead not found" });
 
-      // Org-scope guard: an admin from a different org should not see a
-      // persona for an org-scoped lead they don't belong to.
-      if (lead.orgId && !isAdminUser) {
-        if (user?.activeOrgId !== lead.orgId) {
-          return res.status(403).json({ message: "Lead not available to your organization" });
-        }
+      // Org-scope guard: the sibling /api/leads/:id/reveal endpoint scopes
+      // everyone (admins included) — we match that here. Platform admins
+      // still bypass the *purchase* requirement above for support /
+      // moderation flows, but they don't get a persona for a lead that
+      // belongs to a different org. The previous `&& !isAdminUser` clause
+      // directly contradicted this comment and was the red-team finding.
+      if (lead.orgId && user?.activeOrgId !== lead.orgId) {
+        return res.status(403).json({ message: "Lead not available to your organization" });
       }
 
       const force = req.query.force === "true" || req.query.force === "1";
