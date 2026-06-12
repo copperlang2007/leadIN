@@ -1767,6 +1767,16 @@ export async function registerRoutes(
   // guard — each one needs its own contract decision.
   app.post("/api/crm/webhook/:provider", async (req: any, res) => {
     try {
+      // Rate limit by source IP. Real CRMs (HubSpot, Salesforce, GHL,
+      // Pipedrive) come from a small set of egress ranges, so a burst
+      // of 100/min per IP covers normal load + retry storms. The
+      // signature gate below is the real correctness guarantee; this
+      // is purely a DoS / abuse-cost ceiling on unsigned bodies.
+      const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+      if (!(await takeToken(`crm-webhook:${ip}`, 100, 100 / 60))) {
+        return res.status(429).json({ message: "Rate limited" });
+      }
+
       const { provider } = req.params;
       if (!getCrmAdapter(provider)) {
         return res.status(404).json({ message: "Unknown provider" });
@@ -2891,6 +2901,15 @@ ${allUrls
   // in stub mode (no token) we accept the event so dev/CI can drive it.
   app.post("/api/dialer/webhook", async (req: any, res) => {
     try {
+      // Rate-limit before signature verification: an attacker spraying
+      // forged callbacks at us shouldn't be able to burn CPU on HMAC
+      // computation. 200/min per IP — Twilio retries can burst and
+      // legitimate traffic comes from a narrow set of IP ranges.
+      const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+      if (!(await takeToken(`dialer-webhook:${ip}`, 200, 200 / 60))) {
+        return res.status(429).json({ message: "Rate limited" });
+      }
+
       const fullUrl = twilioWebhookUrl(req);
       const valid = verifyTwilioWebhook(
         { headers: req.headers, body: req.body, url: req.url },
@@ -3108,6 +3127,13 @@ ${allUrls
   // we accept the event so dev/CI can drive the flow.
   app.post("/api/sms/webhook", async (req: any, res) => {
     try {
+      // Same DoS-ceiling rationale as the dialer webhook — rate-limit
+      // before HMAC verification so spray attacks can't burn CPU.
+      const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+      if (!(await takeToken(`sms-webhook:${ip}`, 200, 200 / 60))) {
+        return res.status(429).json({ message: "Rate limited" });
+      }
+
       const fullUrl = twilioWebhookUrl(req);
       const valid = verifyTwilioWebhook(
         { headers: req.headers, body: req.body, url: req.url },
