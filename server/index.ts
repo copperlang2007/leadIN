@@ -11,6 +11,7 @@ import { closePool } from "./db";
 import { createShutdownHandler } from "./shutdown";
 import { redactPii } from "@shared/pii";
 import { initSentry, captureException } from "./lib/sentry";
+import { validateEnv, formatResult } from "./lib/envValidation";
 export { createShutdownHandler } from "./shutdown";
 export type { ShutdownDeps } from "./shutdown";
 
@@ -151,6 +152,22 @@ function installShutdownHandlers(): void {
 }
 
 (async () => {
+  // Prod-env validator runs FIRST, before anything else can read a
+  // misconfigured secret. In production we hard-fail on any missing
+  // required var so the orchestrator restarts us with config instead
+  // of letting a partially-configured pod take real traffic. In dev /
+  // CI we just surface the diagnostics and keep going so the existing
+  // test stubs (vitest.setup.ts pre-fills DATABASE_URL etc.) still work.
+  const envCheck = validateEnv();
+  if (envCheck.missing.length > 0 || envCheck.warnings.length > 0) {
+    console.log(formatResult(envCheck));
+  }
+  if (envCheck.isProd && !envCheck.ok) {
+    throw new Error(
+      `prod-env validator: ${envCheck.missing.length} required env var(s) missing — refusing to start`,
+    );
+  }
+
   // Initialise Sentry as early as possible so any error during route
   // registration or vite setup is reported. No-op when SENTRY_DSN is unset.
   await initSentry();
