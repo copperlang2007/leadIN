@@ -53,7 +53,7 @@ export default function Marketplace() {
   // Details Dialog State
   const [detailsLead, setDetailsLead] = useState<Lead | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [isDetailsPurchasing, setIsDetailsPurchasing] = useState(false);
+  const [isPurchasePending, setIsPurchasePending] = useState(false);
   // Purchase confirm + add-funds dead-end recovery (red-team P2 / #3).
   // pendingPurchase = the lead we asked the user to confirm.
   // addFundsOpen   = surfaced when /purchase 400s with "Insufficient balance",
@@ -233,9 +233,16 @@ export default function Marketplace() {
 
   const confirmPurchase = async () => {
     if (!pendingPurchase) return;
-    setIsDetailsPurchasing(true);
-    await handlePurchase(pendingPurchase.leadId, pendingPurchase.price);
-    setIsDetailsPurchasing(false);
+    setIsPurchasePending(true);
+    try {
+      // handlePurchase has its own try/catch and resolves on every path
+      // (including the insufficient-balance early return), so the await
+      // never rejects today. The try/finally is defence-in-depth so the
+      // pending flag can never be left stuck if that ever changes.
+      await handlePurchase(pendingPurchase.leadId, pendingPurchase.price);
+    } finally {
+      setIsPurchasePending(false);
+    }
   };
 
   const toggleCompare = (lead: Lead) => {
@@ -716,7 +723,7 @@ export default function Marketplace() {
         onOpenChange={setIsDetailsOpen}
         isPurchased={isPurchased}
         onPurchase={handleDialogPurchase}
-        isPurchasing={isDetailsPurchasing}
+        isPurchasing={isPurchasePending}
       />
 
       <PurchaseConfirmDialog
@@ -726,7 +733,7 @@ export default function Marketplace() {
         price={pendingPurchase?.price ?? "0"}
         balance={parseFloat(user?.balance ?? "0")}
         onConfirm={confirmPurchase}
-        isPending={isDetailsPurchasing}
+        isPending={isPurchasePending}
       />
 
       <AddFundsDialog open={addFundsOpen} onOpenChange={setAddFundsOpen} />
