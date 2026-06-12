@@ -331,6 +331,13 @@ export async function handleInboundWebhook(
   // Dedup at the application level so a replayed closed-won webhook
   // can't pump up an agent's reputation indefinitely. Even a properly
   // signed webhook from a real CRM can fire twice on retry.
+  //
+  // NOTE: the tracker is in-memory and per-process. With multiple pods
+  // a replay hitting a different pod *can* still double-emit. The
+  // shape of the win this PR locks in is "no single attacker can spam
+  // +10 in a loop against the same pod"; full cross-pod dedup is a
+  // tracked follow-up that will promote this cache to a DB row keyed
+  // on (provider, externalId).
   const idempotencyKey = `${provider}:${normalised.externalId}`;
   if (!crmReputationIdempotency.markSeenOnce(idempotencyKey)) {
     return { matched: true, repEmitted: false, reason: "rep_already_emitted" };

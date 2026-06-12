@@ -26,13 +26,20 @@ export type VerifyResult =
 /**
  * Verify the X-LCP-Signature header against `CRM_WEBHOOK_SECRET`.
  *
- *  - secret unset                → ok: true, verified: false (pass-through, dev only)
- *  - secret set + header missing → ok: false, 401
- *  - secret set + header bad     → ok: false, 401
- *  - secret set + header valid   → ok: true, verified: true
+ *  - secret unset                  → ok: true, verified: false (pass-through, dev only)
+ *  - secret set + rawBody missing  → ok: false, 500 (server-side middleware misconfig)
+ *  - secret set + header missing   → ok: false, 401
+ *  - secret set + header bad       → ok: false, 401
+ *  - secret set + header valid     → ok: true, verified: true
+ *
+ * `rawBody` must be the exact bytes the CRM signed. Re-serialising
+ * `req.body` is unsafe — JSON.stringify can change key order, whitespace,
+ * and numeric formatting, which silently breaks HMAC verification.
+ * Callers must pass through the buffer populated by express.json's
+ * `verify` callback (see server/index.ts).
  */
 export function verifyCrmWebhook(
-  rawBody: Buffer | string,
+  rawBody: Buffer | string | undefined,
   headers: Record<string, string | string[] | undefined>,
   secret = process.env.CRM_WEBHOOK_SECRET,
 ): VerifyResult {
@@ -44,6 +51,16 @@ export function verifyCrmWebhook(
       );
     }
     return { ok: true, verified: false, reason: "no-secret-configured" };
+  }
+
+  // Secret is set, so we MUST verify against the exact bytes the CRM signed.
+  // If express.json's verify callback didn't populate rawBody (route mounted
+  // without the body parser, or a non-JSON content type), refuse — silently
+  // re-serialising req.body would produce different bytes (key order,
+  // whitespace, numeric formatting) and signature verification would always
+  // fail with confusing 401s. 500 surfaces it as a server misconfig instead.
+  if (rawBody === undefined) {
+    return { ok: false, status: 500, reason: "raw-body-unavailable" };
   }
 
   const raw = headers[SIG_HEADER];

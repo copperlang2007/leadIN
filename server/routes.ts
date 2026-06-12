@@ -1772,7 +1772,12 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Unknown provider" });
       }
 
-      const rawBody = (req.rawBody as Buffer | undefined) ?? Buffer.from(JSON.stringify(req.body ?? {}));
+      // Never reconstruct the body from req.body — JSON.stringify can produce
+      // different bytes than what the CRM signed (key order, whitespace,
+      // numeric formatting), guaranteeing silent verification failures.
+      // express.json's verify callback (server/index.ts) populates rawBody
+      // on every JSON request; if it's missing here we're misconfigured.
+      const rawBody = req.rawBody as Buffer | undefined;
       const verify = verifyCrmWebhook(rawBody, req.headers);
       if (!verify.ok) {
         return res.status(verify.status).json({ message: "Webhook signature check failed", reason: verify.reason });

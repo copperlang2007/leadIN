@@ -19,6 +19,23 @@ describe("verifyCrmWebhook", () => {
     if (r.ok) expect(r.verified).toBe(false);
   });
 
+  it("500s when secret is set but rawBody is undefined (server misconfig — body parser missing)", () => {
+    const r = verifyCrmWebhook(undefined, { "x-lcp-signature": signed(SECRET, BODY) }, SECRET);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(500);
+      expect(r.reason).toBe("raw-body-unavailable");
+    }
+  });
+
+  it("pass-through path tolerates undefined rawBody when no secret is set", () => {
+    // Dev / E2E might mount the route under a stack that doesn't preserve raw bytes;
+    // when the secret is unset we never read the body so this is safe.
+    const r = verifyCrmWebhook(undefined, {}, undefined);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.verified).toBe(false);
+  });
+
   it("treats empty-string secret like unset — pass-through", () => {
     const r = verifyCrmWebhook(BODY, { "x-lcp-signature": "anything" }, "");
     expect(r.ok).toBe(true);
