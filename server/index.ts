@@ -12,6 +12,7 @@ import { createShutdownHandler } from "./shutdown";
 import { redactPii } from "@shared/pii";
 import { initSentry, captureException } from "./lib/sentry";
 import { validateEnv, formatResult } from "./lib/envValidation";
+import { safeError } from "./lib/safeError";
 export { createShutdownHandler } from "./shutdown";
 export type { ShutdownDeps } from "./shutdown";
 
@@ -176,7 +177,6 @@ function installShutdownHandlers(): void {
 
   app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
 
     // Report 5xx errors to Sentry (no-op when unconfigured). 4xx errors
     // are usually client mistakes, not server bugs — don't flood the dashboard.
@@ -184,8 +184,24 @@ function installShutdownHandlers(): void {
       captureException(err, { req });
     }
 
+    // Log the error with PII stripped (phone/SSN/email patterns). Sentry
+    // gets the full structured event with its own scrubbers; this stderr
+    // line is for operators tailing logs without leaking consumer PII to
+    // any log shipper downstream. Stack only in non-prod — production
+    // already has Sentry for the full trace and stack lines are the most
+    // common vector for embedded paths/identifiers.
+    const isProd = process.env.NODE_ENV === "production";
+    console.error("[uncaught]", safeError(err, { includeStack: !isProd }));
+
+    // For 5xx responses, return a generic message instead of err.message —
+    // that string can embed values from a duplicate-key violation or a
+    // 3rd-party API error body, and goes back to the client. 4xx messages
+    // are intentional caller-facing text (`throw new Error("Lead not found")`)
+    // and stay as-is so the API surface doesn't regress.
+    const message = status >= 500
+      ? "Internal Server Error"
+      : (err.message || "Bad Request");
     res.status(status).json({ message });
-    throw err;
   });
 
   // importantly only setup vite in development and after
