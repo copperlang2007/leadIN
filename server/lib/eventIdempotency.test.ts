@@ -89,7 +89,19 @@ describe("markSeenOnceDb (DB-backed)", () => {
       return { onConflictDoNothing };
     });
     const insert = vi.fn(() => ({ values }));
-    return { insert: insert as any, valuesCalls, returning, onConflictDoNothing };
+    // delete() chain stub so the DbIdempotencyDeps interface is fully
+    // satisfied; pruneOldIdempotencyRows isn't exercised here, so the
+    // chain just resolves to an empty result.
+    const deleteFn = vi.fn(() => ({
+      where: () => ({ returning: async () => [] }),
+    }));
+    return {
+      insert: insert as any,
+      delete: deleteFn as any,
+      valuesCalls,
+      returning,
+      onConflictDoNothing,
+    };
   }
 
   it("returns true on first sighting (DB inserts a row)", async () => {

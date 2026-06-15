@@ -131,13 +131,16 @@ export const crmReputationIdempotency: IdempotencyTracker = createIdempotencyTra
 // ──────────────────────────────────────────────────────────────────────
 
 import { webhookIdempotency } from "@shared/schema";
-import { sql } from "drizzle-orm";
+import { lt } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
+// Subset of the drizzle db surface we use. Both `insert` and `delete`
+// preserve the full drizzle builder typing so callers don't need any
+// `as any` casts downstream — and tests can supply a stub that
+// implements these two methods.
 export interface DbIdempotencyDeps {
-  // Subset of the drizzle db we need. Typed loosely so tests can pass
-  // a stub without booting the full schema.
-  insert: NodePgDatabase<any>["insert"];
+  insert: NodePgDatabase["insert"];
+  delete: NodePgDatabase["delete"];
 }
 
 // Lazy db import so this module can be loaded without DATABASE_URL set
@@ -146,7 +149,9 @@ let dbRef: DbIdempotencyDeps | null = null;
 async function getDb(): Promise<DbIdempotencyDeps> {
   if (dbRef) return dbRef;
   const mod = await import("../db.js");
-  dbRef = mod.db as unknown as DbIdempotencyDeps;
+  // mod.db is a NodePgDatabase — DbIdempotencyDeps is a structural
+  // subset of that, so the assignment is type-safe without a cast.
+  dbRef = mod.db;
   return dbRef;
 }
 
@@ -205,18 +210,18 @@ export async function markSeenOnceDb(
 }
 
 /**
- * Prune rows older than `olderThanMs`. Call from a cron to keep the
- * table from growing unbounded — once an event is more than ~24h old,
- * upstream retries will have stopped.
+ * Prune rows older than `olderThanMs`. Default is 7 days — generous
+ * vs. the longest upstream retry window we care about (Stripe retries
+ * for up to 3 days; CRM providers similar). Call from a daily cron.
  */
 export async function pruneOldIdempotencyRows(olderThanMs = 7 * 24 * 60 * 60 * 1000): Promise<number> {
   try {
     const cutoff = new Date(Date.now() - olderThanMs);
     const db = await getDb();
-    const result = (await (db as any)
+    const result = await db
       .delete(webhookIdempotency)
-      .where(sql`${webhookIdempotency.seenAt} < ${cutoff}`)
-      .returning({ source: webhookIdempotency.source })) as Array<{ source: string }>;
+      .where(lt(webhookIdempotency.seenAt, cutoff))
+      .returning({ source: webhookIdempotency.source });
     return result.length;
   } catch (err) {
     console.error("[idempotencyDb] prune failed:", err);
