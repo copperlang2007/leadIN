@@ -53,6 +53,7 @@ import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { stripeWebhookIdempotency } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
+import { safeError } from "./lib/safeError";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
   autoIssueReplacement,
@@ -234,13 +235,13 @@ export async function registerRoutes(
             console.log(`Org ${org.id} subscription ${sub.id} → ${sub.status}`);
           }
         } catch (e: any) {
-          console.error("Subscription sync failed:", e?.message);
+          console.error("Subscription sync failed:", safeError(e));
         }
       }
 
       res.json({ received: true });
     } catch (err: any) {
-      console.error("Stripe webhook error:", err.message);
+      console.error("Stripe webhook error:", safeError(err));
       res.status(400).json({ error: "Webhook processing failed" });
     }
   });
@@ -270,7 +271,7 @@ export async function registerRoutes(
       const profile = await storage.getUserProfile(userId);
       res.json({ ...user, profile: profile || null });
     } catch (error) {
-      console.error("Error fetching user:", error);
+      console.error("Error fetching user:", safeError(error));
       res.status(500).json({ message: "Failed to fetch user" });
     }
   });
@@ -285,7 +286,7 @@ export async function registerRoutes(
       if (!profile) return res.json({ userId, licensedStates: [], preferredTypes: [] });
       res.json(profile);
     } catch (error) {
-      console.error("Error fetching profile:", error);
+      console.error("Error fetching profile:", safeError(error));
       res.status(500).json({ message: "Failed to fetch profile" });
     }
   });
@@ -300,7 +301,7 @@ export async function registerRoutes(
       const profile = await storage.upsertUserProfile(validation.data);
       res.json(profile);
     } catch (error) {
-      console.error("Error updating profile:", error);
+      console.error("Error updating profile:", safeError(error));
       res.status(500).json({ message: "Failed to update profile" });
     }
   }
@@ -319,7 +320,7 @@ export async function registerRoutes(
       const user = await storage.updateNotificationPreference(userId, enabled);
       res.json(user);
     } catch (error) {
-      console.error("Error updating notification preference:", error);
+      console.error("Error updating notification preference:", safeError(error));
       res.status(500).json({ message: "Failed to update notification preference" });
     }
   });
@@ -367,12 +368,12 @@ export async function registerRoutes(
       // OIDC end-session leg.
       req.logout((err: unknown) => {
         if (err) {
-          console.error("Error destroying session after account delete:", err);
+          console.error("Error destroying session after account delete:", safeError(err));
         }
         res.json({ ok: true, ...result });
       });
     } catch (error) {
-      console.error("Error deleting account:", error);
+      console.error("Error deleting account:", safeError(error));
       res.status(500).json({ message: "Failed to delete account" });
     }
   });
@@ -423,7 +424,7 @@ export async function registerRoutes(
 
       res.json(enrichedLeads);
     } catch (error) {
-      console.error("Error fetching leads:", error);
+      console.error("Error fetching leads:", safeError(error));
       res.status(500).json({ message: "Failed to fetch leads" });
     }
   });
@@ -459,7 +460,7 @@ export async function registerRoutes(
       // Strip PII - it stays gated until /reveal
       res.json(stripPII(withScore));
     } catch (error) {
-      console.error("Error fetching lead:", error);
+      console.error("Error fetching lead:", safeError(error));
       res.status(500).json({ message: "Failed to fetch lead" });
     }
   });
@@ -501,7 +502,7 @@ export async function registerRoutes(
       // Return full lead with PII
       res.json(lead);
     } catch (error) {
-      console.error("Error revealing lead PII:", error);
+      console.error("Error revealing lead PII:", safeError(error));
       res.status(500).json({ message: "Failed to reveal lead information" });
     }
   });
@@ -548,7 +549,7 @@ export async function registerRoutes(
       if (!persona) return res.status(404).json({ message: "Lead not found" });
       res.json(persona);
     } catch (error) {
-      console.error("Error generating lead persona:", error);
+      console.error("Error generating lead persona:", safeError(error));
       res.status(500).json({ message: "Failed to generate persona" });
     }
   });
@@ -560,7 +561,7 @@ export async function registerRoutes(
       const order = await storage.purchaseLead(leadId, userId);
       res.json(order);
     } catch (error: any) {
-      console.error("Error purchasing lead:", error);
+      console.error("Error purchasing lead:", safeError(error));
       res.status(400).json({ message: error.message || "Failed to purchase lead" });
     }
   });
@@ -574,7 +575,7 @@ export async function registerRoutes(
       const orders = await storage.getUserOrders(userId);
       res.json(orders);
     } catch (error) {
-      console.error("Error fetching orders:", error);
+      console.error("Error fetching orders:", safeError(error));
       res.status(500).json({ message: "Failed to fetch orders" });
     }
   });
@@ -644,7 +645,7 @@ export async function registerRoutes(
       res.setHeader("Content-Disposition", `attachment; filename="orders-${Date.now()}.csv"`);
       res.send(csv);
     } catch (error) {
-      console.error("Error exporting orders:", error);
+      console.error("Error exporting orders:", safeError(error));
       res.status(500).json({ message: "Failed to export orders" });
     }
   });
@@ -700,7 +701,7 @@ export async function registerRoutes(
             aiConfidence: result.confidence,
           });
         } catch (err) {
-          console.error("[disputeClassifier] failed:", (err as Error).message);
+          console.error("[disputeClassifier] failed:", safeError(err));
         }
       })();
 
@@ -712,7 +713,7 @@ export async function registerRoutes(
       if (/not found/i.test(err?.message ?? "")) {
         return res.status(404).json({ message: err.message });
       }
-      console.error("Error creating dispute:", err);
+      console.error("Error creating dispute:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to create dispute" });
     }
   });
@@ -734,7 +735,7 @@ export async function registerRoutes(
       }
       res.json(dispute);
     } catch (err: any) {
-      console.error("Error fetching dispute:", err);
+      console.error("Error fetching dispute:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to fetch dispute" });
     }
   });
@@ -750,7 +751,7 @@ export async function registerRoutes(
       const disputes = await storage.listDisputes({ status, limit });
       res.json(disputes);
     } catch (err: any) {
-      console.error("Error listing disputes:", err);
+      console.error("Error listing disputes:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to list disputes" });
     }
   });
@@ -784,7 +785,7 @@ export async function registerRoutes(
           refundCents: updated.refundCents,
           requestedRefundCents: refundCents,
         },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
 
       res.json(updated);
     } catch (err: any) {
@@ -794,7 +795,7 @@ export async function registerRoutes(
       if (/cannot be approved|already/i.test(err?.message ?? "")) {
         return res.status(409).json({ message: err.message });
       }
-      console.error("Error approving dispute:", err);
+      console.error("Error approving dispute:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to approve dispute" });
     }
   });
@@ -819,7 +820,7 @@ export async function registerRoutes(
         targetKind: "dispute",
         targetId: String(disputeId),
         metadata: { orderId: updated.orderId },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
 
       res.json(updated);
     } catch (err: any) {
@@ -829,7 +830,7 @@ export async function registerRoutes(
       if (/cannot be denied|already/i.test(err?.message ?? "")) {
         return res.status(409).json({ message: err.message });
       }
-      console.error("Error denying dispute:", err);
+      console.error("Error denying dispute:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to deny dispute" });
     }
   });
@@ -895,7 +896,7 @@ export async function registerRoutes(
       }
       return res.status(200).json(result);
     } catch (err: any) {
-      console.error("Error checking replacement eligibility:", err);
+      console.error("Error checking replacement eligibility:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to check replacement eligibility" });
     }
   });
@@ -923,7 +924,7 @@ export async function registerRoutes(
       });
       return res.json(proposal);
     } catch (err: any) {
-      console.error("Error fetching replacement eligibility:", err);
+      console.error("Error fetching replacement eligibility:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to fetch eligibility" });
     }
   });
@@ -935,7 +936,7 @@ export async function registerRoutes(
       const rows = await storage.listTradeInCreditsForUser(userId);
       res.json(rows);
     } catch (err: any) {
-      console.error("Error listing trade-in credits:", err);
+      console.error("Error listing trade-in credits:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to list credits" });
     }
   });
@@ -980,7 +981,7 @@ export async function registerRoutes(
 
       res.json(redeemed);
     } catch (err: any) {
-      console.error("Error redeeming credit:", err);
+      console.error("Error redeeming credit:", safeError(err));
       if (/not redeemable/i.test(err?.message ?? "")) {
         return res.status(409).json({ message: err.message });
       }
@@ -1035,11 +1036,11 @@ export async function registerRoutes(
         targetKind: "smart_match_subscription",
         targetId: String(created.id),
         metadata: { quota: tier.quota, priceCents: tier.priceCents },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
 
       res.status(201).json(created);
     } catch (err: any) {
-      console.error("Error creating smart-match subscription:", err);
+      console.error("Error creating smart-match subscription:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to create subscription" });
     }
   });
@@ -1050,7 +1051,7 @@ export async function registerRoutes(
       const subs = await storage.listSmartMatchSubscriptions(userId);
       res.json(subs);
     } catch (err: any) {
-      console.error("Error listing smart-match subscriptions:", err);
+      console.error("Error listing smart-match subscriptions:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to list subscriptions" });
     }
   });
@@ -1071,10 +1072,10 @@ export async function registerRoutes(
         action: "smartmatch.cancel",
         targetKind: "smart_match_subscription",
         targetId: String(id),
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json(cancelled);
     } catch (err: any) {
-      console.error("Error cancelling smart-match subscription:", err);
+      console.error("Error cancelling smart-match subscription:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to cancel subscription" });
     }
   });
@@ -1132,11 +1133,11 @@ export async function registerRoutes(
           perClaimLimitCents: policy.perClaimLimitCents,
           aggregateLimitCents: policy.aggregateLimitCents,
         },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
 
       res.status(201).json(policy);
     } catch (err: any) {
-      console.error("Error creating TCPA policy:", err);
+      console.error("Error creating TCPA policy:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to create policy" });
     }
   });
@@ -1152,7 +1153,7 @@ export async function registerRoutes(
       const policy = await storage.getActivePolicyForOrg(orgId);
       res.json(policy ?? null);
     } catch (err: any) {
-      console.error("Error fetching TCPA policy:", err);
+      console.error("Error fetching TCPA policy:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to fetch policy" });
     }
   });
@@ -1194,7 +1195,7 @@ export async function registerRoutes(
       if (/no active TCPA policy/i.test(err?.message ?? "")) {
         return res.status(409).json({ message: err.message });
       }
-      console.error("Error filing TCPA claim:", err);
+      console.error("Error filing TCPA claim:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to file claim" });
     }
   });
@@ -1210,7 +1211,7 @@ export async function registerRoutes(
       const claims = await storage.listTcpaClaims(orgId);
       res.json(claims);
     } catch (err: any) {
-      console.error("Error listing TCPA claims:", err);
+      console.error("Error listing TCPA claims:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to list claims" });
     }
   });
@@ -1251,7 +1252,7 @@ export async function registerRoutes(
           amountClaimedCents: updated.amountClaimedCents,
           amountPaidCents: updated.amountPaidCents,
         },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
 
       res.json(updated);
     } catch (err: any) {
@@ -1261,7 +1262,7 @@ export async function registerRoutes(
       if (/cannot be re-resolved|aggregate limit|positive integer|Per-claim limit/i.test(err?.message ?? "")) {
         return res.status(409).json({ message: err.message });
       }
-      console.error("Error resolving TCPA claim:", err);
+      console.error("Error resolving TCPA claim:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to resolve claim" });
     }
   });
@@ -1325,7 +1326,7 @@ export async function registerRoutes(
 
       res.json({ url: session.url, sessionId: session.id });
     } catch (error: any) {
-      console.error("Error creating Stripe checkout:", error);
+      console.error("Error creating Stripe checkout:", safeError(error));
       res.status(500).json({ message: error.message || "Failed to create checkout session" });
     }
   });
@@ -1343,7 +1344,7 @@ export async function registerRoutes(
 
       res.json({ status: session.status, amount: session.amount });
     } catch (error) {
-      console.error("Error fetching Stripe session:", error);
+      console.error("Error fetching Stripe session:", safeError(error));
       res.status(500).json({ message: "Failed to fetch session" });
     }
   });
@@ -1456,7 +1457,7 @@ export async function registerRoutes(
 
       // Compute initial MediScore and persist (non-blocking would also be fine,
       // but doing it inline lets the response include the score for vendors).
-      await recomputeAndPersistMediScore(lead.id).catch(err => console.error("[mediscore] init error:", err));
+      await recomputeAndPersistMediScore(lead.id).catch(err => console.error("[mediscore] init error:", safeError(err)));
 
       // Broadcast new lead via WebSocket (non-PII data only)
       broadcastNewLead({
@@ -1479,7 +1480,7 @@ export async function registerRoutes(
         price: lead.price,
         exclusivity: lead.exclusivity,
         vendorName: vendor.name,
-      }).catch(err => console.error("Notification error:", err));
+      }).catch(err => console.error("Notification error:", safeError(err)));
 
       // Fire the routing engine (no-op if lead has no org, or score below threshold)
       storage.routeLeadToBestAgent(lead.id)
@@ -1492,7 +1493,7 @@ export async function registerRoutes(
             });
           }
         })
-        .catch(err => console.error("Routing error:", err));
+        .catch(err => console.error("Routing error:", safeError(err)));
 
       // T3 — smart-match flat-rate delivery. Best-effort; will no-op if the
       // org routing engine already grabbed the lead, or if no active sub
@@ -1511,13 +1512,13 @@ export async function registerRoutes(
             });
           }
         } catch (err: any) {
-          console.error("[smart-match] post-ingest delivery error:", err?.message);
+          console.error("[smart-match] post-ingest delivery error:", safeError(err));
         }
       })();
 
       res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
     } catch (error: any) {
-      console.error("Error ingesting lead:", error);
+      console.error("Error ingesting lead:", safeError(error));
       res.status(500).json({ message: error.message || "Failed to ingest lead" });
     }
   });
@@ -1539,7 +1540,7 @@ export async function registerRoutes(
         })),
       });
     } catch (err) {
-      console.error("Error listing orgs:", err);
+      console.error("Error listing orgs:", safeError(err));
       res.status(500).json({ message: "Failed to list organizations" });
     }
   });
@@ -1557,7 +1558,7 @@ export async function registerRoutes(
       const org = await storage.createOrganization(validation.data, userId);
       res.status(201).json(org);
     } catch (err) {
-      console.error("Error creating org:", err);
+      console.error("Error creating org:", safeError(err));
       res.status(500).json({ message: "Failed to create organization" });
     }
   });
@@ -1571,7 +1572,7 @@ export async function registerRoutes(
       const user = await storage.setUserActiveOrg(userId, orgId);
       res.json(user);
     } catch (err) {
-      console.error("Error activating org:", err);
+      console.error("Error activating org:", safeError(err));
       res.status(500).json({ message: "Failed to activate organization" });
     }
   });
@@ -1582,7 +1583,7 @@ export async function registerRoutes(
       const vendors = await storage.getVendors();
       res.json(vendors);
     } catch (err) {
-      console.error("Error listing vendors:", err);
+      console.error("Error listing vendors:", safeError(err));
       res.status(500).json({ message: "Failed to list vendors" });
     }
   });
@@ -1613,10 +1614,10 @@ export async function registerRoutes(
         targetKind: "vendor",
         targetId: String(vendorId),
         metadata: { keyPrefix: record.keyPrefix },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.status(201).json({ apiKey: key, keyId: record.id, keyPrefix: record.keyPrefix });
     } catch (err) {
-      console.error("Error creating vendor API key:", err);
+      console.error("Error creating vendor API key:", safeError(err));
       res.status(500).json({ message: "Failed to create API key" });
     }
   });
@@ -1631,7 +1632,7 @@ export async function registerRoutes(
       });
       res.status(result.status).json(result.body);
     } catch (err) {
-      console.error("Error listing vendor API keys:", err);
+      console.error("Error listing vendor API keys:", safeError(err));
       res.status(500).json({ message: "Failed to list API keys" });
     }
   });
@@ -1648,7 +1649,7 @@ export async function registerRoutes(
       });
       res.status(result.status).json(result.body);
     } catch (err) {
-      console.error("Error revoking vendor API key:", err);
+      console.error("Error revoking vendor API key:", safeError(err));
       res.status(500).json({ message: "Failed to revoke API key" });
     }
   });
@@ -1674,7 +1675,7 @@ export async function registerRoutes(
       }));
       res.json({ connections: safe, providers: listProviders() });
     } catch (err) {
-      console.error("Error listing CRM connections:", err);
+      console.error("Error listing CRM connections:", safeError(err));
       res.status(500).json({ message: "Failed to list CRM connections" });
     }
   });
@@ -1714,7 +1715,7 @@ export async function registerRoutes(
         targetKind: "crm_connection",
         targetId: String(conn.id),
         metadata: { provider: conn.provider },
-      }).catch(e => console.error("[audit] failed:", e));
+      }).catch(e => console.error("[audit] failed:", safeError(e)));
       res.status(201).json({
         id: conn.id,
         provider: conn.provider,
@@ -1722,7 +1723,7 @@ export async function registerRoutes(
         createdAt: conn.createdAt,
       });
     } catch (err) {
-      console.error("Error creating CRM connection:", err);
+      console.error("Error creating CRM connection:", safeError(err));
       res.status(500).json({ message: "Failed to create CRM connection" });
     }
   });
@@ -1747,10 +1748,10 @@ export async function registerRoutes(
         action: "crm.disconnect",
         targetKind: "crm_connection",
         targetId: String(connectionId),
-      }).catch(e => console.error("[audit] failed:", e));
+      }).catch(e => console.error("[audit] failed:", safeError(e)));
       res.json({ deleted: true });
     } catch (err) {
-      console.error("Error deleting CRM connection:", err);
+      console.error("Error deleting CRM connection:", safeError(err));
       res.status(500).json({ message: "Failed to delete CRM connection" });
     }
   });
@@ -1798,7 +1799,7 @@ export async function registerRoutes(
       const result = await handleInboundWebhook(provider, req.body, { storage });
       res.json(result);
     } catch (err) {
-      console.error("Error handling CRM webhook:", err);
+      console.error("Error handling CRM webhook:", safeError(err));
       res.status(500).json({ message: "Failed to process webhook" });
     }
   });
@@ -1818,7 +1819,7 @@ export async function registerRoutes(
       const org = await storage.updateOrgRoutingThreshold(orgId, threshold);
       res.json(org);
     } catch (err) {
-      console.error("Error updating routing threshold:", err);
+      console.error("Error updating routing threshold:", safeError(err));
       res.status(500).json({ message: "Failed to update threshold" });
     }
   });
@@ -1832,7 +1833,7 @@ export async function registerRoutes(
       const profile = await storage.getAgentProfile(userId);
       res.json(profile ?? null);
     } catch (err) {
-      console.error("Error fetching agent profile:", err);
+      console.error("Error fetching agent profile:", safeError(err));
       res.status(500).json({ message: "Failed to fetch agent profile" });
     }
   });
@@ -1871,12 +1872,12 @@ export async function registerRoutes(
       // NIPR is unreachable; the result is cached on the profile and shown
       // in the UI on next poll.
       verifyAgentLicense(userId).catch(err =>
-        console.error("[nipr] background verify failed:", err?.message),
+        console.error("[nipr] background verify failed:", safeError(err)),
       );
 
       res.json(profile);
     } catch (err) {
-      console.error("Error onboarding agent:", err);
+      console.error("Error onboarding agent:", safeError(err));
       res.status(500).json({ message: "Failed to save agent onboarding" });
     }
   });
@@ -1912,7 +1913,7 @@ export async function registerRoutes(
         orgStats,
       });
     } catch (err) {
-      console.error("Error fetching agent dashboard:", err);
+      console.error("Error fetching agent dashboard:", safeError(err));
       res.status(500).json({ message: "Failed to fetch dashboard" });
     }
   });
@@ -1941,7 +1942,7 @@ export async function registerRoutes(
       const updated = await storage.updateAgentCapacity(userId, validation.data);
       res.json(updated);
     } catch (err) {
-      console.error("Error updating agent capacity:", err);
+      console.error("Error updating agent capacity:", safeError(err));
       res.status(500).json({ message: "Failed to update agent settings" });
     }
   });
@@ -1962,7 +1963,7 @@ export async function registerRoutes(
         weights: REPUTATION_WEIGHTS,
       });
     } catch (err) {
-      console.error("Error fetching reputation:", err);
+      console.error("Error fetching reputation:", safeError(err));
       res.status(500).json({ message: "Failed to fetch reputation" });
     }
   });
@@ -1983,7 +1984,7 @@ export async function registerRoutes(
       const top = await getTopAgentsForOrg(orgId, limit);
       res.json({ orgId, windowDays: REPUTATION_WINDOW_DAYS, agents: top });
     } catch (err) {
-      console.error("Error listing top agents:", err);
+      console.error("Error listing top agents:", safeError(err));
       res.status(500).json({ message: "Failed to list top agents" });
     }
   });
@@ -2011,11 +2012,11 @@ export async function registerRoutes(
               });
             }
           })
-          .catch(err => console.error("Re-route error:", err));
+          .catch(err => console.error("Re-route error:", safeError(err)));
       }
       res.json(updated);
     } catch (err) {
-      console.error("Error updating assignment:", err);
+      console.error("Error updating assignment:", safeError(err));
       res.status(500).json({ message: "Failed to update assignment" });
     }
   });
@@ -2036,7 +2037,7 @@ export async function registerRoutes(
       if (!out.ok) return res.status(409).json({ message: out.reason ?? "claim rejected" });
       res.status(201).json({ claimId: out.claimId });
     } catch (err) {
-      console.error("Error recording claim:", err);
+      console.error("Error recording claim:", safeError(err));
       res.status(500).json({ message: "Failed to record claim" });
     }
   });
@@ -2053,7 +2054,7 @@ export async function registerRoutes(
       if (!snap) return res.status(404).json({ message: "no auction" });
       res.json(snap);
     } catch (err) {
-      console.error("Error fetching auction:", err);
+      console.error("Error fetching auction:", safeError(err));
       res.status(500).json({ message: "Failed to fetch auction" });
     }
   });
@@ -2070,7 +2071,7 @@ export async function registerRoutes(
       const safe = (role === "owner" || role === "admin") ? agents : agents.map(a => ({ ...a, licenseDocumentUrl: null, licenseNumber: null }));
       res.json(safe);
     } catch (err) {
-      console.error("Error listing org agents:", err);
+      console.error("Error listing org agents:", safeError(err));
       res.status(500).json({ message: "Failed to list agents" });
     }
   });
@@ -2100,10 +2101,10 @@ export async function registerRoutes(
         targetKind: "user",
         targetId: targetUserId,
         metadata: { rate },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json(updated);
     } catch (err) {
-      console.error("Error setting conversion rate:", err);
+      console.error("Error setting conversion rate:", safeError(err));
       res.status(500).json({ message: "Failed to update conversion rate" });
     }
   });
@@ -2132,10 +2133,10 @@ export async function registerRoutes(
         targetKind: "user",
         targetId: targetUserId,
         metadata: { status },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json(updated);
     } catch (err) {
-      console.error("Error setting verification:", err);
+      console.error("Error setting verification:", safeError(err));
       res.status(500).json({ message: "Failed to update verification" });
     }
   });
@@ -2163,7 +2164,7 @@ export async function registerRoutes(
       const updated = await storage.getAgentProfile(targetUserId);
       res.json({ result, profile: updated });
     } catch (err) {
-      console.error("Error re-verifying NIPR license:", err);
+      console.error("Error re-verifying NIPR license:", safeError(err));
       res.status(500).json({ message: "Failed to verify license" });
     }
   });
@@ -2227,7 +2228,7 @@ export async function registerRoutes(
 
       res.json({ url: session.url, usedPriceId: !!priceId });
     } catch (err: any) {
-      console.error("Error creating subscription checkout:", err);
+      console.error("Error creating subscription checkout:", safeError(err));
       res.status(500).json({ message: err.message || "Failed to create subscription" });
     }
   });
@@ -2242,7 +2243,7 @@ export async function registerRoutes(
       const lists = await storage.listSavedLists(userId, me?.activeOrgId ?? null);
       res.json(lists);
     } catch (err) {
-      console.error("Error listing saved lists:", err);
+      console.error("Error listing saved lists:", safeError(err));
       res.status(500).json({ message: "Failed to list saved lists" });
     }
   });
@@ -2261,7 +2262,7 @@ export async function registerRoutes(
       });
       res.status(201).json(list);
     } catch (err) {
-      console.error("Error creating saved list:", err);
+      console.error("Error creating saved list:", safeError(err));
       res.status(500).json({ message: "Failed to create saved list" });
     }
   });
@@ -2273,7 +2274,7 @@ export async function registerRoutes(
       if (!result) return res.status(404).json({ message: "List not found" });
       res.json(result);
     } catch (err) {
-      console.error("Error fetching saved list:", err);
+      console.error("Error fetching saved list:", safeError(err));
       res.status(500).json({ message: "Failed to fetch saved list" });
     }
   });
@@ -2383,7 +2384,7 @@ export async function registerRoutes(
       }
       res.json({ ok: true });
     } catch (err: any) {
-      console.error("Error tracking event:", err);
+      console.error("Error tracking event:", safeError(err));
       res.status(500).json({ message: "Failed to track event" });
     }
   });
@@ -2404,7 +2405,7 @@ export async function registerRoutes(
       const breakdown = await computeMediScore(id);
       res.json(breakdown);
     } catch (err) {
-      console.error("Error computing MediScore:", err);
+      console.error("Error computing MediScore:", safeError(err));
       res.status(500).json({ message: "Failed to compute MediScore" });
     }
   });
@@ -2427,7 +2428,7 @@ export async function registerRoutes(
       const snapshot = await getFunnelSnapshot(days);
       res.json(snapshot);
     } catch (err: any) {
-      console.error("Funnel error:", err);
+      console.error("Funnel error:", safeError(err));
       res.status(500).json({ message: err.message || "Failed" });
     }
   });
@@ -2439,7 +2440,7 @@ export async function registerRoutes(
       const data = await getLeadAnalytics();
       res.json(data);
     } catch (err: any) {
-      console.error("Lead analytics error:", err);
+      console.error("Lead analytics error:", safeError(err));
       res.status(500).json({ message: err.message || "Failed" });
     }
   });
@@ -2474,7 +2475,7 @@ export async function registerRoutes(
       const cms = await refreshCmsPlanSignals();
       res.json({ keywords: kw, cms });
     } catch (err: any) {
-      console.error("Error refreshing signals:", err);
+      console.error("Error refreshing signals:", safeError(err));
       res.status(500).json({ message: err.message || "Refresh failed" });
     }
   });
@@ -2497,7 +2498,7 @@ export async function registerRoutes(
         activeWebSocketConnections: getActiveConnections(),
       });
     } catch (error) {
-      console.error("Error fetching admin stats:", error);
+      console.error("Error fetching admin stats:", safeError(error));
       res.status(500).json({ message: "Failed to fetch stats" });
     }
   });
@@ -2513,7 +2514,7 @@ export async function registerRoutes(
       const allLeads = await storage.getAllLeadsAdmin();
       res.json(allLeads);
     } catch (error) {
-      console.error("Error fetching admin leads:", error);
+      console.error("Error fetching admin leads:", safeError(error));
       res.status(500).json({ message: "Failed to fetch leads" });
     }
   });
@@ -2536,10 +2537,10 @@ export async function registerRoutes(
         targetKind: "lead",
         targetId: String(leadId),
         metadata: { flagged: flaggedValue },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json(lead);
     } catch (error) {
-      console.error("Error flagging lead:", error);
+      console.error("Error flagging lead:", safeError(error));
       res.status(500).json({ message: "Failed to flag lead" });
     }
   });
@@ -2559,10 +2560,10 @@ export async function registerRoutes(
         action: "lead.remove",
         targetKind: "lead",
         targetId: String(leadId),
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json(lead);
     } catch (error) {
-      console.error("Error removing lead:", error);
+      console.error("Error removing lead:", safeError(error));
       res.status(500).json({ message: "Failed to remove lead" });
     }
   });
@@ -2596,7 +2597,7 @@ export async function registerRoutes(
         verificationPassRate: ingestionStats.verificationPassRate,
       });
     } catch (error) {
-      console.error("Error fetching platform status:", error);
+      console.error("Error fetching platform status:", safeError(error));
       res.status(500).json({ message: "Failed to fetch platform status" });
     }
   });
@@ -2622,10 +2623,10 @@ export async function registerRoutes(
         targetKind: "user",
         targetId: userId,
         metadata: { role: "admin" },
-      }).catch(err => console.error("[audit] failed:", err));
+      }).catch(err => console.error("[audit] failed:", safeError(err)));
       res.json({ message: "Admin role assigned", user: updatedUser });
     } catch (error) {
-      console.error("Error seeding admin:", error);
+      console.error("Error seeding admin:", safeError(error));
       res.status(500).json({ message: "Failed to seed admin" });
     }
   });
@@ -2646,7 +2647,7 @@ export async function registerRoutes(
       const entries = await listAudit({ action, actorUserId, limit });
       res.json(entries);
     } catch (error) {
-      console.error("Error listing audit log:", error);
+      console.error("Error listing audit log:", safeError(error));
       res.status(500).json({ message: "Failed to list audit log" });
     }
   });
@@ -2663,7 +2664,7 @@ export async function registerRoutes(
       }
       res.json(getMetricsSnapshot());
     } catch (error) {
-      console.error("Error fetching metrics snapshot:", error);
+      console.error("Error fetching metrics snapshot:", safeError(error));
       res.status(500).json({ message: "Failed to fetch metrics" });
     }
   });
@@ -2696,7 +2697,7 @@ export async function registerRoutes(
 
       res.json({ message: `Broadcasted ${toBroadcast.length} leads` });
     } catch (error) {
-      console.error("Error broadcasting leads:", error);
+      console.error("Error broadcasting leads:", safeError(error));
       res.status(500).json({ message: "Failed to broadcast leads" });
     }
   });
@@ -2724,7 +2725,7 @@ export async function registerRoutes(
       const balances = await storage.getVendorBalances();
       res.json(balances);
     } catch (err: any) {
-      console.error("Vendor balances error:", err);
+      console.error("Vendor balances error:", safeError(err));
       res.status(500).json({ message: err.message || "Failed to fetch vendor balances" });
     }
   });
@@ -2741,7 +2742,7 @@ export async function registerRoutes(
       const result = await storage.sweepVendorPayouts(threshold);
       res.json(result);
     } catch (err: any) {
-      console.error("Vendor payout sweep error:", err);
+      console.error("Vendor payout sweep error:", safeError(err));
       res.status(500).json({ message: err.message || "Sweep failed" });
     }
   });
@@ -2757,7 +2758,7 @@ export async function registerRoutes(
       const log = await storage.getVendorPayoutLog(vendorId, limit);
       res.json(log);
     } catch (err: any) {
-      console.error("Vendor payout log error:", err);
+      console.error("Vendor payout log error:", safeError(err));
       res.status(500).json({ message: err.message || "Failed to fetch payout log" });
     }
   });
@@ -2892,7 +2893,7 @@ ${allUrls
       const result = await startCallForLead(userId, leadId);
       res.json(result);
     } catch (err: any) {
-      console.error("dialer.call error:", err);
+      console.error("dialer.call error:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to start call" });
     }
   });
@@ -2946,7 +2947,7 @@ ${allUrls
       });
       res.json({ ok: true });
     } catch (err: any) {
-      console.error("dialer.webhook error:", err);
+      console.error("dialer.webhook error:", safeError(err));
       res.status(500).json({ message: err?.message || "webhook failed" });
     }
   });
@@ -2976,7 +2977,7 @@ ${allUrls
       );
       res.json({ ok: true, ...result });
     } catch (err: any) {
-      console.error("dialer.transcript error:", err);
+      console.error("dialer.transcript error:", safeError(err));
       res.status(500).json({ message: err?.message || "transcript ingest failed" });
     }
   });
@@ -3004,7 +3005,7 @@ ${allUrls
       const card = await getVendorScorecard(vendor.id);
       res.json(card);
     } catch (err: any) {
-      console.error("vendor scorecard error:", err);
+      console.error("vendor scorecard error:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to build scorecard" });
     }
   });
@@ -3029,7 +3030,7 @@ ${allUrls
       const card = await getVendorScorecard(vendorId);
       res.json({ vendor: { id: vendor.id, name: vendor.name }, ...card });
     } catch (err: any) {
-      console.error("admin vendor scorecard error:", err);
+      console.error("admin vendor scorecard error:", safeError(err));
       res.status(500).json({ message: err?.message || "Failed to build scorecard" });
     }
   });
@@ -3046,7 +3047,7 @@ ${allUrls
       const calls = await storage.getCallLogsForAgent(userId, { leadId, limit: 100 });
       res.json(calls);
     } catch (err: any) {
-      console.error("dialer.calls error:", err);
+      console.error("dialer.calls error:", safeError(err));
       res.status(500).json({ message: err?.message || "failed to fetch calls" });
     }
   });
@@ -3103,7 +3104,7 @@ ${allUrls
       if (err instanceof NoConsumerPhoneError) {
         return res.status(400).json({ message: err.message });
       }
-      console.error("sms.send error:", err);
+      console.error("sms.send error:", safeError(err));
       res.status(500).json({ message: err?.message || "failed to send sms" });
     }
   });
@@ -3119,7 +3120,7 @@ ${allUrls
       const logs = await storage.listSmsLogsForLead(leadId, userId);
       res.json(logs);
     } catch (err: any) {
-      console.error("sms.logs error:", err);
+      console.error("sms.logs error:", safeError(err));
       res.status(500).json({ message: err?.message || "failed to fetch sms logs" });
     }
   });
@@ -3199,7 +3200,7 @@ ${allUrls
       const optedOut = isStopMessage(inboundBody);
       res.json({ ok: true, optedOut });
     } catch (err: any) {
-      console.error("sms.webhook error:", err);
+      console.error("sms.webhook error:", safeError(err));
       res.status(500).json({ message: err?.message || "webhook failed" });
     }
   });

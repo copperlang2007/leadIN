@@ -1,4 +1,5 @@
 import { storage } from "./storage";
+import { safeError } from "./lib/safeError";
 
 // Simple email service that uses environment variables for SendGrid or Resend
 // Falls back gracefully if email service is not configured
@@ -147,6 +148,6 @@ export async function notifyUsersAboutNewLead(lead: {
 
     await Promise.allSettled(emailPromises);
   } catch (err) {
-    console.error("Error sending lead notifications:", err);
+    console.error("Error sending lead notifications:", safeError(err));
   }
 }
