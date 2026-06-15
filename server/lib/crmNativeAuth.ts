@@ -76,9 +76,18 @@ export function verifyHubspot(ctx: VerifierContext): NativeVerifyResult {
   if (!Number.isFinite(ts)) {
     return { ok: false, status: 401, reason: "malformed-timestamp", provider: "hubspot" };
   }
-  // Reject if the request is older than 5 minutes (HubSpot's documented window).
-  const ageMs = Math.abs(Date.now() - ts);
-  if (ageMs > 5 * 60 * 1000) {
+  // HubSpot's documented window: signature is valid for 5 minutes after the
+  // request was sent. We treat that as past-only, with a small (30s) future
+  // skew tolerance for clock drift. Math.abs was overly permissive — it
+  // accepted future-dated timestamps up to 5 minutes ahead, leaving a
+  // replay window for an attacker who could fix a future timestamp.
+  const now = Date.now();
+  const FUTURE_SKEW_MS = 30 * 1000;
+  const MAX_AGE_MS = 5 * 60 * 1000;
+  if (ts > now + FUTURE_SKEW_MS) {
+    return { ok: false, status: 401, reason: "timestamp-in-future", provider: "hubspot" };
+  }
+  if (now - ts > MAX_AGE_MS) {
     return { ok: false, status: 401, reason: "timestamp-too-old", provider: "hubspot" };
   }
 
@@ -122,7 +131,10 @@ export function verifyGhl(ctx: VerifierContext): NativeVerifyResult {
   }
 
   const cleaned = sig.startsWith("sha256=") ? sig.slice(7) : sig;
-  if (!/^[0-9a-f]+$/i.test(cleaned)) {
+  // Require even-length hex. Buffer.from(hex, 'hex') silently truncates
+  // odd-length input, which would let an attacker submit a 1-char-short
+  // signature that compares equal to a truncated server expected.
+  if (!/^[0-9a-f]+$/i.test(cleaned) || cleaned.length % 2 !== 0) {
     return { ok: false, status: 401, reason: "malformed-signature", provider: "ghl" };
   }
 

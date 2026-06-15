@@ -97,6 +97,42 @@ describe("verifyHubspot — V3 (method+url+body+timestamp)", () => {
     expect(r).toMatchObject({ ok: false, status: 401, reason: "timestamp-too-old" });
   });
 
+  it("rejects future-dated timestamps beyond the 30s skew tolerance", () => {
+    // Far-future timestamp — an attacker setting a fixed time ahead to
+    // extend their replay window. Old Math.abs check would have accepted
+    // up to +5min; tightened to +30s skew only.
+    const ts = Date.now() + 2 * 60 * 1000;
+    const sig = signHubspot(HUBSPOT_SECRET, METHOD, URL, BODY, ts);
+    const r = verifyHubspot({
+      rawBody: BODY,
+      headers: {
+        "x-hubspot-signature-v3": sig,
+        "x-hubspot-request-timestamp": String(ts),
+      },
+      method: METHOD,
+      url: URL,
+      env: { HUBSPOT_WEBHOOK_SECRET: HUBSPOT_SECRET } as NodeJS.ProcessEnv,
+    });
+    expect(r).toMatchObject({ ok: false, status: 401, reason: "timestamp-in-future" });
+  });
+
+  it("accepts timestamps within the 30s future skew (clock drift between sender/receiver)", () => {
+    // Just-barely-future — legitimate clock drift case. Must still pass.
+    const ts = Date.now() + 5 * 1000;
+    const sig = signHubspot(HUBSPOT_SECRET, METHOD, URL, BODY, ts);
+    const r = verifyHubspot({
+      rawBody: BODY,
+      headers: {
+        "x-hubspot-signature-v3": sig,
+        "x-hubspot-request-timestamp": String(ts),
+      },
+      method: METHOD,
+      url: URL,
+      env: { HUBSPOT_WEBHOOK_SECRET: HUBSPOT_SECRET } as NodeJS.ProcessEnv,
+    });
+    expect(r).toMatchObject({ ok: true, verified: true });
+  });
+
   it("rejects when the signature is correct but the body has been tampered with", () => {
     const ts = Date.now();
     const sig = signHubspot(HUBSPOT_SECRET, METHOD, URL, BODY, ts);
@@ -177,6 +213,22 @@ describe("verifyGhl — x-wh-signature HMAC-SHA256", () => {
       env: { GHL_WEBHOOK_SECRET: GHL_SECRET } as NodeJS.ProcessEnv,
     });
     expect(r).toMatchObject({ ok: false, status: 401, reason: "signature-mismatch" });
+  });
+
+  it("rejects odd-length hex (Buffer.from(hex) silently truncates without this guard)", () => {
+    const sig = signGhl(GHL_SECRET, BODY);
+    // Drop one trailing char — without the even-length guard, Buffer.from
+    // would silently truncate and we could end up comparing a shortened
+    // buffer against an equally-truncated expected.
+    const truncated = sig.slice(0, -1);
+    const r = verifyGhl({
+      rawBody: BODY,
+      headers: { "x-wh-signature": truncated },
+      method: "POST",
+      url: "/x",
+      env: { GHL_WEBHOOK_SECRET: GHL_SECRET } as NodeJS.ProcessEnv,
+    });
+    expect(r).toMatchObject({ ok: false, status: 401, reason: "malformed-signature" });
   });
 });
 
