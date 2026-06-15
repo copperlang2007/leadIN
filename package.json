@@ -19,6 +19,7 @@
     "db:generate": "drizzle-kit generate",
     "check:env": "tsx scripts/check-env-example.ts",
     "check:prod-env": "tsx scripts/validate-prod-env.ts",
+    "check:predeploy": "tsx scripts/predeploy-check.ts",
     "check:migrations": "tsx scripts/test-schema-sync.ts"
   },
   "dependencies": {
