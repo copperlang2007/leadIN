@@ -52,6 +52,7 @@ import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { stripeWebhookIdempotency, markSeenOnceDb } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
+import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { logError } from "./lib/safeError";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
@@ -1794,9 +1795,31 @@ export async function registerRoutes(
       // express.json's verify callback (server/index.ts) populates rawBody
       // on every JSON request; if it's missing here we're misconfigured.
       const rawBody = req.rawBody as Buffer | undefined;
-      const verify = verifyCrmWebhook(rawBody, req.headers);
-      if (!verify.ok) {
-        return res.status(verify.status).json({ message: "Webhook signature check failed", reason: verify.reason });
+
+      // Provider-native signature verification first — strictly
+      // stronger than the shared HMAC because it uses provider-issued
+      // secrets (HubSpot V3 HMAC of method+url+body+timestamp, GHL
+      // x-wh-signature, Pipedrive Basic Auth). When the native check
+      // passes we trust the provider; when it fails outright we reject;
+      // when it returns "not-supported" (Salesforce, unknown providers)
+      // or "secret-not-configured" we fall back to the shared HMAC.
+      const native = verifyCrmByProvider(provider, {
+        rawBody,
+        headers: req.headers,
+        method: req.method,
+        url: req.originalUrl ?? req.url,
+      });
+      if (native.ok && native.verified === true) {
+        // Native check passed; bypass the shared HMAC.
+      } else if (!native.ok) {
+        return res.status(native.status).json({ message: "Webhook signature check failed", reason: native.reason, provider: native.provider });
+      } else {
+        // native.verified === false → "not-supported" or
+        // "secret-not-configured". Fall back to the shared HMAC guard.
+        const verify = verifyCrmWebhook(rawBody, req.headers);
+        if (!verify.ok) {
+          return res.status(verify.status).json({ message: "Webhook signature check failed", reason: verify.reason });
+        }
       }
 
       const result = await handleInboundWebhook(provider, req.body, { storage });
