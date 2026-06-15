@@ -32,6 +32,17 @@ export interface SafeError {
 }
 
 /**
+ * Log a redacted error with a context label. Centralises the
+ * `console.error("scenario:", safeError(err))` pattern that repeats
+ * hundreds of times across the server — having one helper means
+ * future logging-policy changes (structured logger, Sentry
+ * breadcrumb, log level routing) land in one place.
+ */
+export function logError(context: string, err: unknown): void {
+  console.error(context, safeError(err));
+}
+
+/**
  * Turn anything throwable into a JSON-safe `{name, message}` (optionally
  * with `stack`). PII in the message is scrubbed.
  *

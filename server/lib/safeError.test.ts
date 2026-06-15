@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { safeError, redactPiiString } from "./safeError";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { safeError, redactPiiString, logError } from "./safeError";
 
 describe("redactPiiString", () => {
   it("strips SSN-shaped substrings", () => {
@@ -38,6 +38,35 @@ describe("redactPiiString", () => {
     expect(redactPiiString("")).toBe("");
     // Documentation: callers must pass strings; if they don't, return as-is.
     expect(redactPiiString(undefined as unknown as string)).toBeUndefined();
+  });
+});
+
+describe("logError — convenience wrapper around safeError + console.error", () => {
+  let spy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    spy.mockRestore();
+  });
+
+  it("calls console.error with the context label and a redacted error shape", () => {
+    logError("Failed to fetch:", new Error("User phone +1-555-123-4567 boom"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("Failed to fetch:", {
+      name: "Error",
+      message: "User phone [REDACTED] boom",
+    });
+  });
+
+  it("wraps non-Error throws (string) into the NonError envelope", () => {
+    logError("Top-level:", "bare string thrown");
+    expect(spy).toHaveBeenCalledWith("Top-level:", {
+      name: "NonError",
+      message: "bare string thrown",
+    });
   });
 });
 
