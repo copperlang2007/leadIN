@@ -256,6 +256,30 @@ export const stripeCheckoutSessions = pgTable("stripe_checkout_sessions", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// DB-backed idempotency for inbound webhook events. The two existing
+// in-memory trackers in server/lib/eventIdempotency.ts (stripe +
+// crm-reputation) only dedup within a single process; multi-pod
+// deploys can re-fire side effects when the same event lands on a
+// different replica. This table is the cross-pod source of truth.
+//
+// `source` is the namespace (e.g. "stripe", "crm-reputation:hubspot")
+// so multiple producers can share the table without collision risk.
+// `key` is whatever the producer uses to identify the event (Stripe
+// event id, `${provider}:${externalId}` for CRM, etc.).
+//
+// Idempotency contract: a duplicate INSERT … ON CONFLICT DO NOTHING
+// returns rowCount=0, atomically, across all pods.
+export const webhookIdempotency = pgTable("webhook_idempotency", {
+  source: varchar("source", { length: 64 }).notNull(),
+  key: varchar("key", { length: 256 }).notNull(),
+  seenAt: timestamp("seen_at").notNull().defaultNow(),
+}, (table) => [
+  unique("uniq_webhook_idempotency").on(table.source, table.key),
+  // Periodic cleanup query filters on seenAt; index keeps the prune
+  // cheap once the table has thousands of rows.
+  index("idx_webhook_idempotency_seen_at").on(table.seenAt),
+]);
+
 // Notifications log to prevent duplicates
 export const notifications = pgTable("notifications", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
