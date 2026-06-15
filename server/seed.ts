@@ -1,6 +1,6 @@
 import { db } from "./db";
 import { vendors, leads } from "@shared/schema";
-import { safeError } from "./lib/safeError";
+import { logError } from "./lib/safeError";
 
 const VENDORS_DATA = [
   { name: "Apex Lead Gen", rating: "4.8", verified: true },
@@ -132,6 +132,6 @@ async function seed() {
 }
 
 seed().catch((error) => {
-  console.error("Seed failed:", safeError(error));
+  logError("Seed failed:", error);
   process.exit(1);
 });

@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Server, IncomingMessage } from "http";
 import crypto from "crypto";
 import { pool } from "./db";
-import { safeError } from "./lib/safeError";
+import { logError } from "./lib/safeError";
 
 let wss: WebSocketServer | null = null;
 let activeConnections = 0;
@@ -100,7 +100,7 @@ export async function isAuthenticatedUpgrade(req: IncomingMessage): Promise<bool
   try {
     return await sessionExistsInStore(sid);
   } catch (err) {
-    console.error("WebSocket session lookup failed:", safeError(err));
+    logError("WebSocket session lookup failed:", err);
     return false;
   }
 }
@@ -123,7 +123,7 @@ export function setupWebSocket(httpServer: Server) {
   wss.on("connection", (ws) => {
     activeConnections++;
     ws.on("close", () => { activeConnections--; });
-    ws.on("error", (err) => { console.error("WebSocket error:", safeError(err)); });
+    ws.on("error", (err) => { logError("WebSocket error:", err); });
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "connected", timestamp: new Date().toISOString() }));
     }

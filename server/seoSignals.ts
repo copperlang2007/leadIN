@@ -8,7 +8,7 @@ import { keywordSignals } from "@shared/schema";
 import { sql, desc } from "drizzle-orm";
 import { registerCron } from "./lib/cronRegistry";
 import { withAdvisoryLock } from "./lib/lock";
-import { safeError } from "./lib/safeError";
+import { logError } from "./lib/safeError";
 
 const SEED_KEYWORDS = [
   { keyword: "medicare advantage 2026", category: "Medicare Advantage" },
@@ -178,7 +178,7 @@ export function startSeoSignalCron(): void {
     await withAdvisoryLock("seo-bootstrap", async () => {
       const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(keywordSignals);
       if (!row || Number(row.c ?? 0) === 0) {
-        await refreshKeywordSignals().catch(err => console.error("[seo] warm failed:", safeError(err)));
+        await refreshKeywordSignals().catch(err => logError("[seo] warm failed:", err));
       }
     });
   })();

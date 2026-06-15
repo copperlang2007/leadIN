@@ -17,7 +17,7 @@ import { cmsPlanSignals } from "@shared/schema";
 import { sql } from "drizzle-orm";
 import { registerCron } from "./lib/cronRegistry";
 import { withAdvisoryLock } from "./lib/lock";
-import { safeError } from "./lib/safeError";
+import { logError } from "./lib/safeError";
 
 const FALLBACK_SEED = [
   { planId: "H1234-001", carrier: "Humana", state: "FL", county: "Miami-Dade", signalType: "termination", starRating: null,  effectiveDate: new Date("2026-01-01") },
@@ -167,7 +167,7 @@ export function startCmsSignalCron(): void {
   // instance does the seed when multi-process deploys boot together.
   (async () => {
     await withAdvisoryLock("cms-bootstrap", async () => {
-      await refreshCmsPlanSignals().catch(err => console.error("[cms] startup load failed:", safeError(err)));
+      await refreshCmsPlanSignals().catch(err => logError("[cms] startup load failed:", err));
     });
   })();
 }

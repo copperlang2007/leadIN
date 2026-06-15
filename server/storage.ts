@@ -99,7 +99,7 @@ import {
 } from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { toUsd, divUsd, mulUsdMany } from "./lib/money";
-import { safeError } from "./lib/safeError";
+import { logError } from "./lib/safeError";
 import { splitRevenue } from "./vendorPayouts";
 import {
   addRefundToBalance,
@@ -750,7 +750,7 @@ export class DatabaseStorage implements IStorage {
     if (order.orgId) {
       void import("./crmSync.js")
         .then(m => m.syncOrderToCrms(order, { storage: this }))
-        .catch(err => console.error("[crmSync] post-purchase sync failed", safeError(err)));
+        .catch(err => logError("[crmSync] post-purchase sync failed", err));
     }
 
     return order;
