@@ -136,9 +136,12 @@ const FORMAT_RULES: Array<(env: NodeJS.ProcessEnv) => PreDeployCheck | null> = [
     return { name: "CRM_WEBHOOK_SECRET length", status: "pass", detail: `${v.length} chars` };
   },
 
-  // Twilio account SID prefix sanity when dialer is enabled.
+  // Twilio account SID prefix sanity when dialer is enabled. Trim the
+  // flag before checking so an operator who pastes "  false " doesn't
+  // accidentally turn the dialer on.
   (env) => {
-    const dialerOn = env.FEATURE_DIALER && !/^(false|0|off|no)$/i.test(env.FEATURE_DIALER);
+    const flag = env.FEATURE_DIALER?.trim();
+    const dialerOn = !!flag && !/^(false|0|off|no)$/i.test(flag);
     if (!dialerOn) return null;
     if (!isPresent(env.TWILIO_ACCOUNT_SID)) return null; // env validator will catch the missing case
     const v = env.TWILIO_ACCOUNT_SID!.trim();
@@ -147,13 +150,19 @@ const FORMAT_RULES: Array<(env: NodeJS.ProcessEnv) => PreDeployCheck | null> = [
       : { name: "TWILIO_ACCOUNT_SID format", status: "fail", detail: `expected AC… prefix (got "${v.slice(0, 4)}…")` };
   },
 
-  // NODE_ENV explicitness check — we want prod deploys to set it
-  // explicitly, not rely on default behaviour.
+  // NODE_ENV explicitness — constrain to the canonical set so typos
+  // like "prod" or "prduction" fail the deploy instead of being
+  // silently treated as "not production".
   (env) => {
     if (!isPresent(env.NODE_ENV)) {
-      return { name: "NODE_ENV explicitness", status: "warn", detail: "NODE_ENV unset — set explicitly for clarity ('production' or 'development')" };
+      return { name: "NODE_ENV explicitness", status: "warn", detail: "NODE_ENV unset — set explicitly ('production', 'development', or 'test')" };
     }
-    return { name: "NODE_ENV explicitness", status: "pass", detail: env.NODE_ENV };
+    const v = env.NODE_ENV!.trim();
+    const allowed = new Set(["production", "development", "test"]);
+    if (!allowed.has(v)) {
+      return { name: "NODE_ENV explicitness", status: "fail", detail: `unrecognised value "${v}" — expected one of production / development / test (typo?)` };
+    }
+    return { name: "NODE_ENV explicitness", status: "pass", detail: v };
   },
 ];
 
