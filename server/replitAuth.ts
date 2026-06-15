@@ -85,10 +85,23 @@ async function upsertUser(claims: any) {
   });
 }
 
+// OIDC scope set. Defined once and consumed by the Strategy. Both
+// passport.authenticate calls below leave scope unset so the Strategy's
+// params.scope is the single source of truth — keeps "what scopes do we
+// request" from drifting between the strategy and the route.
+const OIDC_SCOPE = "openid email profile offline_access";
+
 // Per-hostname client cache. The OIDC client is bound to a specific
 // callback URL, so multi-domain deploys (replit.dev + custom domains)
 // need one client per hostname. We reuse them so each strategy
 // registration is cheap.
+//
+// Bounded: req.hostname is mostly trustworthy (Express respects
+// trust-proxy + the TCP connection), but a misconfigured proxy could
+// still inject novel Host headers in a loop. Cap with a soft eviction
+// of the oldest entry above the limit so the Map can't grow unbounded.
+// Real deployments use 1-3 hostnames; the cap is generous.
+const MAX_HOSTNAME_CLIENTS = 64;
 const clientByHostname = new Map<string, Client>();
 function getClientForHostname(hostname: string): Promise<Client> {
   const existing = clientByHostname.get(hostname);
@@ -103,6 +116,14 @@ function getClientForHostname(hostname: string): Promise<Client> {
       token_endpoint_auth_method: "none",
     });
     clientByHostname.set(hostname, client);
+    // Soft cap: drop the oldest insertion when we exceed the limit. Map
+    // preserves insertion order; the next iteration takes the head.
+    if (clientByHostname.size > MAX_HOSTNAME_CLIENTS) {
+      const oldest = clientByHostname.keys().next().value;
+      if (oldest !== undefined && oldest !== hostname) {
+        clientByHostname.delete(oldest);
+      }
+    }
     return client;
   })();
 }
@@ -129,7 +150,8 @@ export async function setupAuth(app: Express) {
     const strategy = new Strategy(
       {
         client: oidcClient,
-        params: { scope: "openid email profile offline_access" },
+        // Single source of truth for the scope set — see OIDC_SCOPE above.
+        params: { scope: OIDC_SCOPE },
         // Pass usePKCE: true if the IdP requires it; Replit's flow uses
         // the standard auth-code grant without PKCE for now.
       },
@@ -158,9 +180,10 @@ export async function setupAuth(app: Express) {
   app.get("/api/login", async (req, res, next) => {
     try {
       const name = await ensureStrategy(req.hostname);
+      // Scopes come from the Strategy's params.scope (= OIDC_SCOPE). Don't
+      // pass `scope` here — duplicating it makes the two definitions drift.
       passport.authenticate(name, {
         prompt: "login consent",
-        scope: ["openid", "email", "profile", "offline_access"],
       })(req, res, next);
     } catch (err) {
       next(err);
