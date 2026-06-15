@@ -116,3 +116,110 @@ export const stripeWebhookIdempotency: IdempotencyTracker = createIdempotencyTra
 export const crmReputationIdempotency: IdempotencyTracker = createIdempotencyTracker({
   maxEntries: 2_000,
 });
+
+// ──────────────────────────────────────────────────────────────────────
+// DB-backed idempotency. The in-memory trackers above only dedup within
+// a single process; multi-pod deploys can re-fire side effects when the
+// same webhook event lands on a different replica. markSeenOnceDb
+// writes to webhook_idempotency with ON CONFLICT DO NOTHING — the
+// DB's unique constraint gives us atomic cross-pod dedup.
+//
+// Failure mode: if the DB is briefly unreachable, we fall back to the
+// in-memory tracker and return true (process the event). The
+// downstream side effects must be designed to tolerate the rare
+// double-fire across pods. This matches Stripe's own retry contract.
+// ──────────────────────────────────────────────────────────────────────
+
+import { webhookIdempotency } from "@shared/schema";
+import { sql } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+
+export interface DbIdempotencyDeps {
+  // Subset of the drizzle db we need. Typed loosely so tests can pass
+  // a stub without booting the full schema.
+  insert: NodePgDatabase<any>["insert"];
+}
+
+// Lazy db import so this module can be loaded without DATABASE_URL set
+// (the in-memory exports above are still useful in tests).
+let dbRef: DbIdempotencyDeps | null = null;
+async function getDb(): Promise<DbIdempotencyDeps> {
+  if (dbRef) return dbRef;
+  const mod = await import("../db.js");
+  dbRef = mod.db as unknown as DbIdempotencyDeps;
+  return dbRef;
+}
+
+/** Test-only — inject a mocked db. Returns a reset fn. */
+export function __setIdempotencyDbForTesting(db: DbIdempotencyDeps | null): () => void {
+  const prev = dbRef;
+  dbRef = db;
+  return () => {
+    dbRef = prev;
+  };
+}
+
+/**
+ * Atomic cross-pod dedup. Returns true if this is the first time
+ * `(source, key)` was seen, false on duplicate. The DB's unique
+ * constraint is the source of truth; the in-memory tracker passed in
+ * via `fallbackTracker` is a hot path optimisation that short-circuits
+ * the round-trip for events we've already seen on THIS pod.
+ *
+ * On DB error we return true (process the event) and log via the
+ * caller — duplicate processing on rare DB blips is preferable to
+ * silently dropping legitimate events.
+ */
+export async function markSeenOnceDb(
+  source: string,
+  key: string,
+  fallbackTracker?: IdempotencyTracker,
+): Promise<boolean> {
+  if (!key) {
+    console.warn("[idempotencyDb] markSeenOnceDb called with empty key — treating as duplicate (fail-safe)");
+    return false;
+  }
+
+  // Hot path: if we've already seen it on this pod, skip the round-trip.
+  if (fallbackTracker && !fallbackTracker.markSeenOnce(`${source}:${key}`)) {
+    return false;
+  }
+
+  try {
+    const db = await getDb();
+    // ON CONFLICT DO NOTHING + .returning() lets us tell new from duplicate
+    // by checking rowCount. Drizzle returns the inserted row(s) only when
+    // the INSERT actually fired.
+    const result = await db
+      .insert(webhookIdempotency)
+      .values({ source, key })
+      .onConflictDoNothing({ target: [webhookIdempotency.source, webhookIdempotency.key] })
+      .returning({ source: webhookIdempotency.source });
+    return result.length > 0;
+  } catch (err) {
+    // DB hiccup — we already passed the in-memory check, so allow the
+    // event through. Log so operators can see DB problems clearly.
+    console.error("[idempotencyDb] DB write failed, allowing event through:", err);
+    return true;
+  }
+}
+
+/**
+ * Prune rows older than `olderThanMs`. Call from a cron to keep the
+ * table from growing unbounded — once an event is more than ~24h old,
+ * upstream retries will have stopped.
+ */
+export async function pruneOldIdempotencyRows(olderThanMs = 7 * 24 * 60 * 60 * 1000): Promise<number> {
+  try {
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const db = await getDb();
+    const result = (await (db as any)
+      .delete(webhookIdempotency)
+      .where(sql`${webhookIdempotency.seenAt} < ${cutoff}`)
+      .returning({ source: webhookIdempotency.source })) as Array<{ source: string }>;
+    return result.length;
+  } catch (err) {
+    console.error("[idempotencyDb] prune failed:", err);
+    return 0;
+  }
+}

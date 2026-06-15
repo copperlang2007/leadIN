@@ -50,7 +50,7 @@ import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
-import { stripeWebhookIdempotency } from "./lib/eventIdempotency";
+import { stripeWebhookIdempotency, markSeenOnceDb } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { logError } from "./lib/safeError";
@@ -190,7 +190,10 @@ export async function registerRoutes(
       // Idempotency guard: Stripe retries on slow / failed responses.
       // First sighting → process; subsequent → respond 200 immediately
       // without re-running side effects.
-      if (!stripeWebhookIdempotency.markSeenOnce(event.id)) {
+      // markSeenOnceDb is the cross-pod source of truth; the in-memory
+      // stripeWebhookIdempotency is a hot-path short-circuit that skips
+      // the DB round-trip for events this pod already processed.
+      if (!(await markSeenOnceDb("stripe", event.id, stripeWebhookIdempotency))) {
         console.log(`Stripe webhook duplicate (event ${event.id}, type ${event.type}) — skipping`);
         return res.json({ received: true, duplicate: true });
       }

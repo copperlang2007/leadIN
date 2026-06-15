@@ -12,7 +12,7 @@
 
 import type { CrmAdapter, CrmLeadInput, CrmProvider } from "./lib/crm.js";
 import { getAdapter as defaultGetAdapter } from "./lib/crm.js";
-import { crmReputationIdempotency } from "./lib/eventIdempotency.js";
+import { crmReputationIdempotency, markSeenOnceDb } from "./lib/eventIdempotency.js";
 import type { CrmConnection, CrmSyncEvent, Order } from "@shared/schema";
 
 // The orchestrator only needs a narrow slice of storage so tests can
@@ -332,14 +332,12 @@ export async function handleInboundWebhook(
   // can't pump up an agent's reputation indefinitely. Even a properly
   // signed webhook from a real CRM can fire twice on retry.
   //
-  // NOTE: the tracker is in-memory and per-process. With multiple pods
-  // a replay hitting a different pod *can* still double-emit. The
-  // shape of the win this PR locks in is "no single attacker can spam
-  // +10 in a loop against the same pod"; full cross-pod dedup is a
-  // tracked follow-up that will promote this cache to a DB row keyed
-  // on (provider, externalId).
+  // Cross-pod safe via markSeenOnceDb (writes to webhook_idempotency
+  // with ON CONFLICT DO NOTHING). The in-memory crmReputationIdempotency
+  // is the hot-path short-circuit that avoids a DB round-trip when this
+  // pod has already seen the (provider, externalId) pair.
   const idempotencyKey = `${provider}:${normalised.externalId}`;
-  if (!crmReputationIdempotency.markSeenOnce(idempotencyKey)) {
+  if (!(await markSeenOnceDb("crm-reputation", idempotencyKey, crmReputationIdempotency))) {
     return { matched: true, repEmitted: false, reason: "rep_already_emitted" };
   }
 
