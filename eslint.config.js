@@ -45,6 +45,7 @@ export default [
         Buffer: "readonly",
         process: "readonly",
         AbortSignal: "readonly",
+        AbortController: "readonly",
         Response: "readonly",
         Request: "readonly",
         Headers: "readonly",

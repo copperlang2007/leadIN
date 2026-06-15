@@ -15,8 +15,8 @@
 
 import {
   fetchWithTimeout,
-  formatResult,
   isPresent,
+  runAsCli,
   type VerifyResult,
 } from "./_shared";
 
@@ -104,11 +104,4 @@ async function verifyNipr(): Promise<VerifyResult> {
 
 export { verifyNipr };
 
-const entry = typeof process !== "undefined" ? process.argv[1] ?? "" : "";
-if (entry.endsWith("verify-nipr.ts") || entry.endsWith("verify-nipr.js")) {
-  void (async () => {
-    const r = await verifyNipr();
-    console.log(formatResult(r));
-    process.exit(r.outcome === "fail" ? 1 : 0);
-  })();
-}
+void runAsCli(verifyNipr, "verify-nipr");

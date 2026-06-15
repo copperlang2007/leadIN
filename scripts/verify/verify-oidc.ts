@@ -9,8 +9,8 @@
 
 import {
   fetchWithTimeout,
-  formatResult,
   isPresent,
+  runAsCli,
   type VerifyResult,
 } from "./_shared";
 
@@ -99,11 +99,4 @@ async function verifyOidc(): Promise<VerifyResult> {
 
 export { verifyOidc };
 
-const entry = typeof process !== "undefined" ? process.argv[1] ?? "" : "";
-if (entry.endsWith("verify-oidc.ts") || entry.endsWith("verify-oidc.js")) {
-  void (async () => {
-    const r = await verifyOidc();
-    console.log(formatResult(r));
-    process.exit(r.outcome === "fail" ? 1 : 0);
-  })();
-}
+void runAsCli(verifyOidc, "verify-oidc");

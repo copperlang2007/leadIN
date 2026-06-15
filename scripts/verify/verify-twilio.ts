@@ -9,8 +9,8 @@
 
 import {
   fetchWithTimeout,
-  formatResult,
   isPresent,
+  runAsCli,
   type VerifyResult,
 } from "./_shared";
 
@@ -76,10 +76,19 @@ async function verifyTwilio(): Promise<VerifyResult> {
     };
   }
 
-  const phoneRes = await fetchWithTimeout(
-    `${TWILIO_API}/Accounts/${sid}/IncomingPhoneNumbers.json?PhoneNumber=${encodeURIComponent(phone!)}`,
-    { headers: { Authorization: auth, Accept: "application/json" } },
-  );
+  let phoneRes: Response;
+  try {
+    phoneRes = await fetchWithTimeout(
+      `${TWILIO_API}/Accounts/${sid}/IncomingPhoneNumbers.json?PhoneNumber=${encodeURIComponent(phone!)}`,
+      { headers: { Authorization: auth, Accept: "application/json" } },
+    );
+  } catch (err: any) {
+    return {
+      service: "twilio",
+      outcome: "fail",
+      detail: `auth ok, but phone-number lookup network error: ${err?.message ?? err}`,
+    };
+  }
   if (!phoneRes.ok) {
     return {
       service: "twilio",
@@ -113,11 +122,4 @@ async function verifyTwilio(): Promise<VerifyResult> {
 
 export { verifyTwilio };
 
-const entry = typeof process !== "undefined" ? process.argv[1] ?? "" : "";
-if (entry.endsWith("verify-twilio.ts") || entry.endsWith("verify-twilio.js")) {
-  void (async () => {
-    const r = await verifyTwilio();
-    console.log(formatResult(r));
-    process.exit(r.outcome === "fail" ? 1 : 0);
-  })();
-}
+void runAsCli(verifyTwilio, "verify-twilio");

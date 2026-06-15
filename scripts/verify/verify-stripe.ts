@@ -9,8 +9,8 @@
 
 import {
   fetchWithTimeout,
-  formatResult,
   isPresent,
+  runAsCli,
   type VerifyResult,
 } from "./_shared";
 
@@ -67,11 +67,17 @@ async function verifyStripe(): Promise<VerifyResult> {
 
   const priceFailures: string[] = [];
   for (const [tier, priceId] of Object.entries(priceIds)) {
-    const r = await fetchWithTimeout(`${STRIPE_API}/prices/${priceId}`, {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    if (!r.ok) {
-      priceFailures.push(`${tier} (${priceId}) → ${r.status}`);
+    try {
+      const r = await fetchWithTimeout(`${STRIPE_API}/prices/${priceId}`, {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (!r.ok) {
+        priceFailures.push(`${tier} (${priceId}) → ${r.status}`);
+      }
+    } catch (err: any) {
+      // A transient blip between fetches shouldn't unstructured-abort the
+      // script — record it as a soft failure for this tier and keep going.
+      priceFailures.push(`${tier} (${priceId}) → network error: ${err?.message ?? err}`);
     }
   }
   if (priceFailures.length > 0) {
@@ -91,11 +97,4 @@ async function verifyStripe(): Promise<VerifyResult> {
 
 export { verifyStripe };
 
-const entry = typeof process !== "undefined" ? process.argv[1] ?? "" : "";
-if (entry.endsWith("verify-stripe.ts") || entry.endsWith("verify-stripe.js")) {
-  void (async () => {
-    const r = await verifyStripe();
-    console.log(formatResult(r));
-    process.exit(r.outcome === "fail" ? 1 : 0);
-  })();
-}
+void runAsCli(verifyStripe, "verify-stripe");
