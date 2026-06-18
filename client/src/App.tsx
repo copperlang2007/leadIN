@@ -21,6 +21,9 @@ import AgentOnboarding from "@/pages/agent-onboarding";
 import OrgAdmin from "@/pages/org-admin";
 import Analytics from "@/pages/analytics";
 import Pricing from "@/pages/pricing";
+import PrivacyPolicy from "@/pages/privacy";
+import TermsOfService from "@/pages/terms";
+import CookiePolicy from "@/pages/cookies";
 import SavedLists from "@/pages/saved-lists";
 import TcpaPage from "@/pages/tcpa";
 import VendorScorecard from "@/pages/vendor-scorecard";
@@ -35,6 +38,12 @@ function Router() {
         <Route path="/blog" component={Blog} />
         <Route path="/blog/:slug" component={BlogPost} />
         <Route path="/pricing" component={Pricing} />
+        {/* Public legal surface. The Stripe live-mode application + most
+            B2B procurement checklists require these be reachable without
+            an account, so they live in the unauthenticated tree. */}
+        <Route path="/privacy" component={PrivacyPolicy} />
+        <Route path="/terms" component={TermsOfService} />
+        <Route path="/cookies" component={CookiePolicy} />
         <Route path="/" component={Landing} />
         {/* Unknown routes should render NotFound, not silently fall back to
             Landing. A guest hitting a stale link previously got a confusing
@@ -67,6 +76,12 @@ function Router() {
       <Route path="/smart-match" component={SmartMatchPage} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
+      {/* Mirror the legal pages into the authenticated tree so signed-in
+          users following a footer link don't bounce through the
+          unauthenticated tree. */}
+      <Route path="/privacy" component={PrivacyPolicy} />
+      <Route path="/terms" component={TermsOfService} />
+      <Route path="/cookies" component={CookiePolicy} />
       <Route component={NotFound} />
     </Switch>
   );
