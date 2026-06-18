@@ -454,9 +454,13 @@ export default function OrgAdmin() {
               {keysLoading ? (
                 <Skeleton className="h-20" />
               ) : vendorKeys.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center" data-testid="text-no-vendor-keys">
-                  No vendor API keys yet.
-                </p>
+                <EmptyState
+                  icon={Key}
+                  title="No vendor API keys yet"
+                  description="Pick a vendor above and mint a key. Each key is org-scoped, shown only once at mint time, and revocable from this list."
+                  compact
+                  data-testid="text-no-vendor-keys"
+                />
               ) : (
                 <div className="space-y-1" data-testid="list-vendor-keys">
                   <div className="grid grid-cols-12 gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
