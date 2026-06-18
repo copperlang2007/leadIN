@@ -24,6 +24,7 @@ import {
 import { Filter, X, ArrowUpDown, CheckCircle2, Search, Sparkles } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import {
   Drawer,
   DrawerClose,
@@ -137,7 +138,13 @@ export default function Marketplace() {
     return params.toString();
   }, [selectedTypes, selectedStates, priceRange, includeDnc]);
 
-  const { data: rawLeads = [], isLoading } = useQuery<Lead[]>({
+  const {
+    data: rawLeads = [],
+    isLoading,
+    isError: leadsErrored,
+    error: leadsError,
+    refetch: refetchLeads,
+  } = useQuery<Lead[]>({
     queryKey: [`/api/leads?${queryParams}`],
   });
 
@@ -521,7 +528,15 @@ export default function Marketplace() {
               </div>
             )}
 
-            {isLoading ? (
+            {leadsErrored ? (
+              <QueryErrorState
+                title="Couldn't load the marketplace"
+                description="Something went wrong fetching leads. This is usually a transient network or server issue — retry in a few seconds."
+                details={leadsError instanceof Error ? leadsError.message : undefined}
+                onRetry={() => refetchLeads()}
+                data-testid="marketplace-error"
+              />
+            ) : isLoading ? (
               // Skeleton grid that mirrors the lead-card layout. Far less
               // jarring than a centered spinner — the user sees the page
               // shape immediately and content streams in.
