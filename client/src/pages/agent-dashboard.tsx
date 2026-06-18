@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/empty-state";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { QueryErrorState } from "@/components/query-error-state";
 import type { Lead } from "@/lib/types";
 
 interface DashboardResponse {
@@ -178,10 +179,32 @@ interface ReputationResponse {
 export default function AgentDashboard() {
   useDocumentTitle("Agent Dashboard");
   const [, navigate] = useLocation();
-  const { data, isLoading } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
+  const {
+    data,
+    isLoading,
+    isError: dashErrored,
+    error: dashError,
+    refetch: refetchDashboard,
+  } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
   // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the
   // main dashboard render. If it fails or hasn't loaded yet we show "—".
   const { data: reputation } = useQuery<ReputationResponse>({ queryKey: ["/api/agent/me/reputation"] });
+
+  if (dashErrored) {
+    return (
+      <Layout>
+        <div className="max-w-3xl mx-auto pt-8">
+          <QueryErrorState
+            title="Couldn't load your dashboard"
+            description="Pipeline, leads, and reputation didn't load. Retry — your data is intact on the server."
+            details={dashError instanceof Error ? dashError.message : undefined}
+            onRetry={() => refetchDashboard()}
+            data-testid="agent-dashboard-error"
+          />
+        </div>
+      </Layout>
+    );
+  }
 
   if (isLoading || !data) {
     return (
