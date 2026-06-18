@@ -37,7 +37,10 @@ test.describe("public legal pages", () => {
 
   test("footer link from landing reaches Privacy Policy", async ({ page }) => {
     await page.goto("/");
-    // Footer renders the public links; click "Privacy policy".
+    // Footer renders the public links; click "Privacy policy". The
+    // landing page also has no inline /privacy reference, so .first()
+    // is precautionary (one link today, .first() locks us against a
+    // future header link making this ambiguous).
     await page.getByRole("link", { name: /privacy policy/i }).first().click();
     await expect(page).toHaveURL(/\/privacy$/);
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/privacy policy/i);
@@ -45,8 +48,11 @@ test.describe("public legal pages", () => {
 
   test("cookies page cross-links to privacy + terms", async ({ page }) => {
     await page.goto("/cookies");
-    // Inline cross-references in the cookies copy.
-    await expect(page.getByRole("link", { name: /privacy policy/i })).toBeVisible();
-    await expect(page.getByRole("link", { name: /terms of service/i })).toBeVisible();
+    // The cookies copy AND the footer both link to /privacy and /terms;
+    // strict mode would fail without .first(). We want to assert the
+    // inline body cross-reference is visible — which appears earlier in
+    // the DOM than the footer, so .first() selects the body link.
+    await expect(page.getByRole("link", { name: /privacy policy/i }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: /terms of service/i }).first()).toBeVisible();
   });
 });
