@@ -30,7 +30,7 @@ Disallow: /tcpa
 Disallow: /vendor-scorecard
 
 # Public marketing + legal surface is open. Explicit Allow so a
-# future top-level Disallow:/ doesn't accidentally close it.
+# future top-level Disallow: / doesn't accidentally close it.
 Allow: /
 Allow: /pricing
 Allow: /blog
