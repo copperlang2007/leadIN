@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { QueryErrorState } from "@/components/query-error-state";
 
 interface SmartMatchSubscription {
   id: number;
@@ -65,7 +66,13 @@ export default function SmartMatchPage() {
     { quota: 100, priceCents: 32900 },
   ];
 
-  const { data: subs = [], isLoading } = useQuery<SmartMatchSubscription[]>({
+  const {
+    data: subs = [],
+    isLoading,
+    isError: subsErrored,
+    error: subsError,
+    refetch: refetchSubs,
+  } = useQuery<SmartMatchSubscription[]>({
     queryKey: ["/api/smart-match"],
   });
 
@@ -233,7 +240,16 @@ export default function SmartMatchPage() {
             <CardTitle className="text-base">Your active subscriptions</CardTitle>
           </CardHeader>
           <CardContent>
-            {isLoading ? (
+            {subsErrored ? (
+              <QueryErrorState
+                title="Couldn't load your subscriptions"
+                description="A transient server or network issue blocked the request. Your subscriptions are safe — retry to fetch them again."
+                details={subsError instanceof Error ? subsError.message : undefined}
+                onRetry={() => refetchSubs()}
+                compact
+                data-testid="smart-match-error"
+              />
+            ) : isLoading ? (
               // Skeleton stack matches subscription card height — three
               // rows so the visual weight stays consistent during refetch.
               <div className="space-y-3">
