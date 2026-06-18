@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import {
   Settings,
   Wallet,
@@ -67,6 +68,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 const FUND_AMOUNTS = [25, 50, 100, 250];
 
 export default function SettingsPage() {
+  useDocumentTitle("Settings");
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();

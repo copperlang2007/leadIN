@@ -4,10 +4,12 @@
 // explicit for operators.
 
 import { LegalLayout, H2 } from "./legal-layout";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function PrivacyPolicy() {
+  useDocumentTitle("Privacy Policy");
   return (
     <LegalLayout title="Privacy Policy" lastUpdated={LAST_UPDATED}>
       <p>

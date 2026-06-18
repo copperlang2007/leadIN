@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { Briefcase, MapPin, FileBadge, Building2, Loader2, Save, ShieldCheck, AlertTriangle, Check, ArrowRight, Sparkles } from "lucide-react";
 
 const ALL_STATES = [
@@ -46,6 +47,7 @@ interface OrgList {
 }
 
 export default function AgentOnboarding() {
+  useDocumentTitle("Agent Onboarding");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();

@@ -19,6 +19,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { Footer } from "@/components/footer";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_background.png";
 
 const STATS = [
@@ -97,6 +98,10 @@ const FAQ = [
 ];
 
 export default function Landing() {
+  useDocumentTitle({
+    part: "LeadMarket — Verified Insurance Lead Marketplace",
+    full: true,
+  });
   return (
     <div className="min-h-screen bg-background">
       {/* Hero Section */}

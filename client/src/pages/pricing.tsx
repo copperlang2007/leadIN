@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Footer } from "@/components/footer";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 type SubscriptionTier = "starter" | "growth" | "scale";
 
@@ -76,6 +77,7 @@ const TIERS = [
 ];
 
 export default function Pricing() {
+  useDocumentTitle("Pricing");
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
 

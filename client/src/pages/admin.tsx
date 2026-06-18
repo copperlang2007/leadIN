@@ -13,6 +13,7 @@ import {
   Flag, Trash2, AlertTriangle, RefreshCw
 } from "lucide-react";
 import type { Lead } from "@/lib/types";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface PlatformStats {
   totalLeads: number;
@@ -24,6 +25,7 @@ interface PlatformStats {
 }
 
 export default function Admin() {
+  useDocumentTitle("Admin");
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();

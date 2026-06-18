@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/empty-state";
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { PermissionRequired } from "@/components/permission-required";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,6 +80,7 @@ function formatCents(cents: number): string {
 }
 
 export default function OrgAdmin() {
+  useDocumentTitle("Org Admin");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user } = useAuth();

@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { FileText, Plus, Trash2, Loader2, Bookmark } from "lucide-react";
 import type { Lead } from "@/lib/types";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface SavedList {
   id: number;
@@ -21,6 +22,7 @@ interface SavedList {
 }
 
 export default function SavedLists() {
+  useDocumentTitle("Saved Lists");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [newName, setNewName] = useState("");

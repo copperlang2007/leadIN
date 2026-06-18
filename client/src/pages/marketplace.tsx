@@ -35,8 +35,10 @@ import {
   DrawerTrigger,
 } from "@/components/ui/drawer";
 import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_background.png";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 export default function Marketplace() {
+  useDocumentTitle("Marketplace");
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();

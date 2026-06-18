@@ -3,10 +3,12 @@
 // at top of LegalLayout flags that explicitly.
 
 import { LegalLayout, H2 } from "./legal-layout";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function TermsOfService() {
+  useDocumentTitle("Terms of Service");
   return (
     <LegalLayout title="Terms of Service" lastUpdated={LAST_UPDATED}>
       <p>
