@@ -50,7 +50,7 @@ import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
-import { stripeWebhookIdempotency, markSeenOnceDb } from "./lib/eventIdempotency";
+import { stripeWebhookIdempotency, markSeenOnceDb, startIdempotencyPruneCron } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
@@ -168,6 +168,9 @@ export async function registerRoutes(
   startNiprRenewalCron();
   // Wave 7 (T3) — daily reset of smart-match monthly cycles.
   startSmartMatchCycleCron();
+  // Drop webhook_idempotency rows older than 7d. Sits at 04:00 after
+  // the rest so log lines don't interleave with data-retention sweeps.
+  startIdempotencyPruneCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
