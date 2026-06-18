@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { Lead } from "@/lib/types";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { EmptyState } from "@/components/empty-state";
 
 interface PlatformStats {
   totalLeads: number;
@@ -246,6 +247,20 @@ export default function Admin() {
               <div className="space-y-2">
                 {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-12 rounded" />)}
               </div>
+            ) : leads.length === 0 ? (
+              <EmptyState
+                icon={Package}
+                title="No leads in the platform yet"
+                description="As vendors start ingesting leads via the API, they'll appear here for moderation, flagging, and removal. Hit refresh to re-query."
+                compact
+                action={{
+                  label: "Refresh",
+                  onClick: () => refetchLeads(),
+                  variant: "outline",
+                  testId: "admin-no-leads-refresh",
+                }}
+                data-testid="admin-no-leads"
+              />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
