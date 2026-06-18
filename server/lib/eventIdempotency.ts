@@ -228,3 +228,33 @@ export async function pruneOldIdempotencyRows(olderThanMs = 7 * 24 * 60 * 60 * 1
     return 0;
   }
 }
+
+/**
+ * Register the daily prune cron. Drops webhook_idempotency rows
+ * older than 7 days so the table stays small as Stripe/CRM events
+ * accumulate. Skips wiring when FEATURE_IDEMPOTENCY_PRUNE=false so
+ * dev / CI / tests don't spin up a real cron.
+ */
+export function startIdempotencyPruneCron(): void {
+  if (process.env.FEATURE_IDEMPOTENCY_PRUNE === "false") {
+    console.log("[idempotencyDb] prune cron disabled via FEATURE_IDEMPOTENCY_PRUNE=false");
+    return;
+  }
+  // Lazy-import the registry so this module stays loadable in tests
+  // that mock the DB but don't want a real node-cron timer attached.
+  void (async () => {
+    const { registerCron } = await import("./cronRegistry.js");
+    registerCron({
+      name: "idempotency-prune",
+      // 04:00 daily — sits after data-retention (03:00) so log noise
+      // doesn't interleave with the PII scrubber.
+      schedule: "0 4 * * *",
+      fn: async () => {
+        const dropped = await pruneOldIdempotencyRows();
+        if (dropped > 0) {
+          console.log(`[idempotencyDb] pruned ${dropped} stale rows`);
+        }
+      },
+    });
+  })();
+}

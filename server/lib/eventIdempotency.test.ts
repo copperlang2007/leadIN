@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   createIdempotencyTracker,
   markSeenOnceDb,
+  startIdempotencyPruneCron,
   __setIdempotencyDbForTesting,
 } from "./eventIdempotency.js";
 
@@ -162,5 +163,29 @@ describe("markSeenOnceDb (DB-backed)", () => {
       source: "crm-reputation",
       key: "hubspot:deal_42",
     });
+  });
+});
+
+describe("startIdempotencyPruneCron", () => {
+  const savedFlag = process.env.FEATURE_IDEMPOTENCY_PRUNE;
+  afterEach(() => {
+    if (savedFlag === undefined) {
+      delete process.env.FEATURE_IDEMPOTENCY_PRUNE;
+    } else {
+      process.env.FEATURE_IDEMPOTENCY_PRUNE = savedFlag;
+    }
+  });
+
+  it("short-circuits without registering a real cron when FEATURE_IDEMPOTENCY_PRUNE=false", () => {
+    process.env.FEATURE_IDEMPOTENCY_PRUNE = "false";
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // Should return synchronously without starting a node-cron timer.
+    expect(() => startIdempotencyPruneCron()).not.toThrow();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("FEATURE_IDEMPOTENCY_PRUNE=false"),
+    );
+
+    log.mockRestore();
   });
 });
