@@ -1881,6 +1881,28 @@ export async function registerRoutes(
       }
       const d = validation.data;
 
+      // TCPA attestation gate. The client UI requires the checkbox before
+      // Save and won't include the field if unchecked, but a server-side
+      // gate keeps API users honest. Record an audit row so we have a
+      // dated acknowledgement to point at if a consumer complaint surfaces
+      // months later.
+      const tcpaAttested = req.body?.tcpaAttested === true;
+      if (!tcpaAttested) {
+        return res.status(400).json({ message: "TCPA attestation required" });
+      }
+      await recordAudit({
+        actorUserId: userId,
+        orgId: me.activeOrgId,
+        action: "agent.tcpa_attestation",
+        targetKind: "user",
+        targetId: userId,
+        metadata: {
+          attestedAt: typeof req.body?.tcpaAttestedAt === "string" ? req.body.tcpaAttestedAt : new Date().toISOString(),
+          ip: req.ip ?? null,
+          userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
+        },
+      }).catch(() => { /* recordAudit swallows its own errors */ });
+
       // Preserve existing verification status on re-edit; first onboarding starts "pending".
       const existing = await storage.getAgentProfile(userId);
       const profile = await storage.upsertAgentProfile({
