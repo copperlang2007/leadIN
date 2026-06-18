@@ -24,6 +24,7 @@ import Pricing from "@/pages/pricing";
 import PrivacyPolicy from "@/pages/privacy";
 import TermsOfService from "@/pages/terms";
 import CookiePolicy from "@/pages/cookies";
+import TcpaCompliance from "@/pages/tcpa-compliance";
 import SavedLists from "@/pages/saved-lists";
 import TcpaPage from "@/pages/tcpa";
 import VendorScorecard from "@/pages/vendor-scorecard";
@@ -44,6 +45,7 @@ function Router() {
         <Route path="/privacy" component={PrivacyPolicy} />
         <Route path="/terms" component={TermsOfService} />
         <Route path="/cookies" component={CookiePolicy} />
+        <Route path="/tcpa-compliance" component={TcpaCompliance} />
         <Route path="/" component={Landing} />
         {/* Unknown routes should render NotFound, not silently fall back to
             Landing. A guest hitting a stale link previously got a confusing
@@ -82,6 +84,9 @@ function Router() {
       <Route path="/privacy" component={PrivacyPolicy} />
       <Route path="/terms" component={TermsOfService} />
       <Route path="/cookies" component={CookiePolicy} />
+      {/* Public TCPA compliance is distinct from /tcpa (the authenticated
+          TCPA Defense Insurance product above). Footer links here. */}
+      <Route path="/tcpa-compliance" component={TcpaCompliance} />
       <Route component={NotFound} />
     </Switch>
   );
