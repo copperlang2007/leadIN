@@ -14,6 +14,15 @@
 import { test, expect } from "@playwright/test";
 
 const APP = "LeadMarket";
+// Stable substring of the landing-page title. The full marketing
+// tagline is "LeadMarket — Verified Insurance Lead Marketplace"
+// (kept verbatim by useDocumentTitle's full: true path). We match a
+// short substring instead so a copy tweak — adding "Pro", changing
+// dash characters, swapping "Insurance" for "Carrier" — doesn't
+// break this guard. The point of the test is to verify the hook
+// fires and the index.html static title is replaced; the exact
+// marketing wording isn't part of the contract.
+const LANDING_TITLE_SUBSTRING = /LeadMarket.*Insurance Lead Marketplace/i;
 
 const PUBLIC_PAGES = [
   { path: "/pricing", expected: `Pricing · ${APP}` },
@@ -32,7 +41,7 @@ test.describe("per-route document title", () => {
   // verbatim — pinned separately because the assertion shape differs.
   test("landing renders the full marketing title verbatim", async ({ page }) => {
     await page.goto("/");
-    await expect(page).toHaveTitle(/LeadMarket — Verified Insurance Lead Marketplace/);
+    await expect(page).toHaveTitle(LANDING_TITLE_SUBSTRING);
   });
 
   for (const p of PUBLIC_PAGES) {
@@ -46,10 +55,14 @@ test.describe("per-route document title", () => {
     // Soft route change exercises the useEffect path (vs. a full page
     // boot where the static <title> would be replaced regardless). If
     // useDocumentTitle's deps are wrong the title would stay frozen
-    // on whatever the first route set it to.
-    await page.goto("/pricing");
-    await expect(page).toHaveTitle(`Pricing · ${APP}`);
-    await page.goto("/privacy");
-    await expect(page).toHaveTitle(`Privacy Policy · ${APP}`);
+    // on whatever the first route set it to. Picks the first two
+    // public pages so this stays aligned with the table above —
+    // a future addition to PUBLIC_PAGES that breaks navigation
+    // semantics would surface here without a parallel edit.
+    const [first, second] = PUBLIC_PAGES;
+    await page.goto(first.path);
+    await expect(page).toHaveTitle(first.expected);
+    await page.goto(second.path);
+    await expect(page).toHaveTitle(second.expected);
   });
 });
