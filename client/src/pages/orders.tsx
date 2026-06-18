@@ -41,6 +41,7 @@ import {
 import { format } from "date-fns";
 import type { Order } from "@/lib/types";
 import { EmptyState } from "@/components/empty-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { useToast } from "@/hooks/use-toast";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { apiRequest } from "@/lib/queryClient";
@@ -106,7 +107,13 @@ const NOTES_MAX = 2000;
 export default function Orders() {
   useDocumentTitle("Orders");
   const [, navigate] = useLocation();
-  const { data: orders = [], isLoading } = useQuery<OrderWithLead[]>({
+  const {
+    data: orders = [],
+    isLoading,
+    isError: ordersErrored,
+    error: ordersError,
+    refetch: refetchOrders,
+  } = useQuery<OrderWithLead[]>({
     queryKey: ["/api/orders"],
   });
 
@@ -345,7 +352,15 @@ export default function Orders() {
         )}
 
         {/* Orders List */}
-        {isLoading ? (
+        {ordersErrored ? (
+          <QueryErrorState
+            title="Couldn't load your orders"
+            description="A network or server hiccup blocked the request. Your purchases are safe — retry to fetch them again."
+            details={ordersError instanceof Error ? ordersError.message : undefined}
+            onRetry={() => refetchOrders()}
+            data-testid="orders-error"
+          />
+        ) : isLoading ? (
           <div className="space-y-3">
             {[...Array(4)].map((_, i) => (
               <Skeleton key={i} className="h-24 w-full rounded-lg" />
