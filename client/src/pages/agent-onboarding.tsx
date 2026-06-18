@@ -74,6 +74,11 @@ export default function AgentOnboarding() {
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseDocumentUrl, setLicenseDocumentUrl] = useState("");
   const [capacityLimit, setCapacityLimit] = useState(25);
+  // TCPA attestation — required before Save. Acknowledges the agent
+  // understands they're contracting outreach under the consumer's
+  // existing consent and is responsible for ongoing DNC + revocation
+  // compliance. Documented in /tcpa-compliance.
+  const [tcpaAttested, setTcpaAttested] = useState(false);
 
   useEffect(() => {
     if (profile) {
@@ -109,6 +114,12 @@ export default function AgentOnboarding() {
 
   const saveProfileMutation = useMutation({
     mutationFn: async () => {
+      // Front-end gate — Save is also disabled when this is false,
+      // but a belt-and-suspenders check here covers callsites we might
+      // add later. Backend records the timestamp for legal-defensibility.
+      if (!tcpaAttested) {
+        throw new Error("Please confirm the TCPA attestation before saving.");
+      }
       const payload = {
         licensedStates,
         appointedCarriers,
@@ -117,6 +128,8 @@ export default function AgentOnboarding() {
         licenseNumber: licenseNumber.trim() || undefined,
         licenseDocumentUrl: licenseDocumentUrl.trim() || undefined,
         capacityLimit,
+        tcpaAttested: true,
+        tcpaAttestedAt: new Date().toISOString(),
       };
       const res = await fetch("/api/agent/onboard", {
         method: "POST",
@@ -370,8 +383,50 @@ export default function AgentOnboarding() {
               </CardContent>
             </Card>
 
+            {/* TCPA attestation — required gate on Save. The attestation
+                + timestamp ride along with the profile payload so we have
+                a recorded acknowledgement for legal defensibility if a
+                consumer complaint surfaces months later. Full posture
+                explanation lives at /tcpa-compliance. */}
+            <Card className="border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/10">
+              <CardContent className="pt-6">
+                <div className="flex items-start gap-3">
+                  <Checkbox
+                    id="tcpa-attestation"
+                    checked={tcpaAttested}
+                    onCheckedChange={(v) => setTcpaAttested(v === true)}
+                    className="mt-0.5"
+                    data-testid="checkbox-tcpa-attestation"
+                  />
+                  <label htmlFor="tcpa-attestation" className="text-sm leading-relaxed cursor-pointer select-none">
+                    I confirm that any leads I purchase through LeadMarket
+                    will be contacted within the bounds of the consumer's
+                    TCPA consent for the licensed product and state matching
+                    each lead. I will maintain my own DNC scrub list, honor
+                    revocation requests promptly, and operate within
+                    state-mandated calling windows. I have read the{" "}
+                    <a
+                      href="/tcpa-compliance"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline underline-offset-2"
+                      data-testid="link-tcpa-compliance"
+                    >
+                      TCPA compliance summary
+                    </a>
+                    .
+                  </label>
+                </div>
+              </CardContent>
+            </Card>
+
             <div className="flex justify-end gap-3">
-              <Button onClick={() => saveProfileMutation.mutate()} disabled={saveProfileMutation.isPending}>
+              <Button
+                onClick={() => saveProfileMutation.mutate()}
+                disabled={saveProfileMutation.isPending || !tcpaAttested}
+                data-testid="button-save-profile"
+                title={!tcpaAttested ? "Confirm the TCPA attestation above to save" : undefined}
+              >
                 {saveProfileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
                 Save profile
               </Button>
