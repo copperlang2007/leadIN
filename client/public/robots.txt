@@ -1,0 +1,43 @@
+# LeadMarket — public crawl policy.
+#
+# Public surface: marketing pages + legal + blog are indexable.
+# Authenticated surface: anything behind /api or under app routes
+# that requires a session is excluded from indexing. The SPA still
+# serves these paths so they're not 404s, but we don't want them in
+# Google snippets where they'd just lead to a sign-in wall.
+#
+# The sitemap below lists every page worth indexing with a recent
+# lastmod so Google's crawl budget targets the right surfaces.
+
+User-agent: *
+
+# Authenticated surface — sign-in wall, no public value.
+Disallow: /api/
+Disallow: /admin
+Disallow: /analytics
+Disallow: /agent-onboarding
+Disallow: /agent-dashboard
+Disallow: /dashboard
+Disallow: /marketplace
+Disallow: /orders
+Disallow: /profile
+Disallow: /saved-lists
+Disallow: /smart-match
+Disallow: /settings
+Disallow: /org-admin
+Disallow: /architect-blueprint
+Disallow: /tcpa
+Disallow: /vendor-scorecard
+
+# Public marketing + legal surface is open. Explicit Allow so a
+# future top-level Disallow:/ doesn't accidentally close it.
+Allow: /
+Allow: /pricing
+Allow: /blog
+Allow: /blog/
+Allow: /privacy
+Allow: /terms
+Allow: /cookies
+Allow: /tcpa-compliance
+
+Sitemap: https://leadmarket.app/sitemap.xml
