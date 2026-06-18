@@ -13,6 +13,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { User, MapPin, Shield, Activity, Save, Loader2, Bell } from "lucide-react";
 import type { UserProfile } from "@/lib/types";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { QueryErrorState } from "@/components/query-error-state";
 
 const ALL_STATES = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
@@ -30,7 +31,7 @@ export default function Profile() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: profile, isLoading } = useQuery<UserProfile>({
+  const { data: profile, isLoading, isError: profileErrored, error: profileError, refetch: refetchProfile } = useQuery<UserProfile>({
     queryKey: ["/api/profile"],
   });
 
@@ -139,6 +140,17 @@ export default function Profile() {
             Manage your license portfolio and preferred lead types. Your compatibility scores update instantly.
           </p>
         </div>
+
+        {profileErrored && (
+          <QueryErrorState
+            title="Couldn't load your profile"
+            description="License and preference data couldn't be fetched. Retry — the save bar stays disabled until this clears, so you can't accidentally overwrite real data with empty selections."
+            details={profileError instanceof Error ? profileError.message : undefined}
+            onRetry={() => refetchProfile()}
+            compact
+            data-testid="profile-error"
+          />
+        )}
 
         {/* Account Info */}
         <Card>
@@ -326,7 +338,7 @@ export default function Profile() {
           <p className="text-sm text-muted-foreground">You have unsaved changes</p>
           <Button
             onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !hasChanges}
+            disabled={saveMutation.isPending || !hasChanges || profileErrored}
             className="gap-2"
             data-testid="button-save-profile"
           >

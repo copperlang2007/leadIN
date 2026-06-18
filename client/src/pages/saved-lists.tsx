@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/empty-state";
 import { FileText, Plus, Trash2, Loader2, Bookmark } from "lucide-react";
 import type { Lead } from "@/lib/types";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { QueryErrorState } from "@/components/query-error-state";
 
 interface SavedList {
   id: number;
@@ -28,7 +29,13 @@ export default function SavedLists() {
   const [newName, setNewName] = useState("");
   const [openListId, setOpenListId] = useState<number | null>(null);
 
-  const { data: lists = [], isLoading } = useQuery<SavedList[]>({ queryKey: ["/api/saved-lists"] });
+  const {
+    data: lists = [],
+    isLoading,
+    isError: listsErrored,
+    error: listsError,
+    refetch: refetchLists,
+  } = useQuery<SavedList[]>({ queryKey: ["/api/saved-lists"] });
   const { data: openList } = useQuery<{ list: SavedList; leads: Lead[] }>({
     queryKey: [`/api/saved-lists/${openListId}`],
     enabled: openListId !== null,
@@ -108,7 +115,18 @@ export default function SavedLists() {
         </Card>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {isLoading ? (
+          {listsErrored ? (
+            <div className="col-span-2">
+              <QueryErrorState
+                title="Couldn't load your saved lists"
+                description="A transient server or network issue blocked the request. Your bookmarks are safe — retry to fetch them again."
+                details={listsError instanceof Error ? listsError.message : undefined}
+                onRetry={() => refetchLists()}
+                compact
+                data-testid="saved-lists-error"
+              />
+            </div>
+          ) : isLoading ? (
             // Skeleton cards match the SavedList card footprint so the
             // page shape stays stable while data streams in.
             <>
