@@ -21,7 +21,7 @@ const COMPANY_LINKS = [
 const LEGAL_LINKS = [
   { label: "Terms of service", href: "/terms" },
   { label: "Privacy policy", href: "/privacy" },
-  { label: "TCPA compliance", href: "/tcpa" },
+  { label: "TCPA compliance", href: "/tcpa-compliance" },
   { label: "Cookie policy", href: "/cookies" },
 ];
 

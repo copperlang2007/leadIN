@@ -20,6 +20,7 @@ const PAGES = [
   { path: "/privacy", heading: /privacy policy/i },
   { path: "/terms", heading: /terms of service/i },
   { path: "/cookies", heading: /cookie policy/i },
+  { path: "/tcpa-compliance", heading: /tcpa compliance/i },
 ];
 
 test.describe("public legal pages", () => {
@@ -44,6 +45,16 @@ test.describe("public legal pages", () => {
     await page.getByRole("link", { name: /privacy policy/i }).first().click();
     await expect(page).toHaveURL(/\/privacy$/);
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/privacy policy/i);
+  });
+
+  test("footer TCPA-compliance link routes to public page, not authenticated /tcpa", async ({ page }) => {
+    // Regression: the footer used to point /tcpa (the authenticated
+    // TCPA Defense Insurance product) which 404'd for guests. Fixing
+    // the routing target is the whole point of this PR.
+    await page.goto("/");
+    await page.getByRole("link", { name: /tcpa compliance/i }).first().click();
+    await expect(page).toHaveURL(/\/tcpa-compliance$/);
+    await expect(page.getByRole("heading", { level: 1 })).toContainText(/tcpa compliance/i);
   });
 
   test("cookies page cross-links to privacy + terms", async ({ page }) => {
