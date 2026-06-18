@@ -1,8 +1,10 @@
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { FileQuestion, Home, MessageSquare } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 export default function NotFound() {
+  useDocumentTitle("Page not found");
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-background p-6">
       <div className="text-center max-w-md">

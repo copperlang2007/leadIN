@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { ShieldCheck, Loader2, FileWarning } from "lucide-react";
 
 interface OrgList {
@@ -54,6 +55,7 @@ function statusBadge(status: string) {
 }
 
 export default function TcpaPage() {
+  useDocumentTitle("TCPA Defense");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 

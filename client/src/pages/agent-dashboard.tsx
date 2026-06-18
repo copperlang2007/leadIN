@@ -12,6 +12,7 @@ import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Set
 import { EmptyState } from "@/components/empty-state";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import type { Lead } from "@/lib/types";
 
 interface DashboardResponse {
@@ -175,6 +176,7 @@ interface ReputationResponse {
 }
 
 export default function AgentDashboard() {
+  useDocumentTitle("Agent Dashboard");
   const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<DashboardResponse>({ queryKey: ["/api/agent/dashboard"] });
   // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the

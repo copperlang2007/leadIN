@@ -3,10 +3,12 @@
 // site sets any non-essential cookies (analytics, marketing).
 
 import { LegalLayout, H2, DLRow } from "./legal-layout";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function CookiePolicy() {
+  useDocumentTitle("Cookie Policy");
   return (
     <LegalLayout title="Cookie Policy" lastUpdated={LAST_UPDATED}>
       <p>

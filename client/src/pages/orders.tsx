@@ -42,6 +42,7 @@ import { format } from "date-fns";
 import type { Order } from "@/lib/types";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { apiRequest } from "@/lib/queryClient";
 
 type OrderWithLead = Order & {
@@ -103,6 +104,7 @@ const REASON_LABELS: Record<DisputeReason, string> = {
 const NOTES_MAX = 2000;
 
 export default function Orders() {
+  useDocumentTitle("Orders");
   const [, navigate] = useLocation();
   const { data: orders = [], isLoading } = useQuery<OrderWithLead[]>({
     queryKey: ["/api/orders"],

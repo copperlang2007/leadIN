@@ -10,6 +10,7 @@ import { Sparkles, Trash2, Loader2, Zap } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/hooks/use-toast";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface SmartMatchSubscription {
   id: number;
@@ -45,6 +46,7 @@ function parseList(input: string): string[] | undefined {
 }
 
 export default function SmartMatchPage() {
+  useDocumentTitle("Smart Match");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 

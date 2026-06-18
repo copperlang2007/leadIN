@@ -6,10 +6,12 @@
 // posture and consumer rights.
 
 import { LegalLayout, H2 } from "./legal-layout";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function TcpaCompliance() {
+  useDocumentTitle("TCPA Compliance");
   return (
     <LegalLayout title="TCPA Compliance" lastUpdated={LAST_UPDATED}>
       <p>

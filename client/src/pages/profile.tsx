@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { User, MapPin, Shield, Activity, Save, Loader2, Bell } from "lucide-react";
 import type { UserProfile } from "@/lib/types";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const ALL_STATES = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
@@ -24,6 +25,7 @@ const ALL_STATES = [
 const LEAD_TYPES = ["Medicare Advantage", "Medicare Supplement", "Final Expense"];
 
 export default function Profile() {
+  useDocumentTitle("Profile");
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();

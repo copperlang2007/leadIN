@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BookOpen, Calendar, ChevronRight, Rss, ShieldCheck } from "lucide-react";
 import { format } from "date-fns";
 import { EmptyState } from "@/components/empty-state";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface Article {
   id: number;
@@ -39,6 +40,7 @@ function ArticleSkeleton() {
 }
 
 export default function Blog() {
+  useDocumentTitle("Blog");
   const { data: articles = [], isLoading } = useQuery<Article[]>({
     queryKey: ["/api/content"],
     queryFn: async () => {

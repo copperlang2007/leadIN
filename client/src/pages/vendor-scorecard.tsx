@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TrendingUp, TrendingDown, Minus, BarChart3, Search, Inbox } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { EmptyState } from "@/components/empty-state";
 import { useState, useEffect } from "react";
 import { PermissionRequired } from "@/components/permission-required";
@@ -150,6 +151,7 @@ function ScorecardTable({
 }
 
 export default function VendorScorecard() {
+  useDocumentTitle("Vendor Scorecard");
   const [vendorId, setVendorId] = useState<string>(() => readVendorIdFromQuery());
 
   // Keep the URL in sync with the input so the page is shareable.

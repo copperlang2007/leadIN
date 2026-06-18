@@ -8,6 +8,7 @@ import {
   TrendingUp, Users, Code2, Eye, Wrench, FileText, Scale, BarChart3,
   Activity, Wifi, Package, AlertTriangle
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const AGENTS = [
   {
@@ -248,6 +249,7 @@ function PlatformStatusDashboard() {
 }
 
 export default function ArchitectBlueprint() {
+  useDocumentTitle("Architect Blueprint");
   return (
     <Layout>
       <div className="max-w-4xl mx-auto space-y-8 pb-12">

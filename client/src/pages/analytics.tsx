@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { BarChart3, Funnel, Users, MousePointerClick, ShoppingCart, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { PermissionRequired } from "@/components/permission-required";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface FunnelSnapshot {
   windowStart: string;
@@ -53,6 +54,7 @@ function FunnelStep({ label, value, pct, icon: Icon }: { label: string; value: n
 }
 
 export default function Analytics() {
+  useDocumentTitle("Analytics");
   const [days, setDays] = useState(7);
 
   const { data: funnel, isLoading: fl, error: funnelError } = useQuery<FunnelSnapshot>({

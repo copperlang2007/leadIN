@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { marked } from "marked";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 interface Article {
   id: number;
@@ -66,6 +67,8 @@ export default function BlogPost({ params }: BlogPostProps) {
 
   const renderedBody = article ? marked(article.body) as string : "";
   const readTime = article ? estimateReadingTime(article.body) : 0;
+
+  useDocumentTitle(article?.seoTitle ?? article?.title ?? "Article");
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
