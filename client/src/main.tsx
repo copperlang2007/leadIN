@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { installTracker } from "./lib/tracker";
+import { bootGa } from "./lib/ga";
 
 // Monkey-patch fetch so every same-origin write request automatically carries
 // the CSRF token. Cleaner than touching dozens of call sites.
@@ -30,6 +31,7 @@ import { installTracker } from "./lib/tracker";
   };
 })();
 
+bootGa();
 installTracker();
 
 createRoot(document.getElementById("root")!).render(<App />);
