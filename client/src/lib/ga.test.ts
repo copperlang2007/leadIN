@@ -47,6 +47,12 @@ describe("isValidGa4Id", () => {
     expect(isValidGa4Id("G-AB12")).toBe(false);
   });
 
+  it("trims whitespace before validating (env vars often have stray spaces)", () => {
+    expect(isValidGa4Id("  G-ABCDEF1234  ")).toBe(true);
+    expect(isValidGa4Id("\tG-ABCDEF1234\n")).toBe(true);
+    expect(isValidGa4Id("   ")).toBe(false);
+  });
+
   it("rejects the historical placeholder we used to ship with", () => {
     // Regression: client/index.html used to hard-code G-LEADMARKET01
     // which IS 12 chars and DOES match the shape. The point of the
