@@ -20,7 +20,11 @@ export function RouteFallback() {
       aria-live="polite"
       aria-label="Loading page"
     >
-      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      {/* aria-hidden: the wrapping div already exposes the loading
+          state via role+aria-label. Without this, some screen readers
+          also try to announce the Loader2 SVG and the user hears a
+          duplicate or confusing announcement. */}
+      <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
     </div>
   );
 }
