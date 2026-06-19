@@ -7,23 +7,45 @@
 // brutally slow.
 //
 // Behaviour:
-//   - Visually hidden by default (positioned offscreen via Tailwind's
-//     sr-only utility classes — `absolute -top-10` is what becomes
-//     visible on focus).
+//   - Visually hidden by default (`-translate-y-16` parks it
+//     offscreen). Tailwind's `transition-transform` animates the
+//     transform property, so the slide-in actually fires on focus.
 //   - On focus (Tab from URL bar), translates back into view at the
 //     top-left so a sighted keyboard user sees where they are.
-//   - Activates the in-page anchor #main-content, which is wired to
-//     the wrapper around the Router in App.tsx.
+//   - Activates the in-page anchor #main-content. We handle the
+//     click ourselves and call .focus() on the target — relying on
+//     fragment-href + tabIndex={-1} alone is spotty across browsers
+//     (Safari in particular has historically not moved keyboard
+//     focus on fragment-only navigation).
+
+import { useCallback } from "react";
 
 export function SkipLink() {
+  const onActivate = useCallback((e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    const target = document.getElementById("main-content");
+    if (!target) return;
+    // Move keyboard focus explicitly. tabIndex={-1} on the target
+    // makes the focus() call valid for non-form elements.
+    target.focus();
+    // Update the URL hash for parity with the native fragment behaviour
+    // (some users / scripts rely on the hash as a route signal).
+    if (typeof history !== "undefined" && history.replaceState) {
+      history.replaceState(null, "", "#main-content");
+    } else {
+      window.location.hash = "main-content";
+    }
+  }, []);
+
   return (
     <a
       href="#main-content"
+      onClick={onActivate}
       className="
-        absolute left-2 -top-10 z-50 rounded-md bg-primary px-3 py-2
+        absolute left-2 top-2 z-50 rounded-md bg-primary px-3 py-2
         text-sm font-semibold text-primary-foreground shadow-lg
-        transition-transform
-        focus:top-2 focus:translate-y-0
+        -translate-y-16 transition-transform
+        focus:translate-y-0
         focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
       "
       data-testid="skip-to-main"
