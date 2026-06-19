@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import { WebSocketProvider } from "@/hooks/useWebSocketContext";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { SkipLink } from "@/components/skip-link";
 import NotFound from "@/pages/not-found";
 import Marketplace from "@/pages/marketplace";
 import Landing from "@/pages/landing";
@@ -96,10 +97,21 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
+        {/* WCAG 2.4.1 — visible-on-focus skip link must be the FIRST
+            focusable element on the page so Tab from the URL bar
+            lands here. The anchor target id="main-content" is on
+            the wrapper around the route tree below. */}
+        <SkipLink />
         <Toaster />
         <ErrorBoundary>
           <WebSocketProvider>
-            <Router />
+            {/* tabIndex={-1} lets a click on the skip link move focus
+                onto this element programmatically — without it,
+                browsers vary on whether non-form elements can receive
+                keyboard focus from a fragment-link click. */}
+            <div id="main-content" tabIndex={-1}>
+              <Router />
+            </div>
           </WebSocketProvider>
         </ErrorBoundary>
       </TooltipProvider>
