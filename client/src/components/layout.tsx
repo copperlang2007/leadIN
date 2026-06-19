@@ -234,8 +234,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const NavItem = ({ href, icon: Icon, label }: { href: string, icon: any, label: string }) => {
     const isActive = location === href;
     return (
-      <Link href={href}>
-        <div className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer
+      // aria-current="page" goes on the <Link> (rendered as <a>) so
+      // it lands on the actual interactive element screen readers
+      // announce — not on a nested presentational <div>. Without it,
+      // the colour-only highlight conveys nothing to assistive tech.
+      <Link href={href} aria-current={isActive ? "page" : undefined}>
+        <div
+          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer
           ${isActive
             ? "bg-sidebar-primary text-sidebar-primary-foreground"
             : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -259,7 +264,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <span className="font-display font-bold text-xl text-sidebar-foreground">LeadMarket</span>
       </div>
 
-      <div className="flex-1 py-6 px-4 space-y-1">
+      {/* aria-label disambiguates this nav from other nav landmarks
+          (public header, footer) in screen-reader rotors. "Sidebar
+          navigation" is concrete enough to tell the user which one
+          they're entering when they jump via the landmarks menu. */}
+      <nav aria-label="Sidebar navigation" className="flex-1 py-6 px-4 space-y-1">
         <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Marketplace
         </div>
@@ -293,7 +302,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <NavItem href="/analytics" icon={TrendingUp} label="Analytics" />
           </>
         )}
-      </div>
+      </nav>
 
       <div className="p-4 border-t border-sidebar-border">
         <div className="flex items-center gap-3 px-3 py-2">
