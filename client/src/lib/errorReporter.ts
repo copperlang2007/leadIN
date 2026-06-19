@@ -17,6 +17,14 @@ export interface ClientErrorReport {
 }
 
 export function reportClientError(report: ClientErrorReport): void {
+  // SSR / test guard. The SPA never renders server-side today, but
+  // referencing window / fetch unconditionally would crash a future
+  // Node-side import-for-side-effects.
+  if (typeof window === "undefined" || typeof fetch === "undefined") {
+    return;
+  }
+  // Resolve the URL once so the JSON.stringify below stays pure.
+  const url = report.url ?? window.location.href;
   // Don't block render — fire-and-forget.
   try {
     void fetch("/api/errors", {
@@ -32,7 +40,7 @@ export function reportClientError(report: ClientErrorReport): void {
         message: report.message,
         stack: report.stack,
         componentStack: report.componentStack,
-        url: report.url ?? window.location.href,
+        url,
       }),
     }).catch(() => {
       // Network failure — nothing useful to do. Don't surface.
