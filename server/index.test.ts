@@ -1,5 +1,42 @@
 import { describe, it, expect } from "vitest";
-import { buildAccessLog } from "./index";
+import { buildAccessLog, PERMISSIONS_POLICY } from "./index";
+
+describe("PERMISSIONS_POLICY", () => {
+  // Spot-check the policy string for the high-stakes deny directives.
+  // The full list lives in server/index.ts with per-entry rationale;
+  // this test guards against an accidental removal that would silently
+  // re-permit something we deliberately closed (camera, mic, FLoC).
+
+  it("denies camera, microphone, geolocation, and payment", () => {
+    expect(PERMISSIONS_POLICY).toContain("camera=()");
+    expect(PERMISSIONS_POLICY).toContain("microphone=()");
+    expect(PERMISSIONS_POLICY).toContain("geolocation=()");
+    expect(PERMISSIONS_POLICY).toContain("payment=()");
+  });
+
+  it("opts out of FLoC / Topics behavioural advertising", () => {
+    expect(PERMISSIONS_POLICY).toContain("interest-cohort=()");
+  });
+
+  it("denies USB / Bluetooth / Serial / HID hardware APIs", () => {
+    expect(PERMISSIONS_POLICY).toContain("usb=()");
+    expect(PERMISSIONS_POLICY).toContain("bluetooth=()");
+    expect(PERMISSIONS_POLICY).toContain("serial=()");
+    expect(PERMISSIONS_POLICY).toContain("hid=()");
+  });
+
+  it("allows fullscreen for self (lead-detail dialog uses it)", () => {
+    expect(PERMISSIONS_POLICY).toContain("fullscreen=(self)");
+  });
+
+  it("uses correct directive syntax (=() not 'none')", () => {
+    // Permissions-Policy uses `()` for empty allowlist — not the old
+    // Feature-Policy `'none'` keyword. A regression to the old syntax
+    // would be silently ignored by modern browsers, undoing the lock.
+    expect(PERMISSIONS_POLICY).not.toMatch(/'none'/);
+    expect(PERMISSIONS_POLICY).not.toMatch(/=\s*none/);
+  });
+});
 
 // Each test asserts the redaction wiring on the access-log middleware. We
 // drive the extracted `buildAccessLog` helper rather than spinning up express
