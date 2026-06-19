@@ -1,9 +1,22 @@
 // Wave 6 (T4) — NIPR / DOI license verification.
 //
-// Real API: GET https://api.nipr.com/v2/licenses (requires NIPR_API_KEY).
-// Stub: returns `{ verified: true, expiresAt: now + 1y, classes: ["Life","Health"] }`
-// when licenseNumber.length >= 6, else `{ verified: false }`. The stub
-// lets onboarding flows + tests run without NIPR credentials.
+// Two modes, selected by whether NIPR_API_KEY is set at boot:
+//
+//   - LIVE: calls https://api.nipr.com/v2/licenses with the API key.
+//     Returns whatever NIPR says. If the call fails (network error,
+//     non-OK HTTP, malformed JSON) we return { verified: false } with
+//     an explicit error message. We do NOT fall back to the stub —
+//     that would mean every NIPR outage auto-verifies fake licenses,
+//     which is the exact failure mode the live mode exists to
+//     prevent. Operators see the error in the surface that called us
+//     (agent-onboarding cache row) and can retry once NIPR is up.
+//
+//   - STUB: returns { verified: true, expiresAt: now + 1y } when
+//     licenseNumber.length >= 6, else { verified: false }. Only
+//     active when NIPR_API_KEY is unset (dev + CI). This is the
+//     "let onboarding flows run without credentials" affordance.
+
+import { logError } from "./safeError";
 
 export interface VerifyLicenseInput {
   niprNumber?: string;
@@ -19,13 +32,22 @@ export interface VerifyLicenseResult {
   raw?: unknown;
 }
 
+const LIVE_TIMEOUT_MS = 10_000;
+
 export async function verifyLicense(input: VerifyLicenseInput): Promise<VerifyLicenseResult> {
   if (process.env.NIPR_API_KEY) {
     try {
       return await liveVerify(input);
-    } catch (err: any) {
-      console.warn("[nipr] live verify failed, falling back to stub:", err?.message);
-      return stubVerify(input);
+    } catch (err) {
+      // Fail closed — never fall back to the stub when running live.
+      // An NIPR outage that silently flipped to stub behaviour would
+      // let any 6+ char license through; that's strictly worse than
+      // showing the user a retry-required state.
+      logError("nipr.liveVerify failed", err);
+      return {
+        verified: false,
+        error: err instanceof Error ? err.message : "nipr verify failed",
+      };
     }
   }
   return stubVerify(input);
@@ -37,12 +59,20 @@ async function liveVerify(input: VerifyLicenseInput): Promise<VerifyLicenseResul
   url.searchParams.set("licenseNumber", input.licenseNumber);
   if (input.niprNumber) url.searchParams.set("niprNumber", input.niprNumber);
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${process.env.NIPR_API_KEY}`,
-      Accept: "application/json",
-    },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LIVE_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${process.env.NIPR_API_KEY}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     return { verified: false, error: `NIPR HTTP ${res.status}` };
   }
