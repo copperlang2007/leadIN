@@ -11,13 +11,27 @@ export interface SitemapArticle {
 }
 
 function escapeXml(s: string): string {
+  // Escape all five XML predefined entities. The <loc> we emit lives
+  // in element text content where & and < are mandatory, but we also
+  // escape >, ", and ' so this helper is safe to reuse for attribute
+  // values in future call sites (sitemap-news image:caption etc.).
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function trimTrailingSlash(s: string): string {
+  // A base URL that's nothing but slashes (e.g. "/", "///") collapses
+  // to "" here, which makes <loc> values relative like "/blog/slug".
+  // That violates the sitemaps spec, which requires absolute URLs.
+  // Rather than silently emit a wrong-looking absolute URL, we let
+  // the relative path fall through — Google Search Console will
+  // flag the sitemap as invalid, and the deploy env validator
+  // (check:predeploy) should be the layer that prevents a bare-"/"
+  // APP_URL from reaching here in the first place.
   return s.replace(/\/+$/, "");
 }
 

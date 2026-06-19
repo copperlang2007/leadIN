@@ -74,4 +74,31 @@ describe("buildBlogSitemap", () => {
     expect(xml).toContain("rates&amp;changes&lt;2027&gt;");
     expect(xml).not.toMatch(/rates&changes/);
   });
+
+  it("XML-escapes quotes and apostrophes too", () => {
+    // <loc> is element text so " and ' aren't strictly required there,
+    // but escapeXml is shared and might be reused in attribute values
+    // (sitemap-news, image:caption) later. The helper escapes all five
+    // XML entities to stay safe for that use.
+    const xml = buildBlogSitemap(
+      [{ slug: `it's "fast"`, publishedAt: null, updatedAt: null }],
+      "https://leadmarket.app",
+    );
+    expect(xml).toContain("it&apos;s &quot;fast&quot;");
+  });
+
+  it("doesn't crash or emit malformed XML when given a bare-slash base URL", () => {
+    // A misconfigured APP_URL like "/" or "///" is a deploy-config
+    // problem (check:predeploy should catch it). When it does slip
+    // through, we still emit syntactically valid XML — just with a
+    // relative <loc> path that Search Console will reject. Better
+    // than silently producing a wrong absolute URL.
+    const xml = buildBlogSitemap(
+      [{ slug: "post", publishedAt: null, updatedAt: null }],
+      "///",
+    );
+    expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(xml).toContain("<url>");
+    expect(xml).toContain("/blog/post");
+  });
 });
