@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LeadMarket public sitemap.
+
+  Lists every indexable public route. Blog posts are not enumerated
+  here because they live in a database table and would require
+  server-side generation — follow-up: a dynamic /blog-sitemap.xml
+  served by Express, which can also emit accurate per-URL <lastmod>
+  values.
+
+  Priority is relative within the sitemap, not a global signal:
+    1.0 — landing (primary entry point)
+    0.8 — pricing (high-intent conversion page)
+    0.5 — blog index (content surface)
+    0.3 — legal pages (required but not promoted)
+
+  <lastmod> is intentionally omitted in this static sitemap to avoid
+  future-dated or stale timestamps drifting from reality. Per the
+  sitemaps spec, lastmod is optional — when omitted, crawlers fall
+  back to their own change-detection heuristics. The dynamic blog
+  sitemap will populate lastmod from articles.publishedAt.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://leadmarket.app/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/pricing</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/blog</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/privacy</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/terms</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/cookies</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://leadmarket.app/tcpa-compliance</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+</urlset>
