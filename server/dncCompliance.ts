@@ -25,9 +25,21 @@
 
 import { logError } from "./lib/safeError";
 
-interface DncCheckResult {
+// Source discriminators. Exported so downstream callers
+// (gateCallAgainstDnc, runDncRecheck) can compare against the constant
+// instead of repeating the string literal — typos there would
+// silently flip fail-closed behaviour into fail-open.
+export const DNC_SOURCE = {
+  VENDOR: "vendor",
+  VENDOR_ERROR: "vendor-error",
+  LOCAL_FALLBACK: "local-fallback",
+  SKIP: "skip",
+} as const;
+export type DncSource = (typeof DNC_SOURCE)[keyof typeof DNC_SOURCE];
+
+export interface DncCheckResult {
   flagged: boolean;
-  source: "vendor" | "vendor-error" | "local-fallback" | "skip";
+  source: DncSource;
   reason?: string;
 }
 
@@ -39,9 +51,9 @@ function normalisePhone(phone: string): string {
 }
 
 export async function checkDnc(phone: string | null | undefined): Promise<DncCheckResult> {
-  if (!phone) return { flagged: false, source: "skip", reason: "no phone" };
+  if (!phone) return { flagged: false, source: DNC_SOURCE.SKIP, reason: "no phone" };
   const digits = normalisePhone(phone);
-  if (digits.length < 10) return { flagged: false, source: "skip", reason: "invalid phone" };
+  if (digits.length < 10) return { flagged: false, source: DNC_SOURCE.SKIP, reason: "invalid phone" };
 
   const apiKey = process.env.DNC_VENDOR_API_KEY;
   const apiUrl = process.env.DNC_VENDOR_API_URL;
@@ -54,7 +66,7 @@ export async function checkDnc(phone: string | null | undefined): Promise<DncChe
   const flagged = LOCAL_SUPPRESSION_SUFFIXES.has(last4);
   return {
     flagged,
-    source: "local-fallback",
+    source: DNC_SOURCE.LOCAL_FALLBACK,
     reason: flagged ? `local suppression match (${last4})` : undefined,
   };
 }
@@ -82,7 +94,7 @@ async function liveVendorCheck(
       // false positives than to under-flag and incur TCPA violations.
       return {
         flagged: true,
-        source: "vendor-error",
+        source: DNC_SOURCE.VENDOR_ERROR,
         reason: `vendor non-OK ${res.status}`,
       };
     }
@@ -90,7 +102,7 @@ async function liveVendorCheck(
     const flagged = Boolean(body?.dnc ?? body?.onDncList ?? body?.flagged);
     return {
       flagged,
-      source: "vendor",
+      source: DNC_SOURCE.VENDOR,
       reason: flagged ? body?.reason || "vendor flagged" : undefined,
     };
   } catch (err) {
@@ -98,7 +110,7 @@ async function liveVendorCheck(
     // Same fail-closed rationale as the non-OK branch above.
     return {
       flagged: true,
-      source: "vendor-error",
+      source: DNC_SOURCE.VENDOR_ERROR,
       reason: err instanceof Error ? err.message : "vendor lookup failed",
     };
   }

@@ -5,14 +5,24 @@
 import { db } from "./db";
 import { leads } from "@shared/schema";
 import { and, eq, sql } from "drizzle-orm";
-import { checkDnc } from "./dncCompliance";
+import { checkDnc, DNC_SOURCE } from "./dncCompliance";
 import { recomputeAndPersistMediScore } from "./mediscore";
 import { registerCron } from "./lib/cronRegistry";
 
 const RECHECK_AGE_HOURS = 24;
 const BATCH_LIMIT = 500;
 
-export async function runDncRecheck(): Promise<{ scanned: number; flipped: number }> {
+export interface RecheckResult {
+  scanned: number;
+  flipped: number;
+  /** Number of leads we skipped because the DNC vendor lookup failed.
+   *  These rows keep their existing dncFlagged + dncCheckedAt so the
+   *  next recheck run retries them. Surfaces in the operator log so
+   *  ops can correlate a vendor outage with the cron output. */
+  vendorErrors: number;
+}
+
+export async function runDncRecheck(): Promise<RecheckResult> {
   const cutoff = new Date(Date.now() - RECHECK_AGE_HOURS * 60 * 60 * 1000);
 
   const stale = await db
@@ -28,9 +38,23 @@ export async function runDncRecheck(): Promise<{ scanned: number; flipped: numbe
     .limit(BATCH_LIMIT);
 
   let flipped = 0;
+  let vendorErrors = 0;
   for (const lead of stale) {
     if (!lead.consumerPhone) continue;
     const result = await checkDnc(lead.consumerPhone);
+
+    if (result.source === DNC_SOURCE.VENDOR_ERROR) {
+      // Vendor is down — checkDnc returns flagged=true defensively so
+      // the dial-time gate stays safe, but the recheck must NOT
+      // persist that across the whole batch. If we wrote flagged=true
+      // for every lead here, a single vendor outage would empty the
+      // marketplace for at least 24h (the next recheck cycle).
+      // Skip instead so dncCheckedAt stays stale and the next run
+      // retries the same set of leads.
+      vendorErrors += 1;
+      continue;
+    }
+
     const newFlagged = result.flagged;
     if (newFlagged !== lead.dncFlagged) flipped += 1;
 
@@ -46,9 +70,11 @@ export async function runDncRecheck(): Promise<{ scanned: number; flipped: numbe
   }
 
   if (stale.length > 0) {
-    console.log(`[dnc-recheck] scanned ${stale.length} leads, flipped ${flipped}`);
+    console.log(
+      `[dnc-recheck] scanned ${stale.length} leads, flipped ${flipped}, vendor errors ${vendorErrors}`,
+    );
   }
-  return { scanned: stale.length, flipped };
+  return { scanned: stale.length, flipped, vendorErrors };
 }
 
 export function startDncRecheckCron(): void {
