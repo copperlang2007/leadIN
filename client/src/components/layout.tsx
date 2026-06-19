@@ -235,7 +235,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
     const isActive = location === href;
     return (
       <Link href={href}>
-        <div className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer
+        <div
+          // aria-current="page" tells screen readers which nav item
+          // matches the route the user is currently on. Without it,
+          // the colour-only highlight conveys nothing — a screen
+          // reader announces every item identically and the user
+          // has no way to know which is the current page.
+          aria-current={isActive ? "page" : undefined}
+          className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer
           ${isActive
             ? "bg-sidebar-primary text-sidebar-primary-foreground"
             : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -259,7 +266,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <span className="font-display font-bold text-xl text-sidebar-foreground">LeadMarket</span>
       </div>
 
-      <div className="flex-1 py-6 px-4 space-y-1">
+      {/* aria-label="Primary" turns this region into a navigation
+          landmark for screen readers — they'll list it alongside the
+          public header/footer nav in the landmarks menu. Without
+          this, every <div> looks identical to assistive tech. */}
+      <nav aria-label="Primary" className="flex-1 py-6 px-4 space-y-1">
         <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Marketplace
         </div>
@@ -293,7 +304,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <NavItem href="/analytics" icon={TrendingUp} label="Analytics" />
           </>
         )}
-      </div>
+      </nav>
 
       <div className="p-4 border-t border-sidebar-border">
         <div className="flex items-center gap-3 px-3 py-2">
