@@ -125,6 +125,19 @@ describe("nipr live backend fails closed", () => {
     expect(res.verified).toBe(false);
     expect(res.error).toMatch(/NIPR HTTP 401/);
   });
+
+  it("isNiprLive() returns true when NIPR_API_KEY is empty (defined but empty)", () => {
+    // Guards the semantic change in hasNiprKey(): empty string is
+    // "live mode intended, misconfigured", NOT "stub mode". Future
+    // refactors that revert to truthiness would silently flip this.
+    process.env.NIPR_API_KEY = "";
+    expect(isNiprLive()).toBe(true);
+  });
+
+  it("isNiprLive() returns false only when NIPR_API_KEY is fully undefined", () => {
+    delete process.env.NIPR_API_KEY;
+    expect(isNiprLive()).toBe(false);
+  });
 });
 
 describe("nipr timeout override", () => {
@@ -146,12 +159,14 @@ describe("nipr timeout override", () => {
     global.fetch = savedFetch;
   });
 
-  it("honours a custom NIPR_TIMEOUT_MS by aborting the call quickly", async () => {
-    process.env.NIPR_TIMEOUT_MS = "10";
-    // Stub fetch with a never-resolving promise that only rejects on
-    // abort. Without the env override (default 10s) this test would
-    // timeout; with 10ms it aborts fast and returns the fail-closed
-    // result.
+  it("honours NIPR_TIMEOUT_MS by aborting the call when the timer fires", async () => {
+    // Deterministic test using fake timers — no Date.now() polling, no
+    // wall-clock flake under slow CI. The fetch stub returns a promise
+    // that only rejects when its AbortSignal aborts. Without the
+    // setTimeout firing the verifyLicense() promise would hang forever;
+    // advancing fake timers past NIPR_TIMEOUT_MS lets the abort fire
+    // and the fail-closed branch return.
+    process.env.NIPR_TIMEOUT_MS = "50";
     global.fetch = vi.fn().mockImplementation(
       (_url: string, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
@@ -160,11 +175,17 @@ describe("nipr timeout override", () => {
           );
         }),
     );
-    const start = Date.now();
-    const res = await verifyLicense({ state: "FL", licenseNumber: "A123456" });
-    const elapsed = Date.now() - start;
-    expect(res.verified).toBe(false);
-    expect(elapsed).toBeLessThan(1000);
+
+    vi.useFakeTimers();
+    try {
+      const pending = verifyLicense({ state: "FL", licenseNumber: "A123456" });
+      await vi.advanceTimersByTimeAsync(50);
+      const res = await pending;
+      expect(res.verified).toBe(false);
+      expect(res.error).toMatch(/aborted|nipr verify failed/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores a non-numeric NIPR_TIMEOUT_MS and uses the default", async () => {
