@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -7,29 +8,44 @@ import { useAuth } from "@/hooks/useAuth";
 import { WebSocketProvider } from "@/hooks/useWebSocketContext";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SkipLink } from "@/components/skip-link";
+import { RouteFallback } from "@/components/route-fallback";
+
+// Eager imports for the routes that dominate the critical path:
+//   - Landing: first paint for unauthenticated visitors (LCP-critical
+//     for marketing); deferring it would hurt our Core Web Vitals.
+//   - Marketplace: home route for authenticated users; eager so the
+//     post-login transition stays snappy and the route chunk doesn't
+//     race the user's session establishing.
+//   - NotFound: small, used as the 404 fallback — pulling it in
+//     eagerly avoids a spinner-then-404 flicker for stale links.
 import NotFound from "@/pages/not-found";
 import Marketplace from "@/pages/marketplace";
 import Landing from "@/pages/landing";
-import ArchitectBlueprint from "@/pages/architect-blueprint";
-import Orders from "@/pages/orders";
-import Profile from "@/pages/profile";
-import Admin from "@/pages/admin";
-import Blog from "@/pages/blog";
-import BlogPost from "@/pages/blog-post";
-import SettingsPage from "@/pages/settings";
-import AgentDashboard from "@/pages/agent-dashboard";
-import AgentOnboarding from "@/pages/agent-onboarding";
-import OrgAdmin from "@/pages/org-admin";
-import Analytics from "@/pages/analytics";
-import Pricing from "@/pages/pricing";
-import PrivacyPolicy from "@/pages/privacy";
-import TermsOfService from "@/pages/terms";
-import CookiePolicy from "@/pages/cookies";
-import TcpaCompliance from "@/pages/tcpa-compliance";
-import SavedLists from "@/pages/saved-lists";
-import TcpaPage from "@/pages/tcpa";
-import VendorScorecard from "@/pages/vendor-scorecard";
-import SmartMatchPage from "@/pages/smart-match";
+
+// Everything else is lazy-loaded so the initial bundle for the
+// landing page doesn't include the admin / settings / smart-match /
+// vendor-scorecard JS that a first-time visitor will never touch.
+// Each page becomes its own webpack/Vite chunk.
+const ArchitectBlueprint = lazy(() => import("@/pages/architect-blueprint"));
+const Orders = lazy(() => import("@/pages/orders"));
+const Profile = lazy(() => import("@/pages/profile"));
+const Admin = lazy(() => import("@/pages/admin"));
+const Blog = lazy(() => import("@/pages/blog"));
+const BlogPost = lazy(() => import("@/pages/blog-post"));
+const SettingsPage = lazy(() => import("@/pages/settings"));
+const AgentDashboard = lazy(() => import("@/pages/agent-dashboard"));
+const AgentOnboarding = lazy(() => import("@/pages/agent-onboarding"));
+const OrgAdmin = lazy(() => import("@/pages/org-admin"));
+const Analytics = lazy(() => import("@/pages/analytics"));
+const Pricing = lazy(() => import("@/pages/pricing"));
+const PrivacyPolicy = lazy(() => import("@/pages/privacy"));
+const TermsOfService = lazy(() => import("@/pages/terms"));
+const CookiePolicy = lazy(() => import("@/pages/cookies"));
+const TcpaCompliance = lazy(() => import("@/pages/tcpa-compliance"));
+const SavedLists = lazy(() => import("@/pages/saved-lists"));
+const TcpaPage = lazy(() => import("@/pages/tcpa"));
+const VendorScorecard = lazy(() => import("@/pages/vendor-scorecard"));
+const SmartMatchPage = lazy(() => import("@/pages/smart-match"));
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -110,7 +126,12 @@ function App() {
                 browsers vary on whether non-form elements can receive
                 keyboard focus from a fragment-link click. */}
             <div id="main-content" tabIndex={-1}>
-              <Router />
+              {/* Suspense catches the lazy() imports above. The fallback
+                  renders during chunk download — fraction of a second
+                  on first visit, then never again (browser-cached). */}
+              <Suspense fallback={<RouteFallback />}>
+                <Router />
+              </Suspense>
             </div>
           </WebSocketProvider>
         </ErrorBoundary>

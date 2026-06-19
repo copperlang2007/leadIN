@@ -20,6 +20,11 @@ test.describe("pricing page", () => {
 
   test("shows pricing amounts", async ({ page }) => {
     await page.goto("/pricing");
+    // Wait for the Pricing chunk to render before counting matches.
+    // With route-level code splitting (PR #89), /pricing is lazy-loaded —
+    // a bare goto + count() races the Suspense fallback and gets 0.
+    // Anchoring on a stable tier testid waits for the actual page DOM.
+    await expect(page.getByTestId("tier-title-starter")).toBeVisible();
     // At least one $/mo style price should appear.
     const dollarMatches = await page.getByText(/\$\d+/).count();
     expect(dollarMatches).toBeGreaterThanOrEqual(3);
