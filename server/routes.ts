@@ -55,6 +55,7 @@ import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { logError } from "./lib/safeError";
+import { captureException } from "./lib/sentry";
 import { buildBlogSitemap } from "./lib/blogSitemap";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
@@ -267,6 +268,58 @@ export async function registerRoutes(
   // operators see the deploy fingerprint.
   // ──────────────────────────────────────────────────────
   app.get("/api/admin/health", isAuthenticated, adminHealthHandler);
+
+  // ──────────────────────────────────────────────────────
+  // Client error report — receives React render errors caught by the
+  // SPA ErrorBoundary and forwards them to Sentry (no-op when
+  // SENTRY_DSN is unset). Without this endpoint, a render error in a
+  // user's browser dies in their console and we never see it.
+  //
+  // Authentication is intentionally optional: a render error can
+  // happen before the auth context resolves, and we want the report
+  // either way. The endpoint is heavily rate-limited per IP so a
+  // misbehaving client (or hostile crawler) can't fill the log
+  // pipeline. PII is scrubbed before the message lands in Sentry via
+  // the safeError chain.
+  // ──────────────────────────────────────────────────────
+  app.post("/api/errors", async (req: any, res) => {
+    const ip = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+    if (!(await takeToken(`client-error:${ip}`, 30, 5 / 60))) {
+      // 30 bursts, 5/minute sustained. Even a tab-storm of 30 errors
+      // back-to-back gets through; sustained spam gets dropped.
+      return res.status(429).json({ ok: false });
+    }
+    try {
+      const message = String(req.body?.message ?? "").slice(0, 1000);
+      const stack = String(req.body?.stack ?? "").slice(0, 8000);
+      const componentStack = String(req.body?.componentStack ?? "").slice(0, 4000);
+      const url = String(req.body?.url ?? "").slice(0, 500);
+      const userAgent = String(req.headers["user-agent"] ?? "").slice(0, 300);
+
+      if (!message) {
+        return res.status(400).json({ ok: false, message: "message required" });
+      }
+
+      // Build a fabricated Error so Sentry's stack-trace renderer is
+      // happy. The original throw is on a different runtime so we
+      // can't capture it directly; this is a structured proxy.
+      const err = new Error(message);
+      err.stack = stack || undefined;
+      const userId = req.user?.claims?.sub;
+      captureException(err, {
+        req,
+        userId,
+        tags: { source: "client-react-error-boundary" },
+        extra: { componentStack, url, userAgent },
+      });
+      logError("client.error", err);
+      res.json({ ok: true });
+    } catch (err) {
+      // Never let the error endpoint itself become a noise source.
+      logError("client-error-endpoint failed", err);
+      res.status(500).json({ ok: false });
+    }
+  });
 
   // ──────────────────────────────────────────────────────
   // Auth Routes

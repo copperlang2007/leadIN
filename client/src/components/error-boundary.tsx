@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { reportClientError } from "@/lib/errorReporter";
 
 interface State {
   hasError: boolean;
@@ -20,7 +21,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error("React render error:", error, info);
-    // Could POST to a /api/errors endpoint later — not required for this agent.
+    // Forward to the server so the error reaches Sentry alongside
+    // server-side errors. Best-effort — failures here are silent.
+    reportClientError({
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack ?? undefined,
+    });
   }
 
   render() {
