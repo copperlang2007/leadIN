@@ -55,6 +55,7 @@ import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { logError } from "./lib/safeError";
+import { buildBlogSitemap } from "./lib/blogSitemap";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
 import {
   autoIssueReplacement,
@@ -2825,6 +2826,29 @@ export async function registerRoutes(
       res.json(articles);
     } catch {
       res.status(500).json({ message: "Failed to fetch articles" });
+    }
+  });
+
+  // Dynamic blog sitemap. The static /sitemap.xml in client/public
+  // covers landing + pricing + legal pages. Blog post URLs live in
+  // the DB and would drift fast — so we emit them here with real
+  // lastmod values (updatedAt ?? publishedAt). Search engines find
+  // this via the Sitemap: line in robots.txt.
+  app.get("/blog-sitemap.xml", async (_req, res) => {
+    try {
+      const articles = await storage.getContentArticles(true);
+      const base = process.env.APP_URL ?? "https://leadmarket.app";
+      const body = buildBlogSitemap(articles, base);
+
+      res.setHeader("Content-Type", "application/xml; charset=utf-8");
+      // 1 hour cache — articles publish on a scheduled cron, so a
+      // crawler hitting this multiple times a day is fine with stale
+      // data within the hour.
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(body);
+    } catch (err) {
+      logError("blog-sitemap.xml error:", err);
+      res.status(500).type("text/plain").send("sitemap generation failed");
     }
   });
 
