@@ -234,14 +234,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const NavItem = ({ href, icon: Icon, label }: { href: string, icon: any, label: string }) => {
     const isActive = location === href;
     return (
-      <Link href={href}>
+      // aria-current="page" goes on the <Link> (rendered as <a>) so
+      // it lands on the actual interactive element screen readers
+      // announce — not on a nested presentational <div>. Without it,
+      // the colour-only highlight conveys nothing to assistive tech.
+      <Link href={href} aria-current={isActive ? "page" : undefined}>
         <div
-          // aria-current="page" tells screen readers which nav item
-          // matches the route the user is currently on. Without it,
-          // the colour-only highlight conveys nothing — a screen
-          // reader announces every item identically and the user
-          // has no way to know which is the current page.
-          aria-current={isActive ? "page" : undefined}
           className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer
           ${isActive
             ? "bg-sidebar-primary text-sidebar-primary-foreground"
@@ -266,11 +264,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <span className="font-display font-bold text-xl text-sidebar-foreground">LeadMarket</span>
       </div>
 
-      {/* aria-label="Primary" turns this region into a navigation
-          landmark for screen readers — they'll list it alongside the
-          public header/footer nav in the landmarks menu. Without
-          this, every <div> looks identical to assistive tech. */}
-      <nav aria-label="Primary" className="flex-1 py-6 px-4 space-y-1">
+      {/* aria-label disambiguates this nav from other nav landmarks
+          (public header, footer) in screen-reader rotors. "Sidebar
+          navigation" is concrete enough to tell the user which one
+          they're entering when they jump via the landmarks menu. */}
+      <nav aria-label="Sidebar navigation" className="flex-1 py-6 px-4 space-y-1">
         <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Marketplace
         </div>
