@@ -25,7 +25,7 @@
 // tests can drive the gate without a DB / vendor.
 
 import { storage as defaultStorage } from "./storage";
-import { checkDnc as defaultCheckDnc } from "./dncCompliance";
+import { checkDnc as defaultCheckDnc, DNC_SOURCE } from "./dncCompliance";
 import { recordAudit as defaultRecordAudit } from "./audit";
 
 export interface GateResult {
@@ -100,7 +100,7 @@ export async function gateCallAgainstDnc(
   // strength of a single failed vendor request. Skip the persist on
   // vendor-error so the nightly recheck (with a healthy vendor) is
   // what writes the durable flag.
-  if (result.source !== "vendor-error") {
+  if (result.source !== DNC_SOURCE.VENDOR_ERROR) {
     await deps.setLeadDncStatus(leadId, result.flagged);
   }
 

@@ -5,7 +5,7 @@
 import { db } from "./db";
 import { leads } from "@shared/schema";
 import { and, eq, sql } from "drizzle-orm";
-import { checkDnc } from "./dncCompliance";
+import { checkDnc, DNC_SOURCE } from "./dncCompliance";
 import { recomputeAndPersistMediScore } from "./mediscore";
 import { registerCron } from "./lib/cronRegistry";
 
@@ -43,7 +43,7 @@ export async function runDncRecheck(): Promise<RecheckResult> {
     if (!lead.consumerPhone) continue;
     const result = await checkDnc(lead.consumerPhone);
 
-    if (result.source === "vendor-error") {
+    if (result.source === DNC_SOURCE.VENDOR_ERROR) {
       // Vendor is down — checkDnc returns flagged=true defensively so
       // the dial-time gate stays safe, but the recheck must NOT
       // persist that across the whole batch. If we wrote flagged=true
