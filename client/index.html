@@ -29,14 +29,10 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/favicon.png" />
 
-    <!-- Google Analytics 4 -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-LEADMARKET01"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-LEADMARKET01', { send_page_view: true });
-    </script>
+    <!-- Google Analytics 4 is booted from client/src/lib/ga.ts when the
+         VITE_GA_MEASUREMENT_ID env var holds a real G-XXXXXXXXXX id. The
+         old inline snippet here hard-coded a placeholder that pinged a
+         non-existent property on every dev + CI page load. -->
 
     <!-- Fonts: Plus Jakarta Sans (Headings), Inter (UI/Body) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
