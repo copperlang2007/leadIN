@@ -32,10 +32,25 @@ export interface VerifyLicenseResult {
   raw?: unknown;
 }
 
-const LIVE_TIMEOUT_MS = 10_000;
+const DEFAULT_LIVE_TIMEOUT_MS = 10_000;
+
+function liveTimeoutMs(): number {
+  const raw = Number(process.env.NIPR_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LIVE_TIMEOUT_MS;
+}
+
+function hasNiprKey(): boolean {
+  // Truthiness check would silently treat NIPR_API_KEY="" as "stub
+  // mode", which masks the misconfig — a deploy where the env var is
+  // wired up but the secret didn't resolve. Treat the var as
+  // "intended live mode" whenever it's defined at all; an empty
+  // value will get sent as `Authorization: Bearer ` and NIPR will
+  // 401, which is exactly the fail-closed outcome we want.
+  return process.env.NIPR_API_KEY !== undefined;
+}
 
 export async function verifyLicense(input: VerifyLicenseInput): Promise<VerifyLicenseResult> {
-  if (process.env.NIPR_API_KEY) {
+  if (hasNiprKey()) {
     try {
       return await liveVerify(input);
     } catch (err) {
@@ -60,7 +75,7 @@ async function liveVerify(input: VerifyLicenseInput): Promise<VerifyLicenseResul
   if (input.niprNumber) url.searchParams.set("niprNumber", input.niprNumber);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LIVE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), liveTimeoutMs());
   let res: Response;
   try {
     res = await fetch(url.toString(), {
@@ -105,5 +120,5 @@ export function stubVerify(input: VerifyLicenseInput): VerifyLicenseResult {
 }
 
 export function isNiprLive(): boolean {
-  return Boolean(process.env.NIPR_API_KEY);
+  return hasNiprKey();
 }
