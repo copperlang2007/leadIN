@@ -108,4 +108,97 @@ describe("nipr live backend fails closed", () => {
     const res = await verifyLicense({ state: "FL", licenseNumber: "A123456" });
     expect(res.verified).toBe(false);
   });
+
+  it("treats empty NIPR_API_KEY as misconfig — calls live API, doesn't drop into stub", async () => {
+    // An env var present-but-empty means "live mode intended, but the
+    // secret didn't resolve". We must NOT silently treat that as
+    // stub mode, because the stub auto-verifies. NIPR will 401 on
+    // an empty Bearer token; that's exactly the fail-closed shape
+    // we want.
+    process.env.NIPR_API_KEY = "";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("unauthorized", { status: 401 }),
+    );
+    global.fetch = fetchMock;
+    const res = await verifyLicense({ state: "FL", licenseNumber: "A123456" });
+    expect(fetchMock).toHaveBeenCalled();
+    expect(res.verified).toBe(false);
+    expect(res.error).toMatch(/NIPR HTTP 401/);
+  });
+
+  it("isNiprLive() returns true when NIPR_API_KEY is empty (defined but empty)", () => {
+    // Guards the semantic change in hasNiprKey(): empty string is
+    // "live mode intended, misconfigured", NOT "stub mode". Future
+    // refactors that revert to truthiness would silently flip this.
+    process.env.NIPR_API_KEY = "";
+    expect(isNiprLive()).toBe(true);
+  });
+
+  it("isNiprLive() returns false only when NIPR_API_KEY is fully undefined", () => {
+    delete process.env.NIPR_API_KEY;
+    expect(isNiprLive()).toBe(false);
+  });
+});
+
+describe("nipr timeout override", () => {
+  let savedKey: string | undefined;
+  let savedTimeout: string | undefined;
+  let savedFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    savedKey = process.env.NIPR_API_KEY;
+    savedTimeout = process.env.NIPR_TIMEOUT_MS;
+    process.env.NIPR_API_KEY = "test-key";
+    savedFetch = global.fetch;
+  });
+  afterEach(() => {
+    if (savedKey !== undefined) process.env.NIPR_API_KEY = savedKey;
+    else delete process.env.NIPR_API_KEY;
+    if (savedTimeout !== undefined) process.env.NIPR_TIMEOUT_MS = savedTimeout;
+    else delete process.env.NIPR_TIMEOUT_MS;
+    global.fetch = savedFetch;
+  });
+
+  it("honours NIPR_TIMEOUT_MS by aborting the call when the timer fires", async () => {
+    // Deterministic test using fake timers — no Date.now() polling, no
+    // wall-clock flake under slow CI. The fetch stub returns a promise
+    // that only rejects when its AbortSignal aborts. Without the
+    // setTimeout firing the verifyLicense() promise would hang forever;
+    // advancing fake timers past NIPR_TIMEOUT_MS lets the abort fire
+    // and the fail-closed branch return.
+    process.env.NIPR_TIMEOUT_MS = "50";
+    global.fetch = vi.fn().mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const pending = verifyLicense({ state: "FL", licenseNumber: "A123456" });
+      await vi.advanceTimersByTimeAsync(50);
+      const res = await pending;
+      expect(res.verified).toBe(false);
+      expect(res.error).toMatch(/aborted|nipr verify failed/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a non-numeric NIPR_TIMEOUT_MS and uses the default", async () => {
+    process.env.NIPR_TIMEOUT_MS = "not-a-number";
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ license: { status: "active" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const res = await verifyLicense({ state: "FL", licenseNumber: "A123456" });
+    // The call succeeds — i.e. the bad timeout didn't crash the
+    // module and the default (10s) was used instead.
+    expect(res.verified).toBe(true);
+  });
 });
