@@ -139,4 +139,29 @@ describe("gateCallAgainstDnc", () => {
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/dnc/i);
   });
+
+  it("blocks on vendor-error but does NOT persist the defensive flag", async () => {
+    // checkDnc returns flagged=true defensively when the DNC vendor is
+    // down (PR #83). That keeps the dial blocked — TCPA-safe. But
+    // writing dncFlagged=true to the lead row would mark the lead as
+    // DNC-listed across the whole platform on the strength of one
+    // failed vendor request. The nightly recheck (when vendor is
+    // healthy) is what's authoritative — this path skips the persist.
+    const { deps, setLeadDncStatus, recordAudit } = makeDeps({
+      lead: { id: 31, consumerPhone: "415-555-2671", dncFlagged: false },
+      flagged: true,
+      source: "vendor-error",
+      reason: "vendor non-OK 504",
+    });
+    const r = await gateCallAgainstDnc(31, "agent-9", deps);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/504/);
+    // Critical assertion: no persist on vendor-error.
+    expect(setLeadDncStatus).not.toHaveBeenCalled();
+    // Audit still fires so ops can correlate blocks with vendor outages.
+    expect(recordAudit).toHaveBeenCalledTimes(1);
+    expect(recordAudit.mock.calls[0][0].metadata).toMatchObject({
+      source: "vendor-error",
+    });
+  });
 });

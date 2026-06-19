@@ -93,9 +93,16 @@ export async function gateCallAgainstDnc(
 
   const result = await deps.checkDnc(lead.consumerPhone);
 
-  // Always persist the freshest answer so the rest of the system sees a
-  // consistent dncFlagged/dncCheckedAt regardless of outcome.
-  await deps.setLeadDncStatus(leadId, result.flagged);
+  // Persist the freshest answer EXCEPT when the vendor lookup errored.
+  // checkDnc returns flagged=true defensively on vendor-error so this
+  // call still gets blocked; but writing that flag to the lead row
+  // would mark the lead as DNC-listed across the whole platform on the
+  // strength of a single failed vendor request. Skip the persist on
+  // vendor-error so the nightly recheck (with a healthy vendor) is
+  // what writes the durable flag.
+  if (result.source !== "vendor-error") {
+    await deps.setLeadDncStatus(leadId, result.flagged);
+  }
 
   if (result.flagged) {
     // Audit the block. recordAudit never throws, but we still await so the
