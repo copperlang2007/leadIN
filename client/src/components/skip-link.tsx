@@ -18,10 +18,10 @@
 //     (Safari in particular has historically not moved keyboard
 //     focus on fragment-only navigation).
 
-import { useCallback } from "react";
+import { useCallback, type MouseEvent } from "react";
 
 export function SkipLink() {
-  const onActivate = useCallback((e: React.MouseEvent<HTMLAnchorElement>) => {
+  const onActivate = useCallback((e: MouseEvent) => {
     e.preventDefault();
     const target = document.getElementById("main-content");
     if (!target) return;
