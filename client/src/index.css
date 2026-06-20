@@ -180,3 +180,30 @@
     @apply font-display tracking-tight;
   }
 }
+
+/* prefers-reduced-motion (WCAG 2.3.3 Animation from Interactions).
+   Users with vestibular disorders can be made motion-sick by even
+   modest animations. The system-level toggle on macOS / iOS /
+   Android / Windows sets this media query, and we have both a
+   moral and WCAG obligation to honour it.
+
+   We don't disable transitions outright — some are functional (the
+   route Suspense fallback's spinner; the skip link's slide-in
+   reveal is what makes it discoverable). Instead we collapse
+   durations AND delays to 0.01ms. State changes still fire and
+   any infinite spinners keep iterating (just imperceptibly), so
+   functional indicators that rely on `animation-iteration-count:
+   infinite` still represent ongoing state. Tailwind classes
+   everywhere keep working because !important outranks the inline
+   duration each utility class ships with. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
