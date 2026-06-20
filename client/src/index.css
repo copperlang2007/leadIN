@@ -189,18 +189,21 @@
 
    We don't disable transitions outright — some are functional (the
    route Suspense fallback's spinner; the skip link's slide-in
-   reveal is what makes it discoverable). Instead we collapse them
-   all to a barely-perceptible 0.01ms which keeps the state changes
-   firing without an animation curve. Tailwind classes everywhere
-   keep working because !important here outranks the inline
+   reveal is what makes it discoverable). Instead we collapse
+   durations AND delays to 0.01ms. State changes still fire and
+   any infinite spinners keep iterating (just imperceptibly), so
+   functional indicators that rely on `animation-iteration-count:
+   infinite` still represent ongoing state. Tailwind classes
+   everywhere keep working because !important outranks the inline
    duration each utility class ships with. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
+    animation-delay: 0.01ms !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0.01ms !important;
     scroll-behavior: auto !important;
   }
 }
