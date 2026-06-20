@@ -12,11 +12,9 @@ const PRODUCT_LINKS = [
   { label: "Blog", href: "/blog" },
 ];
 
-const COMPANY_LINKS = [
-  { label: "About", href: "/about" },
-  { label: "Careers", href: "/careers" },
-  { label: "Contact", href: "/contact" },
-];
+// Company column (About / Careers / Contact) removed — those routes
+// don't exist in App.tsx yet. Re-add this column when the pages ship.
+// Contact is meanwhile covered by the mailto on the brand block below.
 
 const LEGAL_LINKS = [
   { label: "Terms of service", href: "/terms" },
@@ -29,7 +27,7 @@ export function Footer() {
   return (
     <footer className="border-t bg-muted/30 mt-auto">
       <div className="container mx-auto px-6 py-12">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-10">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-8 mb-10">
           {/* Brand column. Full width on mobile via col-span. */}
           <div className="col-span-2 md:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2 font-display font-bold text-lg mb-3">
@@ -52,7 +50,6 @@ export function Footer() {
           </div>
 
           <FooterColumn title="Product" links={PRODUCT_LINKS} />
-          <FooterColumn title="Company" links={COMPANY_LINKS} />
           <FooterColumn title="Legal" links={LEGAL_LINKS} />
         </div>
 
