@@ -37,6 +37,58 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
+// Permissions-Policy (formerly Feature-Policy) — explicitly deny the
+// browser features the app doesn't use. If a compromised script ever
+// tries to access camera / microphone / geolocation / payment, the
+// browser refuses at the platform layer instead of relying on the
+// script's own restraint.
+//
+// Notes on each entry:
+//   - accelerometer / gyroscope / magnetometer: motion sensors,
+//     used for AR / VR / fitness tracking. Not relevant here.
+//   - camera / microphone: the dialer uses Twilio Voice which dials
+//     out over WebRTC initiated by Twilio's iframe, not the host
+//     page. We never need direct getUserMedia on this origin.
+//   - geolocation: lead territory selection uses zip codes, not
+//     browser geolocation.
+//   - payment: Stripe Checkout opens its own hosted page; the
+//     Payment Request API on this origin would only be useful if
+//     we shipped an in-page checkout (we don't).
+//   - usb / bluetooth / serial / hid: hardware device APIs.
+//
+// `interest-cohort` ends the page's automatic enrollment in
+// Google's FLoC / Topics behavioural-advertising cohort — privacy
+// signal for our consumer-data audience.
+export const PERMISSIONS_POLICY = [
+  "accelerometer=()",
+  "autoplay=()",
+  "bluetooth=()",
+  "camera=()",
+  "display-capture=()",
+  "encrypted-media=()",
+  "fullscreen=(self)",
+  "geolocation=()",
+  "gyroscope=()",
+  "hid=()",
+  "interest-cohort=()",
+  "magnetometer=()",
+  "microphone=()",
+  "midi=()",
+  "payment=()",
+  "picture-in-picture=()",
+  "publickey-credentials-get=()",
+  "screen-wake-lock=()",
+  "serial=()",
+  "sync-xhr=()",
+  "usb=()",
+  "xr-spatial-tracking=()",
+].join(", ");
+
+app.use((_req, res, next) => {
+  res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
+  next();
+});
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
