@@ -82,8 +82,13 @@
     }
     </script>
 
-    <!-- WebSite markup with a SearchAction so Google can render the
-         sitelinks search box on brand queries. -->
+    <!-- WebSite markup anchors the Organization to the site so Google
+         can resolve cross-references between brand surfaces. We
+         deliberately omit potentialAction/SearchAction here because we
+         don't have a public on-site search endpoint to point it at;
+         Google would otherwise render a sitelinks search box that
+         goes to a 404. Add the SearchAction once a public /search
+         route exists. -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
