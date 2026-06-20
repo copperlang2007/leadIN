@@ -12,11 +12,14 @@ const PRODUCT_LINKS = [
   { label: "Blog", href: "/blog" },
 ];
 
-const COMPANY_LINKS = [
-  { label: "About", href: "/about" },
-  { label: "Careers", href: "/careers" },
-  { label: "Contact", href: "/contact" },
-];
+// Company column previously had About / Careers / Contact links
+// pointing at /about /careers /contact — but no such routes exist
+// in App.tsx, so they all 404'd. Worse: the footer broadcasted the
+// shape of a company surface that doesn't exist, hurting GTM
+// credibility for any visitor who clicked one. Until those pages
+// exist as content the column is gone; Contact is replaced with a
+// mailto on the brand block. Re-add the column with real routes
+// when /about + /careers + /contact ship.
 
 const LEGAL_LINKS = [
   { label: "Terms of service", href: "/terms" },
@@ -29,7 +32,7 @@ export function Footer() {
   return (
     <footer className="border-t bg-muted/30 mt-auto">
       <div className="container mx-auto px-6 py-12">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-10">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-8 mb-10">
           {/* Brand column. Full width on mobile via col-span. */}
           <div className="col-span-2 md:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2 font-display font-bold text-lg mb-3">
@@ -52,7 +55,6 @@ export function Footer() {
           </div>
 
           <FooterColumn title="Product" links={PRODUCT_LINKS} />
-          <FooterColumn title="Company" links={COMPANY_LINKS} />
           <FooterColumn title="Legal" links={LEGAL_LINKS} />
         </div>
 
