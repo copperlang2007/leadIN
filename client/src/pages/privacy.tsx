@@ -5,11 +5,13 @@
 
 import { LegalLayout, H2 } from "./legal-layout";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function PrivacyPolicy() {
   useDocumentTitle("Privacy Policy");
+  useCanonicalUrl("/privacy");
   return (
     <LegalLayout title="Privacy Policy" lastUpdated={LAST_UPDATED}>
       <p>

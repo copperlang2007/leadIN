@@ -14,6 +14,7 @@ import {
 import { format } from "date-fns";
 import { marked } from "marked";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 interface Article {
   id: number;
@@ -69,6 +70,9 @@ export default function BlogPost({ params }: BlogPostProps) {
   const readTime = article ? estimateReadingTime(article.body) : 0;
 
   useDocumentTitle(article?.seoTitle ?? article?.title ?? "Article");
+  // Canonical for blog posts is /blog/<slug> — independent of any
+  // tracking params from social shares (utm_source=twitter, fbclid).
+  useCanonicalUrl(`/blog/${slug}`);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">

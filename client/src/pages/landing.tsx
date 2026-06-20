@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Footer } from "@/components/footer";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 import heroBg from "@assets/generated_images/abstract_blue_secure_data_network_background.png";
 
 const STATS = [
@@ -102,6 +103,7 @@ export default function Landing() {
     part: "LeadMarket — Verified Insurance Lead Marketplace",
     full: true,
   });
+  useCanonicalUrl("/");
   return (
     <div className="min-h-screen bg-background">
       {/* Hero Section */}

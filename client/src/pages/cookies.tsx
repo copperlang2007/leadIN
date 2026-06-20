@@ -4,11 +4,13 @@
 
 import { LegalLayout, H2, DLRow } from "./legal-layout";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function CookiePolicy() {
   useDocumentTitle("Cookie Policy");
+  useCanonicalUrl("/cookies");
   return (
     <LegalLayout title="Cookie Policy" lastUpdated={LAST_UPDATED}>
       <p>
