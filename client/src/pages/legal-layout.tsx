@@ -78,12 +78,7 @@ export function LegalLayout({ title, lastUpdated, children }: LegalLayoutProps) 
         </article>
       </main>
 
-      {/* Footer carries product nav + brand info — fine on the web,
-          noise on a printed legal doc that's meant to be a standalone
-          policy artifact. */}
-      <div className="print:hidden">
-        <Footer />
-      </div>
+      <Footer />
     </div>
   );
 }

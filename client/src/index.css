@@ -225,8 +225,10 @@
     background: #fff !important;
     color: #000 !important;
   }
-  a[href^="http"]::after,
-  a[href^="https"]::after {
+  /* a[href^="http"] matches both http:// and https:// because the
+     attribute-prefix selector is literal, not protocol-aware. No
+     separate https:// rule needed. */
+  a[href^="http"]::after {
     content: " (" attr(href) ")";
     font-size: 0.85em;
     color: #555;
