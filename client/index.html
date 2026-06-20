@@ -29,6 +29,26 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/favicon.png" />
 
+    <!-- iOS Safari and some Android browsers auto-style anything that
+         looks like a phone number (10 digits, parens, dashes) as a
+         tap-to-call link. The marketplace lists hundreds of consumer
+         phone numbers as data, and the auto-styling either makes them
+         look broken (blue underline through a tabular cell) or invites
+         an accidental tap that fires a TCPA-unsafe call before the
+         agent has opened the lead's dial workflow. format-detection
+         opts the whole app out. -->
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- DNS prefetch for the GA / Google Tag Manager origin is
+         intentionally NOT inlined here. Doing so would fire a DNS
+         query against www.googletagmanager.com on every page load —
+         even in dev / CI where GA is disabled, even for prod users
+         whose VITE_GA_MEASUREMENT_ID is unset. That's a third-party
+         leak we don't want to make unconditionally. The hint is
+         instead injected by client/src/lib/ga.ts at the same time
+         it creates the gtag script tag, so it only fires when GA
+         is actually enabled. -->
+
     <!-- Google Analytics 4 is booted from client/src/lib/ga.ts when the
          VITE_GA_MEASUREMENT_ID env var holds a real G-XXXXXXXXXX id. The
          old inline snippet here hard-coded a placeholder that pinged a
