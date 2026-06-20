@@ -61,6 +61,40 @@
          it creates the gtag script tag, so it only fires when GA
          is actually enabled. -->
 
+    <!-- Schema.org Organization markup. Google uses this to build the
+         knowledge panel and rich result card for site: queries and
+         brand searches. Includes only fields we can stand behind
+         (name, url, logo, description); social profiles + contact
+         points can be filled in later as the brand surface grows.
+         Note: the @id and url match the canonical leadmarket.app
+         domain — keep these in sync with og:url and sitemap base. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "@id": "https://leadmarket.app/#organization",
+      "name": "LeadMarket",
+      "alternateName": "LeadMarket Insurance Lead Marketplace",
+      "url": "https://leadmarket.app",
+      "logo": "https://leadmarket.app/favicon.png",
+      "image": "https://leadmarket.app/opengraph.jpg",
+      "description": "Verified Medicare, ACA, and Final Expense lead marketplace with full provenance, TCPA-safe outreach, and replacement credits."
+    }
+    </script>
+
+    <!-- WebSite markup with a SearchAction so Google can render the
+         sitelinks search box on brand queries. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "@id": "https://leadmarket.app/#website",
+      "url": "https://leadmarket.app",
+      "name": "LeadMarket",
+      "publisher": { "@id": "https://leadmarket.app/#organization" }
+    }
+    </script>
+
     <!-- Google Analytics 4 is booted from client/src/lib/ga.ts when the
          VITE_GA_MEASUREMENT_ID env var holds a real G-XXXXXXXXXX id. The
          old inline snippet here hard-coded a placeholder that pinged a
