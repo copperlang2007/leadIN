@@ -7,11 +7,13 @@
 
 import { LegalLayout, H2 } from "./legal-layout";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function TcpaCompliance() {
   useDocumentTitle("TCPA Compliance");
+  useCanonicalUrl("/tcpa-compliance");
   return (
     <LegalLayout title="TCPA Compliance" lastUpdated={LAST_UPDATED}>
       <p>

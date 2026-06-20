@@ -4,11 +4,13 @@
 
 import { LegalLayout, H2 } from "./legal-layout";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 const LAST_UPDATED = "January 1, 2026";
 
 export default function TermsOfService() {
   useDocumentTitle("Terms of Service");
+  useCanonicalUrl("/terms");
   return (
     <LegalLayout title="Terms of Service" lastUpdated={LAST_UPDATED}>
       <p>

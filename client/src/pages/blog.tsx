@@ -7,6 +7,7 @@ import { BookOpen, Calendar, ChevronRight, Rss, ShieldCheck } from "lucide-react
 import { format } from "date-fns";
 import { EmptyState } from "@/components/empty-state";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 interface Article {
   id: number;
@@ -41,6 +42,7 @@ function ArticleSkeleton() {
 
 export default function Blog() {
   useDocumentTitle("Blog");
+  useCanonicalUrl("/blog");
   const { data: articles = [], isLoading } = useQuery<Article[]>({
     queryKey: ["/api/content"],
     queryFn: async () => {

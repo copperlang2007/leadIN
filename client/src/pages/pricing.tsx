@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Footer } from "@/components/footer";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 type SubscriptionTier = "starter" | "growth" | "scale";
 
@@ -78,6 +79,7 @@ const TIERS = [
 
 export default function Pricing() {
   useDocumentTitle("Pricing");
+  useCanonicalUrl("/pricing");
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
 
