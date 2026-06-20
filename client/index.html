@@ -10,7 +10,19 @@
 
     <!-- Indexable SEO description. Critical for Google snippet rendering. -->
     <meta name="description" content="Buy verified Medicare, ACA, and Final Expense leads with full provenance, TCPA-safe outreach, smart-match scoring, and replacement credits for bad contact info." />
-    <meta name="theme-color" content="#1a56db" />
+
+    <!-- color-scheme lets the browser render scrollbars, form
+         controls, and the address bar's tint in the right palette
+         before our CSS has loaded — kills the flash-of-light-content
+         that dark-mode users see on first paint. -->
+    <meta name="color-scheme" content="light dark" />
+
+    <!-- iOS Safari + Android Chrome tint the address bar to match
+         theme-color. Provide both a light and a dark variant so the
+         tint follows the user's system setting instead of being
+         locked to our brand blue. -->
+    <meta name="theme-color" content="#1a56db" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
 
     <!-- Open Graph for Slack / LinkedIn / Facebook unfurls. -->
     <meta property="og:title" content="LeadMarket — Verified Insurance Lead Marketplace" />
