@@ -207,3 +207,30 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Print stylesheet. Operators routinely share Privacy / Terms /
+   Cookies / TCPA-Compliance with B2B counterparties as a PDF (Stripe
+   compliance review, procurement reviews, etc). Without these rules
+   the print render keeps interactive-only chrome and forces the
+   recipient to follow a screen-blue link target they can't see.
+
+   - Universal: black text on white background. Saves toner and
+     matches every reviewer's expectation of a formal document.
+   - Anchors render the URL inline next to the link text via
+     `content: " (" attr(href) ")"` so the reader knows where each
+     link goes on paper. Skip the expansion when href starts with
+     # (anchors inside the same doc) or mailto: (already legible). */
+@media print {
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  /* a[href^="http"] matches both http:// and https:// because the
+     attribute-prefix selector is literal, not protocol-aware. No
+     separate https:// rule needed. */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+  }
+}

@@ -25,7 +25,11 @@ const LEGAL_LINKS = [
 
 export function Footer() {
   return (
-    <footer className="border-t bg-muted/30 mt-auto">
+    // print:hidden — the footer is pure site nav + branding, never
+    // useful on a printed page. Hiding here means every consumer of
+    // <Footer /> (landing, pricing, legal pages) gets clean prints
+    // without needing a wrapper div on each surface.
+    <footer className="border-t bg-muted/30 mt-auto print:hidden">
       <div className="container mx-auto px-6 py-12">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-8 mb-10">
           {/* Brand column. Full width on mobile via col-span. */}
