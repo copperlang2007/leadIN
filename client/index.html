@@ -39,14 +39,15 @@
          opts the whole app out. -->
     <meta name="format-detection" content="telephone=no" />
 
-    <!-- DNS prefetch warms the resolver for third-party origins we
-         hit asynchronously. The fonts.* preconnects below already
-         include a DNS lookup; this adds Google Tag Manager which
-         loads dynamically from client/src/lib/ga.ts when a real
-         VITE_GA_MEASUREMENT_ID is baked in. Without a hint the
-         resolver doesn't run until ga.ts executes — a 50-200ms
-         hit on the first analytics beacon. -->
-    <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
+    <!-- DNS prefetch for the GA / Google Tag Manager origin is
+         intentionally NOT inlined here. Doing so would fire a DNS
+         query against www.googletagmanager.com on every page load —
+         even in dev / CI where GA is disabled, even for prod users
+         whose VITE_GA_MEASUREMENT_ID is unset. That's a third-party
+         leak we don't want to make unconditionally. The hint is
+         instead injected by client/src/lib/ga.ts at the same time
+         it creates the gtag script tag, so it only fires when GA
+         is actually enabled. -->
 
     <!-- Google Analytics 4 is booted from client/src/lib/ga.ts when the
          VITE_GA_MEASUREMENT_ID env var holds a real G-XXXXXXXXXX id. The

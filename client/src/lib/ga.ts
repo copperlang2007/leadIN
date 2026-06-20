@@ -70,6 +70,16 @@ export function bootGa(): void {
     return;
   }
 
+  // DNS prefetch warms the resolver for googletagmanager.com so the
+  // immediately-following <script src> doesn't pay the lookup cost.
+  // We add this INSIDE bootGa (not in index.html) so the hint only
+  // fires when GA is actually enabled — no third-party leak in dev/CI
+  // or for users whose VITE_GA_MEASUREMENT_ID is unset.
+  const prefetch = document.createElement("link");
+  prefetch.rel = "dns-prefetch";
+  prefetch.href = "https://www.googletagmanager.com";
+  document.head.appendChild(prefetch);
+
   const script = document.createElement("script");
   script.async = true;
   script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(id)}`;
