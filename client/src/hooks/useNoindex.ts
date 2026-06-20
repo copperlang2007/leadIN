@@ -25,6 +25,14 @@ export function useNoindex(): void {
   useEffect(() => {
     if (typeof document === "undefined") return;
     let meta = document.head.querySelector(`meta[name="${META_NAME}"]`);
+    // Track BOTH the previous content AND whether the attribute even
+    // existed. Without this distinction, a pre-existing
+    // <meta name="robots"> with no content attribute (rare but valid)
+    // would never get restored — previousContent is null whether the
+    // attribute was absent or set to "". On cleanup we restore the
+    // exact prior state: missing if it was missing, prior value
+    // otherwise.
+    const hadContentAttr = meta?.hasAttribute("content") ?? false;
     const previousContent = meta?.getAttribute("content") ?? null;
     let createdHere = false;
     if (!meta) {
@@ -40,12 +48,14 @@ export function useNoindex(): void {
       if (!current) return;
       // Same ownership rule as useCanonicalUrl: if THIS effect created
       // the tag, remove it on unmount. Otherwise restore the previous
-      // content so the route that came before doesn't inherit our
-      // noindex.
+      // content state — including its absence — so the route that
+      // came before doesn't inherit our noindex.
       if (createdHere) {
         current.parentNode?.removeChild(current);
-      } else if (previousContent !== null) {
+      } else if (hadContentAttr && previousContent !== null) {
         current.setAttribute("content", previousContent);
+      } else {
+        current.removeAttribute("content");
       }
     };
   }, []);
