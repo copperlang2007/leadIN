@@ -12,14 +12,9 @@ const PRODUCT_LINKS = [
   { label: "Blog", href: "/blog" },
 ];
 
-// Company column previously had About / Careers / Contact links
-// pointing at /about /careers /contact — but no such routes exist
-// in App.tsx, so they all 404'd. Worse: the footer broadcasted the
-// shape of a company surface that doesn't exist, hurting GTM
-// credibility for any visitor who clicked one. Until those pages
-// exist as content the column is gone; Contact is replaced with a
-// mailto on the brand block. Re-add the column with real routes
-// when /about + /careers + /contact ship.
+// Company column (About / Careers / Contact) removed — those routes
+// don't exist in App.tsx yet. Re-add this column when the pages ship.
+// Contact is meanwhile covered by the mailto on the brand block below.
 
 const LEGAL_LINKS = [
   { label: "Terms of service", href: "/terms" },
