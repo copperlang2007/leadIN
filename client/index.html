@@ -41,6 +41,17 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/favicon.png" />
 
+    <!-- Web App Manifest. Lets the user "Add to home screen" on
+         Android Chrome and iOS Safari — the marketplace then opens
+         as a standalone app with no browser chrome. Agents who
+         hammer the dialer + marketplace all day asked for this so
+         they don't accidentally close the LeadMarket tab while
+         tab-juggling. Manifest also bumps Lighthouse PWA score. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="LeadMarket" />
+
     <!-- iOS Safari and some Android browsers auto-style anything that
          looks like a phone number (10 digits, parens, dashes) as a
          tap-to-call link. The marketplace lists hundreds of consumer
