@@ -123,11 +123,30 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Show a friendly message when JS is disabled instead of a blank page. -->
+    <!-- noscript fallback. The SPA renders nothing when JS is
+         disabled (the whole app lives behind /src/main.tsx). A
+         generic "JavaScript required" message used to be all we
+         showed — fine for end users, but B2B procurement, GDPR
+         requesters, and screen-readers running in JS-disabled
+         degraded mode actually need a contact path. The block
+         below gives them brand identity, a one-line explanation,
+         and a mailto for legal/policy requests they can't reach
+         via the SPA. Inline styles only — no external CSS or fonts
+         to download, since the page loaded with JS off anyway. -->
     <noscript>
-      <div style="padding:2rem;max-width:600px;margin:4rem auto;font-family:system-ui,sans-serif;text-align:center">
-        <h1 style="font-size:1.5rem;margin-bottom:1rem">LeadMarket requires JavaScript</h1>
-        <p style="color:#666">Please enable JavaScript in your browser to use the marketplace.</p>
+      <div style="padding:2rem;max-width:600px;margin:4rem auto;font-family:system-ui,sans-serif;text-align:center;color:#0f172a">
+        <div style="display:inline-flex;align-items:center;gap:8px;margin-bottom:24px">
+          <div style="height:32px;width:32px;border-radius:8px;background:#1a56db;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:bold;font-size:14px">LM</div>
+          <span style="font-weight:bold;font-size:18px">LeadMarket</span>
+        </div>
+        <h1 style="font-size:1.5rem;margin-bottom:1rem">JavaScript is required</h1>
+        <p style="color:#475569;margin-bottom:1rem">
+          The LeadMarket marketplace, dashboards, and dialer all run in your browser. Please enable JavaScript or open this page in a different browser.
+        </p>
+        <p style="color:#475569;font-size:0.9rem">
+          For privacy / terms requests or compliance questions you can reach us at
+          <a href="mailto:legal@leadmarket.app" style="color:#1a56db">legal@leadmarket.app</a>.
+        </p>
       </div>
     </noscript>
     <script type="module" src="/src/main.tsx"></script>
