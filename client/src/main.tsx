@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
@@ -34,4 +35,17 @@ import { bootGa } from "./lib/ga";
 bootGa();
 installTracker();
 
-createRoot(document.getElementById("root")!).render(<App />);
+// StrictMode runs effects + state updaters TWICE in dev (no-op in prod
+// bundles via the React fast-refresh + production builds). The double-
+// invocation surfaces effect-cleanup bugs early — a hook that creates
+// a side effect on mount but doesn't tear it down would have stacked
+// effects in dev, where in prod the bug would only manifest at
+// suspicious moments (e.g., the user navigating away and back to a
+// route fast enough to race the unmount). The recent useCanonicalUrl
+// + useNoindex hooks (#96 and #99) both use createdHere flags
+// specifically to be StrictMode-safe; this turns that contract on.
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
