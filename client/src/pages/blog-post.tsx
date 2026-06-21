@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
@@ -66,7 +67,16 @@ export default function BlogPost({ params }: BlogPostProps) {
     },
   });
 
-  const renderedBody = article ? marked(article.body) as string : "";
+  // Sanitize marked's output with DOMPurify before handing it to
+  // dangerouslySetInnerHTML. marked v5+ removed its built-in
+  // sanitizer and explicitly delegates HTML escaping to the
+  // consumer; without this any markdown that contains
+  // `<script>` / `<iframe>` / on*-handlers would XSS every visitor.
+  // The content is admin-authored today, but defense in depth means
+  // a compromised admin account or unexpected AI-pipeline output
+  // (server/contentGeneration.ts) can't turn into a stored XSS
+  // hitting every reader.
+  const renderedBody = article ? DOMPurify.sanitize(marked(article.body) as string) : "";
   const readTime = article ? estimateReadingTime(article.body) : 0;
 
   useDocumentTitle(article?.seoTitle ?? article?.title ?? "Article");
