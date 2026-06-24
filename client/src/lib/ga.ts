@@ -49,9 +49,7 @@ export function bootGa(): void {
     return;
   }
 
-  const raw = (import.meta as ImportMeta & {
-    env: { VITE_GA_MEASUREMENT_ID?: string };
-  }).env.VITE_GA_MEASUREMENT_ID;
+  const raw = import.meta.env.VITE_GA_MEASUREMENT_ID;
 
   if (!isValidGa4Id(raw)) {
     // No-op shim so downstream call sites stay clean.

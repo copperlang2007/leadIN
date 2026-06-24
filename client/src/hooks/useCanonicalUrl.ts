@@ -26,9 +26,7 @@ const FALLBACK_ORIGIN = "https://leadmarket.app";
 const LINK_REL = "canonical";
 
 function getOrigin(): string {
-  const raw = (import.meta as ImportMeta & {
-    env: { VITE_CANONICAL_ORIGIN?: string };
-  }).env.VITE_CANONICAL_ORIGIN;
+  const raw = import.meta.env.VITE_CANONICAL_ORIGIN;
   if (typeof raw !== "string") return FALLBACK_ORIGIN;
   const trimmed = raw.trim();
   if (!trimmed || trimmed === "undefined" || trimmed === "null") return FALLBACK_ORIGIN;
