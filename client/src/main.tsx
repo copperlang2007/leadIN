@@ -4,6 +4,7 @@ import App from "./App";
 import "./index.css";
 import { installTracker } from "./lib/tracker";
 import { bootGa } from "./lib/ga";
+import { installChunkLoadErrorHandler } from "./lib/chunkLoadErrorHandler";
 
 // Monkey-patch fetch so every same-origin write request automatically carries
 // the CSRF token. Cleaner than touching dozens of call sites.
@@ -32,6 +33,9 @@ import { bootGa } from "./lib/ga";
   };
 })();
 
+// installChunkLoadErrorHandler MUST run before any lazy() import can
+// resolve so a stale-deploy reject lands here, not in ErrorBoundary.
+installChunkLoadErrorHandler();
 bootGa();
 installTracker();
 
