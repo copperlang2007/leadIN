@@ -117,6 +117,18 @@ export async function adminHealthHandler(req: any, res: any) {
   if (user?.role !== "admin") {
     return res.status(403).json({ message: "Admin access required" });
   }
+  // Deploy identifier: any of GIT_COMMIT_SHA (generic), the
+  // Railway-injected RAILWAY_GIT_COMMIT_SHA, or the Vercel-injected
+  // VERCEL_GIT_COMMIT_SHA. Short-form the SHA to 7 chars so it's
+  // pasteable into a grep / GitHub URL. Falls back to "unknown"
+  // when running outside a CI build (local dev).
+  const fullSha =
+    process.env.GIT_COMMIT_SHA ??
+    process.env.RAILWAY_GIT_COMMIT_SHA ??
+    process.env.VERCEL_GIT_COMMIT_SHA ??
+    null;
+  const commit = fullSha ? fullSha.slice(0, 7) : "unknown";
+  const environment = process.env.NODE_ENV ?? "development";
   const start = Date.now();
   try {
     const { db } = await import("./db");
@@ -128,12 +140,16 @@ export async function adminHealthHandler(req: any, res: any) {
       dbLatencyMs: Date.now() - start,
       wsConnections: getActiveConnections(),
       nodeVersion: process.version,
+      commit,
+      environment,
     });
   } catch {
     return res.status(503).json({
       status: "degraded",
       uptimeSec: Math.round(process.uptime()),
       error: "db_unreachable",
+      commit,
+      environment,
     });
   }
 }

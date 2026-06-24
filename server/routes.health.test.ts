@@ -187,6 +187,47 @@ describe("adminHealthHandler", () => {
     expect(typeof body.dbLatencyMs).toBe("number");
     expect(body.wsConnections).toBe(7);
     expect(body.nodeVersion).toBe(process.version);
+    // commit + environment always present so ops can identify
+    // the deploy without having to chase the response shape.
+    expect(typeof body.commit).toBe("string");
+    expect(typeof body.environment).toBe("string");
+  });
+
+  it("includes the 7-char git SHA when GIT_COMMIT_SHA is set", async () => {
+    const saved = process.env.GIT_COMMIT_SHA;
+    process.env.GIT_COMMIT_SHA = "abc1234567890def1234567890abcdef12345678";
+    try {
+      storageUserImpl = async () => ({ role: "admin" });
+      const { res, captured } = makeRes();
+      await adminHealthHandler(makeReq({ userId: "u-admin" }), res);
+      const body = captured.body as Record<string, unknown>;
+      expect(body.commit).toBe("abc1234");
+    } finally {
+      if (saved !== undefined) process.env.GIT_COMMIT_SHA = saved;
+      else delete process.env.GIT_COMMIT_SHA;
+    }
+  });
+
+  it("falls back to 'unknown' for commit when no CI env var is set", async () => {
+    const saved = {
+      git: process.env.GIT_COMMIT_SHA,
+      railway: process.env.RAILWAY_GIT_COMMIT_SHA,
+      vercel: process.env.VERCEL_GIT_COMMIT_SHA,
+    };
+    delete process.env.GIT_COMMIT_SHA;
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
+    delete process.env.VERCEL_GIT_COMMIT_SHA;
+    try {
+      storageUserImpl = async () => ({ role: "admin" });
+      const { res, captured } = makeRes();
+      await adminHealthHandler(makeReq({ userId: "u-admin" }), res);
+      const body = captured.body as Record<string, unknown>;
+      expect(body.commit).toBe("unknown");
+    } finally {
+      if (saved.git !== undefined) process.env.GIT_COMMIT_SHA = saved.git;
+      if (saved.railway !== undefined) process.env.RAILWAY_GIT_COMMIT_SHA = saved.railway;
+      if (saved.vercel !== undefined) process.env.VERCEL_GIT_COMMIT_SHA = saved.vercel;
+    }
   });
 
   it("returns 503 with a degraded payload when the DB throws (admin still sees uptime)", async () => {
