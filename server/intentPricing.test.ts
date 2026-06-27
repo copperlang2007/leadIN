@@ -91,6 +91,24 @@ describe("priceLead", () => {
     // 0.10 * 1.0 * 1.0 * 1.0 * 1.0 = 0.10
     expect(r.price).toBe("0.10");
   });
+
+  it("clamps a negative base price to zero (never bills negative)", () => {
+    const r = priceLead({ basePrice: -50, mediscore: 100, intentScore: 100, exclusivity: "Exclusive" });
+    expect(r.price).toBe("0.00");
+    expect(r.base).toBe("0.00");
+  });
+
+  it("does not throw on malformed (non-numeric / NaN) inputs", () => {
+    const r = priceLead({
+      basePrice: "not-a-number" as any,
+      mediscore: NaN,
+      intentScore: NaN,
+      exclusivity: "Shared",
+      floor: "junk" as any,
+      ceiling: "junk" as any,
+    });
+    expect(r.price).toBe("0.00");
+  });
 });
 
 describe("computeDemandIndex", () => {

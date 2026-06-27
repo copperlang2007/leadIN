@@ -51,6 +51,20 @@ function clampNum(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
+/**
+ * Coerce any input to a finite Decimal, falling back to `fallback` on NaN /
+ * non-numeric / Infinity. Preserves string-decimal precision (we do NOT route
+ * through Number()) so "0.10" stays exact.
+ */
+function safeDecimal(v: number | string | null | undefined, fallback = 0): Decimal {
+  try {
+    const d = new Decimal(v as Decimal.Value);
+    return d.isFinite() ? d : new Decimal(fallback);
+  } catch {
+    return new Decimal(fallback);
+  }
+}
+
 // --- Factor mappings (all bounded & monotonic) -----------------------------
 
 /** MediScore 0..100 -> 0.50x .. 1.50x. A 50-score lead prices at base. */
@@ -77,7 +91,9 @@ export function demandFactor(demandIndex: number | undefined): number {
  * Compute the dynamic price + full factor decomposition. Pure & deterministic.
  */
 export function priceLead(f: PricingFactors): PriceBreakdown {
-  const base = new Decimal(f.basePrice || 0);
+  // Clamp base to non-negative — a negative price is never valid for billing —
+  // and tolerate malformed inputs without throwing.
+  const base = Decimal.max(0, safeDecimal(f.basePrice));
   const q = qualityFactor(f.mediscore);
   const intent = intentFactor(f.intentScore);
   const excl = exclusivityFactor(f.exclusivity);
@@ -88,14 +104,14 @@ export function priceLead(f: PricingFactors): PriceBreakdown {
   let priced = raw;
   let clamped = false;
   if (f.floor !== undefined && f.floor !== null) {
-    const floor = new Decimal(f.floor);
+    const floor = Decimal.max(0, safeDecimal(f.floor));
     if (priced.lessThan(floor)) {
       priced = floor;
       clamped = true;
     }
   }
   if (f.ceiling !== undefined && f.ceiling !== null) {
-    const ceiling = new Decimal(f.ceiling);
+    const ceiling = Decimal.max(0, safeDecimal(f.ceiling));
     if (priced.greaterThan(ceiling)) {
       priced = ceiling;
       clamped = true;

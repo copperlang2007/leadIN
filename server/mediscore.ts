@@ -92,7 +92,7 @@ export interface MediScoreInputs {
 // tracks the effective weights so scores stay on a 0..100 scale.
 export function scoreFromInputs(
   i: MediScoreInputs,
-  weightOverrides?: Record<string, number>,
+  weightOverrides?: Partial<Record<SignalKey, number>>,
 ): MediScoreBreakdown {
   const incomeQualified = (i.income ?? "").includes("$25k") || (i.income ?? "").includes("$50k+");
 
@@ -121,7 +121,7 @@ export function scoreFromInputs(
     seo_demand: i.seoCategoryMatch,
   };
 
-  const effectiveWeight = (key: string, fallback: number): number => {
+  const effectiveWeight = (key: SignalKey, fallback: number): number => {
     const w = weightOverrides?.[key];
     return typeof w === "number" && isFinite(w) && w >= 0 ? w : fallback;
   };

@@ -96,7 +96,7 @@ function metricsFor(records: RoiRecord[], avgCommission: number | string): RoiMe
     spend,
     conversions,
     conversionRate: Number(conversionRate.toFixed(4)),
-    cac: divUsd(spend, leads),
+    cac: leads > 0 ? divUsd(spend, leads) : "0.00",
     costPerConversion: conversions > 0 ? divUsd(spend, conversions) : "0.00",
     revenue,
     roi,
