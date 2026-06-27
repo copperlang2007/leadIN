@@ -46,6 +46,7 @@ const SavedLists = lazy(() => import("@/pages/saved-lists"));
 const TcpaPage = lazy(() => import("@/pages/tcpa"));
 const VendorScorecard = lazy(() => import("@/pages/vendor-scorecard"));
 const SmartMatchPage = lazy(() => import("@/pages/smart-match"));
+const BuyerRoi = lazy(() => import("@/pages/buyer-roi"));
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -81,6 +82,7 @@ function Router() {
       <Route path="/marketplace" component={Marketplace} />
       <Route path="/architect" component={ArchitectBlueprint} />
       <Route path="/orders" component={Orders} />
+      <Route path="/roi" component={BuyerRoi} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
       <Route path="/settings" component={SettingsPage} />

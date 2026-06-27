@@ -32,6 +32,9 @@ import { startContentEngine, generateAndPublishArticle } from "./contentGenerati
 import { checkDnc } from "./dncCompliance";
 import { verifyTrustedFormCert } from "./trustedForm";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
+import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
+import { priceLead } from "./intentPricing";
+import { isWithinCallingHours } from "./callingHours";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
@@ -654,6 +657,62 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error fetching orders:", error);
       res.status(500).json({ message: "Failed to fetch orders" });
+    }
+  });
+
+  // Buyer ROI analytics: CAC / conversion / ROI sliced by vendor and MediScore
+  // band. Revenue is derived from the buyer's own `avgCommission` query param
+  // (default 0) so every figure is traceable to the buyer's real inputs. A lead
+  // is counted as converted when its order status is "converted".
+  app.get("/api/buyer/roi", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const avgCommission = Number(req.query.avgCommission ?? 0) || 0;
+      const orders = await storage.getUserOrders(userId);
+      const records: RoiRecord[] = orders.map(o => ({
+        cost: o.price,
+        mediscore: o.lead?.mediscore ?? 0,
+        vendorId: o.lead?.vendor?.id ?? 0,
+        vendorName: o.lead?.vendor?.name ?? "Unknown",
+        converted: o.status === "converted",
+      }));
+      res.json(buildBuyerRoiReport(records, { avgCommission }));
+    } catch (error) {
+      logError("Error building buyer ROI report:", error);
+      res.status(500).json({ message: "Failed to build ROI report" });
+    }
+  });
+
+  // Stateless dynamic-price quote: shows the buyer exactly how base price,
+  // quality, intent, exclusivity, and demand combine into a final price.
+  app.post("/api/pricing/quote", isAuthenticated, async (req: any, res) => {
+    try {
+      const { basePrice, mediscore, intentScore, exclusivity, demandIndex, floor, ceiling } = req.body ?? {};
+      res.json(
+        priceLead({
+          basePrice: Number(basePrice) || 0,
+          mediscore: Number(mediscore) || 0,
+          intentScore: Number(intentScore) || 0,
+          exclusivity: String(exclusivity ?? "Shared"),
+          demandIndex: demandIndex === undefined ? undefined : Number(demandIndex),
+          floor: floor === undefined ? undefined : Number(floor),
+          ceiling: ceiling === undefined ? undefined : Number(ceiling),
+        }),
+      );
+    } catch (error) {
+      logError("Error computing price quote:", error);
+      res.status(500).json({ message: "Failed to compute price quote" });
+    }
+  });
+
+  // TCPA calling-hours check for a consumer's state (DST-aware, fail-closed).
+  app.get("/api/compliance/calling-hours", async (req: any, res) => {
+    try {
+      const state = String(req.query.state ?? "");
+      res.json(isWithinCallingHours(state));
+    } catch (error) {
+      logError("Error checking calling hours:", error);
+      res.status(500).json({ message: "Failed to check calling hours" });
     }
   });
 
