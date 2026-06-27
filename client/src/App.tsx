@@ -47,6 +47,7 @@ const TcpaPage = lazy(() => import("@/pages/tcpa"));
 const VendorScorecard = lazy(() => import("@/pages/vendor-scorecard"));
 const SmartMatchPage = lazy(() => import("@/pages/smart-match"));
 const BuyerRoi = lazy(() => import("@/pages/buyer-roi"));
+const VerifyCertificate = lazy(() => import("@/pages/verify-certificate"));
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -64,6 +65,7 @@ function Router() {
         <Route path="/terms" component={TermsOfService} />
         <Route path="/cookies" component={CookiePolicy} />
         <Route path="/tcpa-compliance" component={TcpaCompliance} />
+        <Route path="/verify" component={VerifyCertificate} />
         <Route path="/" component={Landing} />
         {/* Unknown routes should render NotFound, not silently fall back to
             Landing. A guest hitting a stale link previously got a confusing
@@ -83,6 +85,7 @@ function Router() {
       <Route path="/architect" component={ArchitectBlueprint} />
       <Route path="/orders" component={Orders} />
       <Route path="/roi" component={BuyerRoi} />
+      <Route path="/verify" component={VerifyCertificate} />
       <Route path="/profile" component={Profile} />
       <Route path="/admin" component={Admin} />
       <Route path="/settings" component={SettingsPage} />

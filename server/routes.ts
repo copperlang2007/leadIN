@@ -35,6 +35,8 @@ import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
 import { priceLead } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
+import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
+import { createHash } from "node:crypto";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
@@ -584,6 +586,48 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error revealing lead PII:", error);
       res.status(500).json({ message: "Failed to reveal lead information" });
+    }
+  });
+
+  // Provably-compliant lead certificate: an Ed25519-signed, PII-free receipt
+  // the buyer can verify with the platform's public key. Gated to purchasers.
+  app.get("/api/leads/:id/certificate", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = parseInt(req.params.id);
+      const order = await storage.getOrderForLead(userId, leadId);
+      if (!order) {
+        return res.status(403).json({ message: "Purchase this lead to obtain its compliance certificate" });
+      }
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Audit hash binds the certificate to the lead's provenance trail without
+      // exposing any PII.
+      const auditHash =
+        "sha256:" +
+        createHash("sha256")
+          .update(JSON.stringify({ id: lead.id, provenance: lead.provenance ?? [] }))
+          .digest("hex");
+
+      const result = issueCertificateForLead(lead, auditHash);
+      if (!result.ok) return res.status(503).json({ message: result.reason });
+      res.json(result.certificate);
+    } catch (error) {
+      logError("Error issuing compliance certificate:", error);
+      res.status(500).json({ message: "Failed to issue certificate" });
+    }
+  });
+
+  // Public certificate verification — anyone (incl. a buyer's auditor) can POST
+  // a certificate and confirm it was signed by the platform, untampered.
+  app.post("/api/compliance/verify", async (req: any, res) => {
+    try {
+      const cert = req.body?.certificate ?? req.body;
+      res.json(verifyWithConfiguredKey(cert));
+    } catch (error) {
+      logError("Error verifying compliance certificate:", error);
+      res.status(500).json({ message: "Failed to verify certificate" });
     }
   });
 
