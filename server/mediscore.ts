@@ -22,7 +22,9 @@ export interface MediScoreBreakdown {
 
 // 20+ signal definitions. Each must produce a boolean `hit` against the
 // available data sources. Weights sum well past 100 — final score is clamped.
-const SIGNAL_DEFS = [
+// Exported so the adaptive calibration layer (mediscoreCalibration.ts) can
+// read the static base weights and learn multipliers from conversion outcomes.
+export const SIGNAL_DEFS = [
   { key: "verified",            label: "Vendor verified",                weight: 8 },
   { key: "tcpa_consent",        label: "TCPA consent on file",           weight: 7 },
   { key: "exclusive",           label: "Exclusive lead",                 weight: 6 },
@@ -48,6 +50,11 @@ const SIGNAL_DEFS = [
 ] as const;
 
 type SignalKey = (typeof SIGNAL_DEFS)[number]["key"];
+
+// Static base weights as a map, for the adaptive calibration layer to start from.
+export const BASE_WEIGHTS: Record<string, number> = Object.fromEntries(
+  SIGNAL_DEFS.map(d => [d.key, d.weight]),
+);
 
 const PREMIUM_SOURCES = new Set(["Call Center Transfer", "Organic Search"]);
 
@@ -79,7 +86,14 @@ export interface MediScoreInputs {
   seoCategoryMatch: boolean;
 }
 
-export function scoreFromInputs(i: MediScoreInputs): MediScoreBreakdown {
+// `weightOverrides` lets the adaptive calibration layer substitute learned
+// weights per signal key. When omitted, the static SIGNAL_DEFS weights are
+// used (fully backward compatible). The normalization denominator always
+// tracks the effective weights so scores stay on a 0..100 scale.
+export function scoreFromInputs(
+  i: MediScoreInputs,
+  weightOverrides?: Record<string, number>,
+): MediScoreBreakdown {
   const incomeQualified = (i.income ?? "").includes("$25k") || (i.income ?? "").includes("$50k+");
 
   const hits: Record<SignalKey, boolean> = {
@@ -107,15 +121,20 @@ export function scoreFromInputs(i: MediScoreInputs): MediScoreBreakdown {
     seo_demand: i.seoCategoryMatch,
   };
 
+  const effectiveWeight = (key: string, fallback: number): number => {
+    const w = weightOverrides?.[key];
+    return typeof w === "number" && isFinite(w) && w >= 0 ? w : fallback;
+  };
+
   const signals: MediScoreSignal[] = SIGNAL_DEFS.map(def => ({
     key: def.key,
     label: def.label,
-    weight: def.weight,
+    weight: effectiveWeight(def.key, def.weight),
     hit: hits[def.key as SignalKey] ?? false,
   }));
 
   const earned = signals.filter(s => s.hit).reduce((a, s) => a + s.weight, 0);
-  const denominator = SIGNAL_DEFS.reduce((a, s) => a + s.weight, 0);
+  const denominator = signals.reduce((a, s) => a + s.weight, 0) || 1;
   const score = Math.min(100, Math.round((earned / denominator) * 100));
   const activeSignalCount = signals.filter(s => s.hit).length;
 
