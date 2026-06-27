@@ -35,6 +35,11 @@ import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
 import { priceLead } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
+import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
+import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
+import { runMediscoreCalibration, startMediscoreCalibrationCron } from "./mediscoreCalibrationJob";
+import { getActiveCalibratedWeightsMeta } from "./mediscoreActiveWeights";
+import { createHash } from "node:crypto";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
@@ -169,6 +174,150 @@ function stripPII(lead: any) {
   };
 }
 
+// Shared lead-creation pipeline used by both the direct ingest endpoint and the
+// ping-post `/post` endpoint, so there is a single source of truth for dedup,
+// DNC, TrustedForm, MediScore, broadcast, notify, and routing side-effects.
+async function ingestLeadForVendor(
+  vendor: { id: number; name: string; orgId: string | null },
+  data: z.infer<typeof vendorLeadIngestSchema>,
+): Promise<{ status: number; body: any }> {
+  // Duplicate check: same phone + type already available
+  const isDuplicate = await storage.checkDuplicateLead(data.consumerPhone, data.type);
+  if (isDuplicate) {
+    return { status: 409, body: { message: "Duplicate lead: same phone and type already available" } };
+  }
+
+  const now = new Date();
+  const provenance = [
+    { date: now.toISOString(), action: "Lead Ingested via API", actor: `Vendor: ${vendor.name}`, icon: "check" },
+    { date: new Date(now.getTime() + 1000).toISOString(), action: "Field Validation Passed", actor: "System", icon: "lock" },
+    { date: new Date(now.getTime() + 2000).toISOString(), action: "Duplicate Check Cleared", actor: "System", icon: "eye" },
+  ];
+
+  const dnc = await checkDnc(data.consumerPhone);
+
+  let tcpa: { tcpaVerifiedAt: Date | null; tcpaCertId: string | null; tcpaVerifiedSource: string | null } = {
+    tcpaVerifiedAt: null,
+    tcpaCertId: null,
+    tcpaVerifiedSource: null,
+  };
+  if (data.trustedFormCertUrl) {
+    const result = await verifyTrustedFormCert(data.trustedFormCertUrl);
+    if (result.ok && result.certId) {
+      tcpa = { tcpaVerifiedAt: new Date(), tcpaCertId: result.certId, tcpaVerifiedSource: "trustedform" };
+    }
+  }
+
+  const lead = await storage.createLead({
+    vendorId: vendor.id,
+    orgId: vendor.orgId ?? null,
+    type: data.type,
+    source: data.source,
+    exclusivity: data.exclusivity,
+    price: data.price.toString(),
+    consumerAge: data.consumerAge,
+    state: data.state.toUpperCase(),
+    zipCode: data.zipCode,
+    consumerName: data.consumerName,
+    consumerPhone: data.consumerPhone,
+    consumerEmail: data.consumerEmail,
+    consumerAddress: data.consumerAddress,
+    income: data.income,
+    hasCondition: data.hasCondition,
+    homeowner: data.homeowner,
+    gender: data.gender,
+    smoker: data.smoker,
+    verified: data.verified ?? false,
+    provenance,
+    sold: false,
+    dncFlagged: dnc.flagged,
+    dncCheckedAt: new Date(),
+    ...tcpa,
+  });
+
+  await recomputeAndPersistMediScore(lead.id).catch(err => logError("[mediscore] init error:", err));
+
+  broadcastNewLead({
+    id: lead.id,
+    type: lead.type,
+    state: lead.state,
+    zipCode: lead.zipCode,
+    price: lead.price,
+    exclusivity: lead.exclusivity,
+    verified: lead.verified,
+    vendorName: vendor.name,
+    createdAt: lead.createdAt?.toISOString() ?? null,
+  });
+
+  notifyUsersAboutNewLead({
+    id: lead.id,
+    type: lead.type,
+    state: lead.state,
+    price: lead.price,
+    exclusivity: lead.exclusivity,
+    vendorName: vendor.name,
+  }).catch(err => logError("Notification error:", err));
+
+  storage.routeLeadToBestAgent(lead.id)
+    .then(assignment => {
+      if (assignment && assignment.agentUserId) {
+        broadcastLeadAssignment({
+          agentUserId: assignment.agentUserId,
+          leadId: assignment.leadId,
+          matchScore: assignment.matchScore,
+        });
+      }
+    })
+    .catch(err => logError("Routing error:", err));
+
+  (async () => {
+    try {
+      const fresh = await storage.getLead(lead.id);
+      if (!fresh) return;
+      const delivery = await attemptDeliveryForLead(fresh);
+      if (delivery) {
+        broadcastLeadAssignment({ agentUserId: delivery.agentUserId, leadId: lead.id, matchScore: 100 });
+      }
+    } catch (err: any) {
+      logError("[smart-match] post-ingest delivery error:", err);
+    }
+  })();
+
+  return { status: 201, body: { id: lead.id, message: "Lead ingested successfully" } };
+}
+
+// Shared auth/rate-limit/secret gate for the ping-post endpoints. Returns the
+// vendor + HMAC secret, or null after having sent the appropriate error
+// response — so /ping and /post stay byte-for-byte consistent.
+async function authVendorForPingPost(
+  req: any,
+  res: any,
+  bucket: string,
+  refill: number,
+  burst: number,
+): Promise<{ vendor: { id: number; name: string; orgId: string | null }; secret: string } | null> {
+  const apiKey = req.headers["x-api-key"] as string;
+  if (!apiKey) {
+    res.status(401).json({ message: "API key required (X-Api-Key header)" });
+    return null;
+  }
+  const vendor = await storage.getVendorByApiKey(apiKey);
+  if (!vendor) {
+    res.status(401).json({ message: "Invalid or inactive API key" });
+    return null;
+  }
+  if (!(await takeToken(`${bucket}:${vendor.id}`, refill, burst))) {
+    res.status(429).json({ message: "Vendor rate limit exceeded" });
+    return null;
+  }
+  const secret = getPingPostSecret();
+  if (!secret) {
+    res.status(503).json({ message: "Ping-post not configured" });
+    return null;
+  }
+  return { vendor: { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null }, secret };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -192,6 +341,8 @@ export async function registerRoutes(
   // Drop webhook_idempotency rows older than 7d. Sits at 04:00 after
   // the rest so log lines don't interleave with data-retention sweeps.
   startIdempotencyPruneCron();
+  // Weekly MediScore calibration: learn signal weights from conversions.
+  startMediscoreCalibrationCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -584,6 +735,60 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error revealing lead PII:", error);
       res.status(500).json({ message: "Failed to reveal lead information" });
+    }
+  });
+
+  // Provably-compliant lead certificate: an Ed25519-signed, PII-free receipt
+  // the buyer can verify with the platform's public key. Gated to purchasers.
+  app.get("/api/leads/:id/certificate", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadId = parseInt(req.params.id);
+      const order = await storage.getOrderForLead(userId, leadId);
+      if (!order) {
+        return res.status(403).json({ message: "Purchase this lead to obtain its compliance certificate" });
+      }
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Audit hash binds the certificate to the lead's provenance trail without
+      // exposing any PII.
+      const auditHash =
+        "sha256:" +
+        createHash("sha256")
+          .update(JSON.stringify({ id: lead.id, provenance: lead.provenance ?? [] }))
+          .digest("hex");
+
+      const result = issueCertificateForLead(lead, auditHash);
+      if (!result.ok) return res.status(503).json({ message: result.reason });
+      res.json(result.certificate);
+    } catch (error) {
+      logError("Error issuing compliance certificate:", error);
+      res.status(500).json({ message: "Failed to issue certificate" });
+    }
+  });
+
+  // Public certificate verification — anyone (incl. a buyer's auditor) can POST
+  // a certificate and confirm it was signed by the platform, untampered.
+  app.post("/api/compliance/verify", async (req: any, res) => {
+    try {
+      const cert = req.body?.certificate ?? req.body;
+      // Shape-check before verifying so malformed bodies get a clear 400 rather
+      // than a generic invalid-signature result.
+      if (
+        !cert ||
+        typeof cert !== "object" ||
+        typeof cert.alg !== "string" ||
+        typeof cert.signature !== "string" ||
+        typeof cert.payload !== "object" ||
+        cert.payload === null
+      ) {
+        return res.status(400).json({ message: "Malformed certificate: expected { payload, alg, signature }" });
+      }
+      res.json(verifyWithConfiguredKey(cert));
+    } catch (error) {
+      logError("Error verifying compliance certificate:", error);
+      res.status(500).json({ message: "Failed to verify certificate" });
     }
   });
 
@@ -1512,150 +1717,84 @@ export async function registerRoutes(
 
       const data = validation.data;
 
-      // Duplicate check: same phone + type already available
-      const isDuplicate = await storage.checkDuplicateLead(data.consumerPhone, data.type);
-      if (isDuplicate) {
-        return res.status(409).json({ message: "Duplicate lead: same phone and type already available" });
-      }
-
-      // Build provenance log
-      const now = new Date();
-      const provenance = [
-        {
-          date: now.toISOString(),
-          action: "Lead Ingested via API",
-          actor: `Vendor: ${vendor.name}`,
-          icon: "check",
-        },
-        {
-          date: new Date(now.getTime() + 1000).toISOString(),
-          action: "Field Validation Passed",
-          actor: "System",
-          icon: "lock",
-        },
-        {
-          date: new Date(now.getTime() + 2000).toISOString(),
-          action: "Duplicate Check Cleared",
-          actor: "System",
-          icon: "eye",
-        },
-      ];
-
-      // Phase 4: run DNC check before listing
-      const dnc = await checkDnc(data.consumerPhone);
-
-      // Wave 2: verify TrustedForm cert (when supplied by the vendor).
-      // If verification fails or no key is configured the lead is listed as
-      // "vendor-claimed" rather than "verified".
-      let tcpa: {
-        tcpaVerifiedAt: Date | null;
-        tcpaCertId: string | null;
-        tcpaVerifiedSource: string | null;
-      } = { tcpaVerifiedAt: null, tcpaCertId: null, tcpaVerifiedSource: null };
-      if (data.trustedFormCertUrl) {
-        const result = await verifyTrustedFormCert(data.trustedFormCertUrl);
-        if (result.ok && result.certId) {
-          tcpa = {
-            tcpaVerifiedAt: new Date(),
-            tcpaCertId: result.certId,
-            tcpaVerifiedSource: "trustedform",
-          };
-        }
-      }
-
-      const lead = await storage.createLead({
-        vendorId: vendor.id,
-        // Phase 3: route the lead to the org tied to the API key (if any)
-        orgId: vendor.orgId ?? null,
-        type: data.type,
-        source: data.source,
-        exclusivity: data.exclusivity,
-        price: data.price.toString(),
-        consumerAge: data.consumerAge,
-        state: data.state.toUpperCase(),
-        zipCode: data.zipCode,
-        consumerName: data.consumerName,
-        consumerPhone: data.consumerPhone,
-        consumerEmail: data.consumerEmail,
-        consumerAddress: data.consumerAddress,
-        income: data.income,
-        hasCondition: data.hasCondition,
-        homeowner: data.homeowner,
-        gender: data.gender,
-        smoker: data.smoker,
-        verified: data.verified ?? false,
-        provenance,
-        sold: false,
-        dncFlagged: dnc.flagged,
-        dncCheckedAt: new Date(),
-        ...tcpa,
-      });
-
-      // Compute initial MediScore and persist (non-blocking would also be fine,
-      // but doing it inline lets the response include the score for vendors).
-      await recomputeAndPersistMediScore(lead.id).catch(err => logError("[mediscore] init error:", err));
-
-      // Broadcast new lead via WebSocket (non-PII data only)
-      broadcastNewLead({
-        id: lead.id,
-        type: lead.type,
-        state: lead.state,
-        zipCode: lead.zipCode,
-        price: lead.price,
-        exclusivity: lead.exclusivity,
-        verified: lead.verified,
-        vendorName: vendor.name,
-        createdAt: lead.createdAt?.toISOString() ?? null,
-      });
-
-      // Send email notifications asynchronously
-      notifyUsersAboutNewLead({
-        id: lead.id,
-        type: lead.type,
-        state: lead.state,
-        price: lead.price,
-        exclusivity: lead.exclusivity,
-        vendorName: vendor.name,
-      }).catch(err => logError("Notification error:", err));
-
-      // Fire the routing engine (no-op if lead has no org, or score below threshold)
-      storage.routeLeadToBestAgent(lead.id)
-        .then(assignment => {
-          if (assignment && assignment.agentUserId) {
-            broadcastLeadAssignment({
-              agentUserId: assignment.agentUserId,
-              leadId: assignment.leadId,
-              matchScore: assignment.matchScore,
-            });
-          }
-        })
-        .catch(err => logError("Routing error:", err));
-
-      // T3 — smart-match flat-rate delivery. Best-effort; will no-op if the
-      // org routing engine already grabbed the lead, or if no active sub
-      // matches. We re-read the lead from storage so we see any state
-      // changes (e.g. assignedToUserId) that the routing engine wrote.
-      (async () => {
-        try {
-          const fresh = await storage.getLead(lead.id);
-          if (!fresh) return;
-          const delivery = await attemptDeliveryForLead(fresh);
-          if (delivery) {
-            broadcastLeadAssignment({
-              agentUserId: delivery.agentUserId,
-              leadId: lead.id,
-              matchScore: 100,
-            });
-          }
-        } catch (err: any) {
-          logError("[smart-match] post-ingest delivery error:", err);
-        }
-      })();
-
-      res.status(201).json({ id: lead.id, message: "Lead ingested successfully" });
+      const result = await ingestLeadForVendor(
+        { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null },
+        data,
+      );
+      return res.status(result.status).json(result.body);
     } catch (error: any) {
       logError("Error ingesting lead:", error);
       res.status(500).json({ message: error.message || "Failed to ingest lead" });
+    }
+  });
+
+  // Ping-post step 1: vendor submits non-PII attributes, gets a binding price
+  // quote + a signed, expiring offer token.
+  app.post("/api/v1/leads/ping", async (req: any, res) => {
+    try {
+      const auth = await authVendorForPingPost(req, res, "ping", 200, 20);
+      if (!auth) return;
+      const { vendor, secret } = auth;
+
+      const b = req.body ?? {};
+      const attrs: PingAttributes = {
+        type: String(b.type ?? ""),
+        state: String(b.state ?? ""),
+        exclusivity: String(b.exclusivity ?? "Shared"),
+        mediscoreEstimate: b.mediscoreEstimate === undefined ? undefined : Number(b.mediscoreEstimate),
+        intentScore: b.intentScore === undefined ? undefined : Number(b.intentScore),
+        hasPhone: !!b.hasPhone,
+        hasConsent: !!b.hasConsent,
+      };
+      const basePrice = Number(b.basePrice) || 25;
+      const decision = evaluatePing(attrs, {
+        basePrice,
+        secret,
+        pingId: createHash("sha256").update(`${vendor.id}:${Date.now()}`).digest("hex").slice(0, 24),
+        demandIndex: b.demandIndex === undefined ? undefined : Number(b.demandIndex),
+      });
+      return res.status(decision.accept ? 200 : 422).json(decision);
+    } catch (error: any) {
+      logError("Error handling ping:", error);
+      res.status(500).json({ message: "Failed to handle ping" });
+    }
+  });
+
+  // Ping-post step 2: vendor submits the full lead + the offer token from /ping.
+  // The token is verified (authenticity + not expired + same type/state) before
+  // the lead runs through the shared ingest pipeline.
+  app.post("/api/v1/leads/post", async (req: any, res) => {
+    try {
+      const auth = await authVendorForPingPost(req, res, "post", 100, 10);
+      if (!auth) return;
+      const { vendor, secret } = auth;
+
+      const token = req.body?.token as string;
+      const offer = verifyOffer(token, secret);
+      if (!offer.valid) {
+        return res.status(401).json({ message: `Invalid offer token: ${offer.reason}` });
+      }
+
+      const validation = vendorLeadIngestSchema.safeParse(req.body?.lead);
+      if (!validation.success) {
+        return res.status(400).json({ message: fromError(validation.error).toString() });
+      }
+      const data = validation.data;
+
+      // The posted lead must match the offer it claims.
+      if (data.type !== offer.payload!.type || data.state.toUpperCase() !== offer.payload!.state) {
+        return res.status(409).json({ message: "Posted lead does not match the offer (type/state mismatch)" });
+      }
+
+      // Honor the quoted price so the vendor is billed exactly what was offered.
+      // Build a typed copy rather than mutating the validated object via `any`.
+      const leadData = { ...data, price: Number(offer.payload!.bidPrice) };
+
+      const result = await ingestLeadForVendor(vendor, leadData);
+      return res.status(result.status).json({ ...result.body, pricePaid: offer.payload!.bidPrice });
+    } catch (error: any) {
+      logError("Error handling post:", error);
+      res.status(500).json({ message: "Failed to handle post" });
     }
   });
 
@@ -2644,6 +2783,29 @@ export async function registerRoutes(
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Recheck failed" });
+    }
+  });
+
+  // Manually trigger a MediScore calibration run and inspect active weights.
+  app.post("/api/admin/mediscore/calibrate", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runMediscoreCalibration();
+      res.json({ ran: !!result, meta: getActiveCalibratedWeightsMeta(), result });
+    } catch (err: any) {
+      logError("Error running MediScore calibration:", err);
+      res.status(500).json({ message: err.message || "Calibration failed" });
+    }
+  });
+
+  app.get("/api/admin/mediscore/calibration", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      res.json(getActiveCalibratedWeightsMeta());
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to read calibration status" });
     }
   });
 
