@@ -72,6 +72,7 @@ describe("signOffer / verifyOffer", () => {
   it("rejects malformed tokens", () => {
     expect(verifyOffer("garbage", secret).reason).toBe("malformed_token");
     expect(verifyOffer("", secret).reason).toBe("malformed_token");
+    expect(verifyOffer("a.b.c", secret).reason).toBe("malformed_token"); // >2 segments
   });
 
   it("the token minted by evaluatePing verifies before expiry and fails after", () => {

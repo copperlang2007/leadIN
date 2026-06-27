@@ -77,7 +77,11 @@ export function verifyOffer(token: string, secret: string, nowMs = Date.now()): 
   if (!token || typeof token !== "string" || !token.includes(".")) {
     return { valid: false, reason: "malformed_token" };
   }
-  const [body, mac] = token.split(".");
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    return { valid: false, reason: "malformed_token" };
+  }
+  const [body, mac] = parts;
   const expected = b64url(createHmac("sha256", secret).update(body).digest());
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);

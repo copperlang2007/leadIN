@@ -286,6 +286,38 @@ async function ingestLeadForVendor(
   return { status: 201, body: { id: lead.id, message: "Lead ingested successfully" } };
 }
 
+// Shared auth/rate-limit/secret gate for the ping-post endpoints. Returns the
+// vendor + HMAC secret, or null after having sent the appropriate error
+// response — so /ping and /post stay byte-for-byte consistent.
+async function authVendorForPingPost(
+  req: any,
+  res: any,
+  bucket: string,
+  refill: number,
+  burst: number,
+): Promise<{ vendor: { id: number; name: string; orgId: string | null }; secret: string } | null> {
+  const apiKey = req.headers["x-api-key"] as string;
+  if (!apiKey) {
+    res.status(401).json({ message: "API key required (X-Api-Key header)" });
+    return null;
+  }
+  const vendor = await storage.getVendorByApiKey(apiKey);
+  if (!vendor) {
+    res.status(401).json({ message: "Invalid or inactive API key" });
+    return null;
+  }
+  if (!(await takeToken(`${bucket}:${vendor.id}`, refill, burst))) {
+    res.status(429).json({ message: "Vendor rate limit exceeded" });
+    return null;
+  }
+  const secret = getPingPostSecret();
+  if (!secret) {
+    res.status(503).json({ message: "Ping-post not configured" });
+    return null;
+  }
+  return { vendor: { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null }, secret };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -741,6 +773,18 @@ export async function registerRoutes(
   app.post("/api/compliance/verify", async (req: any, res) => {
     try {
       const cert = req.body?.certificate ?? req.body;
+      // Shape-check before verifying so malformed bodies get a clear 400 rather
+      // than a generic invalid-signature result.
+      if (
+        !cert ||
+        typeof cert !== "object" ||
+        typeof cert.alg !== "string" ||
+        typeof cert.signature !== "string" ||
+        typeof cert.payload !== "object" ||
+        cert.payload === null
+      ) {
+        return res.status(400).json({ message: "Malformed certificate: expected { payload, alg, signature }" });
+      }
       res.json(verifyWithConfiguredKey(cert));
     } catch (error) {
       logError("Error verifying compliance certificate:", error);
@@ -1688,15 +1732,9 @@ export async function registerRoutes(
   // quote + a signed, expiring offer token.
   app.post("/api/v1/leads/ping", async (req: any, res) => {
     try {
-      const apiKey = req.headers["x-api-key"] as string;
-      if (!apiKey) return res.status(401).json({ message: "API key required (X-Api-Key header)" });
-      const vendor = await storage.getVendorByApiKey(apiKey);
-      if (!vendor) return res.status(401).json({ message: "Invalid or inactive API key" });
-      if (!(await takeToken(`ping:${vendor.id}`, 200, 20))) {
-        return res.status(429).json({ message: "Vendor rate limit exceeded" });
-      }
-      const secret = getPingPostSecret();
-      if (!secret) return res.status(503).json({ message: "Ping-post not configured" });
+      const auth = await authVendorForPingPost(req, res, "ping", 200, 20);
+      if (!auth) return;
+      const { vendor, secret } = auth;
 
       const b = req.body ?? {};
       const attrs: PingAttributes = {
@@ -1712,7 +1750,7 @@ export async function registerRoutes(
       const decision = evaluatePing(attrs, {
         basePrice,
         secret,
-        pingId: createHash("sha256").update(`${vendor.id}:${Date.now()}:${apiKey}`).digest("hex").slice(0, 24),
+        pingId: createHash("sha256").update(`${vendor.id}:${Date.now()}`).digest("hex").slice(0, 24),
         demandIndex: b.demandIndex === undefined ? undefined : Number(b.demandIndex),
       });
       return res.status(decision.accept ? 200 : 422).json(decision);
@@ -1727,15 +1765,9 @@ export async function registerRoutes(
   // the lead runs through the shared ingest pipeline.
   app.post("/api/v1/leads/post", async (req: any, res) => {
     try {
-      const apiKey = req.headers["x-api-key"] as string;
-      if (!apiKey) return res.status(401).json({ message: "API key required (X-Api-Key header)" });
-      const vendor = await storage.getVendorByApiKey(apiKey);
-      if (!vendor) return res.status(401).json({ message: "Invalid or inactive API key" });
-      if (!(await takeToken(`post:${vendor.id}`, 100, 10))) {
-        return res.status(429).json({ message: "Vendor rate limit exceeded" });
-      }
-      const secret = getPingPostSecret();
-      if (!secret) return res.status(503).json({ message: "Ping-post not configured" });
+      const auth = await authVendorForPingPost(req, res, "post", 100, 10);
+      if (!auth) return;
+      const { vendor, secret } = auth;
 
       const token = req.body?.token as string;
       const offer = verifyOffer(token, secret);
@@ -1753,13 +1785,12 @@ export async function registerRoutes(
       if (data.type !== offer.payload!.type || data.state.toUpperCase() !== offer.payload!.state) {
         return res.status(409).json({ message: "Posted lead does not match the offer (type/state mismatch)" });
       }
-      // Honor the quoted price so the vendor is billed exactly what was offered.
-      (data as any).price = Number(offer.payload!.bidPrice);
 
-      const result = await ingestLeadForVendor(
-        { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null },
-        data,
-      );
+      // Honor the quoted price so the vendor is billed exactly what was offered.
+      // Build a typed copy rather than mutating the validated object via `any`.
+      const leadData = { ...data, price: Number(offer.payload!.bidPrice) };
+
+      const result = await ingestLeadForVendor(vendor, leadData);
       return res.status(result.status).json({ ...result.body, pricePaid: offer.payload!.bidPrice });
     } catch (error: any) {
       logError("Error handling post:", error);
