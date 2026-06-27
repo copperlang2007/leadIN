@@ -5,6 +5,7 @@
 import { db } from "./db";
 import { eq, sql } from "drizzle-orm";
 import { leads, cmsPlanSignals, behavioralEvents, keywordSignals } from "@shared/schema";
+import { getActiveCalibratedWeights } from "./mediscoreActiveWeights";
 
 export interface MediScoreSignal {
   key: string;
@@ -186,30 +187,35 @@ export async function computeMediScore(leadId: number): Promise<MediScoreBreakdo
     ? (Date.now() - new Date(lead.createdAt).getTime()) / (1000 * 60 * 60)
     : 99;
 
-  return scoreFromInputs({
-    verified: !!lead.verified,
-    hasTcpa,
-    exclusivity: lead.exclusivity,
-    ageHours,
-    phonePresent: !!lead.consumerPhone,
-    emailPresent: !!lead.consumerEmail,
-    addressPresent: !!lead.consumerAddress,
-    consumerAge: lead.consumerAge,
-    homeowner: lead.homeowner,
-    income: lead.income,
-    smoker: lead.smoker,
-    hasCondition: lead.hasCondition,
-    source: lead.source,
-    dncFlagged: !!lead.dncFlagged,
-    cmsTermination,
-    cmsBenefitChange: cmsBenefit,
-    cmsStarDrop,
-    maxDwellSeconds: maxDwell,
-    maxScrollPercent: maxScroll,
-    ctaClicks,
-    toolInteractions: toolUses,
-    seoCategoryMatch: seoMatch,
-  });
+  return scoreFromInputs(
+    {
+      verified: !!lead.verified,
+      hasTcpa,
+      exclusivity: lead.exclusivity,
+      ageHours,
+      phonePresent: !!lead.consumerPhone,
+      emailPresent: !!lead.consumerEmail,
+      addressPresent: !!lead.consumerAddress,
+      consumerAge: lead.consumerAge,
+      homeowner: lead.homeowner,
+      income: lead.income,
+      smoker: lead.smoker,
+      hasCondition: lead.hasCondition,
+      source: lead.source,
+      dncFlagged: !!lead.dncFlagged,
+      cmsTermination,
+      cmsBenefitChange: cmsBenefit,
+      cmsStarDrop,
+      maxDwellSeconds: maxDwell,
+      maxScrollPercent: maxScroll,
+      ctaClicks,
+      toolInteractions: toolUses,
+      seoCategoryMatch: seoMatch,
+    },
+    // Apply learned weights when the calibration job has set them; otherwise
+    // the static base weights are used.
+    getActiveCalibratedWeights(),
+  );
 }
 
 export async function recomputeAndPersistMediScore(leadId: number): Promise<MediScoreBreakdown> {

@@ -37,6 +37,8 @@ import { priceLead } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
 import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
 import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
+import { runMediscoreCalibration, startMediscoreCalibrationCron } from "./mediscoreCalibrationJob";
+import { getActiveCalibratedWeightsMeta } from "./mediscoreActiveWeights";
 import { createHash } from "node:crypto";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
 import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
@@ -307,6 +309,8 @@ export async function registerRoutes(
   // Drop webhook_idempotency rows older than 7d. Sits at 04:00 after
   // the rest so log lines don't interleave with data-retention sweeps.
   startIdempotencyPruneCron();
+  // Weekly MediScore calibration: learn signal weights from conversions.
+  startMediscoreCalibrationCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)
@@ -2748,6 +2752,29 @@ export async function registerRoutes(
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Recheck failed" });
+    }
+  });
+
+  // Manually trigger a MediScore calibration run and inspect active weights.
+  app.post("/api/admin/mediscore/calibrate", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      const result = await runMediscoreCalibration();
+      res.json({ ran: !!result, meta: getActiveCalibratedWeightsMeta(), result });
+    } catch (err: any) {
+      logError("Error running MediScore calibration:", err);
+      res.status(500).json({ message: err.message || "Calibration failed" });
+    }
+  });
+
+  app.get("/api/admin/mediscore/calibration", isAuthenticated, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.claims.sub);
+      if (user?.role !== "admin") return res.status(403).json({ message: "Admin access required" });
+      res.json(getActiveCalibratedWeightsMeta());
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to read calibration status" });
     }
   });
 
