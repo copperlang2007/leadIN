@@ -1,15 +1,59 @@
 import { storage } from "./storage";
 import { logError } from "./lib/safeError";
 
-// Simple email service that uses environment variables for SendGrid or Resend
-// Falls back gracefully if email service is not configured
+// Email service over SendGrid or Resend, selected by which API key is set.
+//
+// Observability is the whole point of this module's shape: the #1 reason
+// production email silently stops working is an UNVERIFIED SENDER DOMAIN —
+// the provider accepts the API key but rejects the send with 403 because
+// DKIM/SPF isn't set up for the from-address. Previously every failure
+// path here returned `false` with no log, so that 403 was indistinguishable
+// from "no email service configured" and from a transient network blip.
+// Now every non-success logs the provider + HTTP status + a masked
+// recipient so an operator can actually diagnose a dead pipeline.
+
+const SEND_TIMEOUT_MS = 10_000;
+// Brand fallback when the operator hasn't set a from-address. Note: sending
+// from a domain you don't control guarantees a DKIM failure, so we also
+// warn when we fall back — the env var should always be set in prod.
+const DEFAULT_FROM = "noreply@leadmarket.app";
+
+/** Mask an email for logs: j***@example.com — enough to correlate a
+ *  bounce without writing the full PII address to stdout / log shippers. */
+export function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const head = local[0] ?? "";
+  return `${head}***@${domain}`;
+}
+
+function fromAddress(envVar: string | undefined, provider: string): string {
+  if (envVar && envVar.trim()) return envVar.trim();
+  console.warn(
+    `[email] ${provider}: from-address env var unset — falling back to ${DEFAULT_FROM}. ` +
+      `Set the *_FROM_EMAIL var to a DKIM-verified address or sends will be rejected.`,
+  );
+  return DEFAULT_FROM;
+}
+
+async function postWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function sendEmailViaSendGrid(to: string, subject: string, html: string): Promise<boolean> {
   const apiKey = process.env.SENDGRID_API_KEY;
   if (!apiKey) return false;
 
   try {
-    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    const response = await postWithTimeout("https://api.sendgrid.com/v3/mail/send", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -17,13 +61,25 @@ async function sendEmailViaSendGrid(to: string, subject: string, html: string): 
       },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: to }] }],
-        from: { email: process.env.SENDGRID_FROM_EMAIL || "noreply@leadmarket.io" },
+        from: { email: fromAddress(process.env.SENDGRID_FROM_EMAIL, "sendgrid") },
         subject,
         content: [{ type: "text/html", value: html }],
       }),
     });
-    return response.ok;
-  } catch {
+    if (!response.ok) {
+      // 401 = bad key, 403 = unverified sender (the DKIM trap), 413 =
+      // payload too large, 429 = rate limited. Surface the status + a
+      // short body so the operator knows which.
+      const body = (await response.text().catch(() => "")).slice(0, 500);
+      logError(
+        "email.sendgrid non-OK",
+        new Error(`HTTP ${response.status} to ${maskEmail(to)}: ${body}`),
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logError(`email.sendgrid failed to ${maskEmail(to)}`, err);
     return false;
   }
 }
@@ -33,21 +89,30 @@ async function sendEmailViaResend(to: string, subject: string, html: string): Pr
   if (!apiKey) return false;
 
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await postWithTimeout("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: process.env.RESEND_FROM_EMAIL || "noreply@leadmarket.io",
+        from: fromAddress(process.env.RESEND_FROM_EMAIL, "resend"),
         to: [to],
         subject,
         html,
       }),
     });
-    return response.ok;
-  } catch {
+    if (!response.ok) {
+      const body = (await response.text().catch(() => "")).slice(0, 500);
+      logError(
+        "email.resend non-OK",
+        new Error(`HTTP ${response.status} to ${maskEmail(to)}: ${body}`),
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logError(`email.resend failed to ${maskEmail(to)}`, err);
     return false;
   }
 }
@@ -60,8 +125,9 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
   if (process.env.RESEND_API_KEY) {
     return sendEmailViaResend(to, subject, html);
   }
-  // Log but don't fail if no email service is configured
-  console.log(`[Email] Would send to ${to}: ${subject} (no email service configured)`);
+  // No provider configured — dev/CI. Log at info so a developer wondering
+  // "why didn't the email send" sees it, but don't treat it as an error.
+  console.log(`[email] no provider configured — would send to ${maskEmail(to)}: ${subject}`);
   return false;
 }
 
