@@ -31,6 +31,9 @@ const PUBLIC_PAGES = [
   { path: "/terms", expected: `Terms of Service · ${APP}` },
   { path: "/cookies", expected: `Cookie Policy · ${APP}` },
   { path: "/tcpa-compliance", expected: `TCPA Compliance · ${APP}` },
+  // Public cert-verification tool — buyers/auditors land here from a
+  // link in a seller's compliance certificate.
+  { path: "/verify", expected: `Verify certificate · ${APP}` },
   // 404 page also gets its own title — useful when a bad link lands
   // in a tab and the user wants to know which tab is the broken one.
   { path: "/this-route-does-not-exist", expected: `Page not found · ${APP}` },
