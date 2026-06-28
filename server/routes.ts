@@ -343,7 +343,7 @@ export async function registerRoutes(
   // the rest so log lines don't interleave with data-retention sweeps.
   startIdempotencyPruneCron();
   // Load any persisted calibrated weights, then schedule weekly recalibration.
-  loadPersistedCalibration().catch(() => {});
+  loadPersistedCalibration().catch(err => logError("[mediscore] load-at-boot error:", err));
   startMediscoreCalibrationCron();
 
   // ──────────────────────────────────────────────────────
@@ -919,10 +919,15 @@ export async function registerRoutes(
   });
 
   // Live market demand snapshot + surge index (for buyer transparency).
-  app.get("/api/pricing/demand", async (req: any, res) => {
+  // Authenticated: recent order volume / lead counts are sensitive business
+  // metrics that shouldn't be exposed to anonymous clients.
+  app.get("/api/pricing/demand", isAuthenticated, async (req: any, res) => {
     try {
-      const snap = await storage.getMarketDemandSnapshot();
-      res.json({ ...snap, demandIndex: computeDemandIndex(snap.recentOrders, snap.availableLeads) });
+      // Optional window override, validated to a sane 1h..168h (7d) range.
+      const raw = Number(req.query.windowHours);
+      const windowHours = Number.isFinite(raw) ? Math.min(168, Math.max(1, Math.round(raw))) : undefined;
+      const snap = await storage.getMarketDemandSnapshot(windowHours);
+      res.json({ ...snap, windowHours: windowHours ?? 24, demandIndex: computeDemandIndex(snap.recentOrders, snap.availableLeads) });
     } catch (error) {
       logError("Error computing demand index:", error);
       res.status(500).json({ message: "Failed to compute demand index" });
@@ -968,9 +973,14 @@ export async function registerRoutes(
       if (consent && houseVendorId && b.phone && b.zip && age >= 18 && String(b.state).length === 2) {
         const vendor = await storage.getVendor(houseVendorId);
         if (vendor) {
+          // All quote-tool interests are Medicare product lines; PDP shoppers
+          // are MA-adjacent (MA-PD bundles drug coverage), so they and the
+          // "not sure yet" default map to Medicare Advantage. We never default
+          // to Final Expense (a different, life-insurance product line).
           const typeMap: Record<string, "Medicare Advantage" | "Medicare Supplement" | "Final Expense"> = {
             Medigap: "Medicare Supplement",
             "Medicare Advantage": "Medicare Advantage",
+            "Part D (PDP)": "Medicare Advantage",
           };
           const leadType = typeMap[String(b.interest)] ?? "Medicare Advantage";
           const parsed = vendorLeadIngestSchema.safeParse({
@@ -986,10 +996,15 @@ export async function registerRoutes(
             consumerEmail: b.email ? String(b.email) : undefined,
           });
           if (parsed.success) {
-            await ingestLeadForVendor({ id: vendor.id, name: vendor.name, orgId: null }, parsed.data).catch(err =>
-              logError("[quote] capture error:", err),
-            );
-            captured = true;
+            // Only report capture when ingestion actually succeeds (201).
+            try {
+              const ingest = await ingestLeadForVendor({ id: vendor.id, name: vendor.name, orgId: null }, parsed.data);
+              captured = ingest.status === 201;
+            } catch (err) {
+              logError("[quote] capture error:", err);
+            }
+          } else {
+            logError("[quote] lead validation failed:", parsed.error);
           }
         }
       }
