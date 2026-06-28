@@ -30,6 +30,13 @@ export interface TwilioResult {
   raw?: unknown;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+function requestTimeoutMs(): number {
+  const raw = Number(process.env.TWILIO_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
 function isLive(): boolean {
   return Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
 }
@@ -38,6 +45,59 @@ function fakeUuid(): string {
   // deterministic-ish stub id — uses time + crypto bytes so unit tests can
   // still pass-through and assert prefix only.
   return crypto.randomBytes(8).toString("hex");
+}
+
+async function twilioFetch(url: string, sid: string, token: string, body: URLSearchParams): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutMs = requestTimeoutMs();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+      },
+      body: body.toString(),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // Surface a timeout as a clear, Twilio-specific error so callers
+    // (and logs) can distinguish "Twilio is slow" from a generic
+    // network failure — useful for retry decisions and alerting.
+    if (controller.signal.aborted) {
+      throw new Error(`twilio request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Resolve the TwiML Url for an outbound call.
+ *
+ * In stub mode this is never called. In LIVE mode we REFUSE to fall back
+ * to Twilio's demo TwiML (http://demo.twilio.com/docs/voice.xml): a real
+ * outbound call against that URL connects the consumer to Twilio's demo
+ * recording ("thanks for trying our documentation…") rather than bridging
+ * the agent — a billable call that does nothing useful, and arguably an
+ * unsolicited contact playing unrelated audio. Better to fail with a clear
+ * config error than place a demo call to a real consumer.
+ *
+ * Operators wire this by either passing callbackUrl per-call or setting
+ * TWILIO_VOICE_TWIML_URL to an endpoint that returns <Dial> TwiML bridging
+ * the agent.
+ */
+function resolveVoiceUrl(callbackUrl?: string): string {
+  const url = callbackUrl || process.env.TWILIO_VOICE_TWIML_URL;
+  if (!url) {
+    throw new Error(
+      "twilio: no TwiML URL configured — set TWILIO_VOICE_TWIML_URL (or pass callbackUrl) " +
+        "to a <Dial> endpoint. Refusing to place a call against Twilio's demo TwiML.",
+    );
+  }
+  return url;
 }
 
 export async function startCall(params: StartCallParams): Promise<TwilioResult> {
@@ -52,16 +112,14 @@ export async function startCall(params: StartCallParams): Promise<TwilioResult> 
   const body = new URLSearchParams({
     To: params.toPhone,
     From: from,
-    Url: params.callbackUrl ?? "http://demo.twilio.com/docs/voice.xml",
+    Url: resolveVoiceUrl(params.callbackUrl),
   });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-    },
-    body: body.toString(),
-  });
+  const res = await twilioFetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
+    sid,
+    token,
+    body,
+  );
   if (!res.ok) throw new Error(`twilio call HTTP ${res.status}: ${await res.text()}`);
   const data: any = await res.json();
   return { sid: data.sid, status: data.status ?? "queued", raw: data };
@@ -81,14 +139,12 @@ export async function sendSms(params: SendSmsParams): Promise<TwilioResult> {
     From: from,
     Body: params.body,
   });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-    },
-    body: body.toString(),
-  });
+  const res = await twilioFetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+    sid,
+    token,
+    body,
+  );
   if (!res.ok) throw new Error(`twilio sms HTTP ${res.status}: ${await res.text()}`);
   const data: any = await res.json();
   return { sid: data.sid, status: data.status ?? "queued", raw: data };
