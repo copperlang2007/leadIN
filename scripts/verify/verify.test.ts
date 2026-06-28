@@ -3,6 +3,8 @@ import { verifyOidc } from "./verify-oidc";
 import { verifyStripe } from "./verify-stripe";
 import { verifyTwilio } from "./verify-twilio";
 import { verifyNipr } from "./verify-nipr";
+import { verifyEmail } from "./verify-email";
+import { verifyTrustedForm } from "./verify-trustedform";
 import { formatResult } from "./_shared";
 
 // Offline tests: prove that each probe skips cleanly when its required
@@ -63,6 +65,18 @@ describe("verify probes — offline skip paths", () => {
     const r = await withClearedEnv(["NIPR_API_KEY"], () => verifyNipr());
     expect(r.outcome).toBe("skip");
     expect(r.service).toBe("nipr");
+  });
+
+  it("verifyEmail skips when neither provider key is set", async () => {
+    const r = await withClearedEnv(["SENDGRID_API_KEY", "RESEND_API_KEY"], () => verifyEmail());
+    expect(r.outcome).toBe("skip");
+    expect(r.service).toBe("email");
+  });
+
+  it("verifyTrustedForm skips when TRUSTEDFORM_API_KEY is unset", async () => {
+    const r = await withClearedEnv(["TRUSTEDFORM_API_KEY"], () => verifyTrustedForm());
+    expect(r.outcome).toBe("skip");
+    expect(r.service).toBe("trustedform");
   });
 });
 

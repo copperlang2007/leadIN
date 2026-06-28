@@ -11,6 +11,8 @@ import { verifyOidc } from "./verify-oidc";
 import { verifyStripe } from "./verify-stripe";
 import { verifyTwilio } from "./verify-twilio";
 import { verifyNipr } from "./verify-nipr";
+import { verifyEmail } from "./verify-email";
+import { verifyTrustedForm } from "./verify-trustedform";
 import { formatResult, type VerifyResult } from "./_shared";
 
 async function runAll(): Promise<void> {
@@ -20,6 +22,8 @@ async function runAll(): Promise<void> {
     verifyStripe,
     verifyTwilio,
     verifyNipr,
+    verifyEmail,
+    verifyTrustedForm,
   ];
 
   const results = await Promise.all(probes.map((p) => p()));
