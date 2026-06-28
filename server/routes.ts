@@ -33,7 +33,7 @@ import { checkDnc } from "./dncCompliance";
 import { verifyTrustedFormCert } from "./trustedForm";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
-import { priceLead } from "./intentPricing";
+import { priceLead, computeDemandIndex } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
 import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
 import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
@@ -894,13 +894,19 @@ export async function registerRoutes(
   app.post("/api/pricing/quote", isAuthenticated, async (req: any, res) => {
     try {
       const { basePrice, mediscore, intentScore, exclusivity, demandIndex, floor, ceiling } = req.body ?? {};
+      // When the caller doesn't pin a demandIndex, surge with the live market.
+      let demand = demandIndex === undefined ? undefined : Number(demandIndex);
+      if (demand === undefined) {
+        const snap = await storage.getMarketDemandSnapshot();
+        demand = computeDemandIndex(snap.recentOrders, snap.availableLeads);
+      }
       res.json(
         priceLead({
           basePrice: Number(basePrice) || 0,
           mediscore: Number(mediscore) || 0,
           intentScore: Number(intentScore) || 0,
           exclusivity: String(exclusivity ?? "Shared"),
-          demandIndex: demandIndex === undefined ? undefined : Number(demandIndex),
+          demandIndex: demand,
           floor: floor === undefined ? undefined : Number(floor),
           ceiling: ceiling === undefined ? undefined : Number(ceiling),
         }),
@@ -908,6 +914,17 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error computing price quote:", error);
       res.status(500).json({ message: "Failed to compute price quote" });
+    }
+  });
+
+  // Live market demand snapshot + surge index (for buyer transparency).
+  app.get("/api/pricing/demand", async (req: any, res) => {
+    try {
+      const snap = await storage.getMarketDemandSnapshot();
+      res.json({ ...snap, demandIndex: computeDemandIndex(snap.recentOrders, snap.availableLeads) });
+    } catch (error) {
+      logError("Error computing demand index:", error);
+      res.status(500).json({ message: "Failed to compute demand index" });
     }
   });
 
