@@ -206,6 +206,14 @@ async function ingestLeadForVendor(
     const result = await verifyTrustedFormCert(data.trustedFormCertUrl);
     if (result.ok && result.certId) {
       tcpa = { tcpaVerifiedAt: new Date(), tcpaCertId: result.certId, tcpaVerifiedSource: "trustedform" };
+    } else if (result.error && result.error !== "TRUSTEDFORM_API_KEY not configured") {
+      // The lead still ingests as vendor-claimed-but-unverified — but a
+      // verification FAILURE (rejected cert, bad key, expired cert, network
+      // error) is materially different from "no key configured in dev", and
+      // was previously dropped silently. Surface it so an operator can tell
+      // a misconfigured TrustedForm key / a vendor sending junk certs from
+      // a healthy unverified-by-design flow.
+      logError("trustedform verification failed", new Error(result.error));
     }
   }
 
