@@ -136,4 +136,24 @@ describe("twilio live backend", () => {
     expect(res.sid).toBe("SM1");
     expect(calledUrl).toContain("/Messages.json");
   });
+
+  it("surfaces an aborted request as a clear twilio-timeout error", async () => {
+    process.env.TWILIO_VOICE_TWIML_URL = "https://app.example/twiml/dial";
+    process.env.TWILIO_TIMEOUT_MS = "10";
+    // fetch that only rejects when its abort signal fires — mimics a
+    // hung connection that the AbortController times out.
+    global.fetch = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const e = new Error("aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        }),
+    );
+    await expect(
+      startCall({ fromAgentId: "u1", toPhone: "+15555550100" }),
+    ).rejects.toThrow(/timed out after 10ms/);
+  });
 });

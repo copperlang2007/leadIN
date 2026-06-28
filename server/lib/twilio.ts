@@ -30,7 +30,12 @@ export interface TwilioResult {
   raw?: unknown;
 }
 
-const REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+function requestTimeoutMs(): number {
+  const raw = Number(process.env.TWILIO_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REQUEST_TIMEOUT_MS;
+}
 
 function isLive(): boolean {
   return Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
@@ -44,7 +49,8 @@ function fakeUuid(): string {
 
 async function twilioFetch(url: string, sid: string, token: string, body: URLSearchParams): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutMs = requestTimeoutMs();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
       method: "POST",
@@ -55,6 +61,14 @@ async function twilioFetch(url: string, sid: string, token: string, body: URLSea
       body: body.toString(),
       signal: controller.signal,
     });
+  } catch (err) {
+    // Surface a timeout as a clear, Twilio-specific error so callers
+    // (and logs) can distinguish "Twilio is slow" from a generic
+    // network failure — useful for retry decisions and alerting.
+    if (controller.signal.aborted) {
+      throw new Error(`twilio request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
