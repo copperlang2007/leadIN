@@ -18,6 +18,9 @@ import {
   savedListItems,
   vendorBalances,
   vendorPayouts,
+  mediscoreWeights,
+  type MediscoreWeightsRow,
+  type InsertMediscoreWeights,
   leadDisputes,
   tcpaPolicies,
   tcpaClaims,
@@ -279,6 +282,10 @@ export interface IStorage {
     entries: { vendorId: number; amountCents: number; payoutId: number }[];
   }>;
   getVendorPayoutLog(vendorId: number, limit?: number): Promise<VendorPayout[]>;
+
+  // MediScore calibrated weights (durable, versioned)
+  getLatestMediscoreWeights(): Promise<MediscoreWeightsRow | undefined>;
+  saveMediscoreWeights(data: InsertMediscoreWeights): Promise<MediscoreWeightsRow>;
 
   // ──────────────────────────────────────────────────────
   // Wave 4: buyer-filed disputes + refunds
@@ -2153,6 +2160,20 @@ export class DatabaseStorage implements IStorage {
       .where(eq(vendorPayouts.vendorId, vendorId))
       .orderBy(desc(vendorPayouts.createdAt))
       .limit(limit);
+  }
+
+  async getLatestMediscoreWeights(): Promise<MediscoreWeightsRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(mediscoreWeights)
+      .orderBy(desc(mediscoreWeights.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async saveMediscoreWeights(data: InsertMediscoreWeights): Promise<MediscoreWeightsRow> {
+    const [row] = await db.insert(mediscoreWeights).values(data).returning();
+    return row;
   }
 
   // ──────────────────────────────────────────────────────

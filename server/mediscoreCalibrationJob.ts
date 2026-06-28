@@ -22,6 +22,7 @@ import {
 } from "./mediscoreCalibration";
 import { setActiveCalibratedWeights } from "./mediscoreActiveWeights";
 import { registerCron } from "./lib/cronRegistry";
+import { storage } from "./storage";
 
 export interface OutcomeRow {
   /** The persisted MediScore breakdown's signal hits for this lead. */
@@ -113,11 +114,42 @@ export async function runMediscoreCalibration(): Promise<CalibrationJobResult | 
 
   const result = computeCalibrationFromOutcomes(rows);
   setActiveCalibratedWeights(result.weights);
+
+  // Persist durably so the learned weights survive restarts and are shared
+  // across instances (best-effort; the in-memory holder is already updated).
+  await storage
+    .saveMediscoreWeights({
+      weights: result.weights,
+      sampleSize: result.sampleSize,
+      conversions: result.conversions,
+      baseRate: String(result.calibration.baseRate),
+    })
+    .catch(err => console.error("[mediscore-calibration] persist error:", err?.message));
+
   console.log(
     `[mediscore-calibration] trained on ${result.sampleSize} leads (${result.conversions} conversions); ` +
-      `installed calibrated weights.`,
+      `installed + persisted calibrated weights.`,
   );
   return result;
+}
+
+/**
+ * Load the most recent persisted calibrated weights into the active holder.
+ * Called at boot so learned weights survive restarts. No-op (and silent) when
+ * nothing has been persisted yet — scoring falls back to base weights.
+ */
+export async function loadPersistedCalibration(): Promise<boolean> {
+  try {
+    const row = await storage.getLatestMediscoreWeights();
+    if (row && row.weights && typeof row.weights === "object") {
+      setActiveCalibratedWeights(row.weights as Record<string, number>);
+      console.log(`[mediscore-calibration] loaded persisted weights from ${row.createdAt?.toISOString?.() ?? "db"}.`);
+      return true;
+    }
+  } catch (err: any) {
+    console.error("[mediscore-calibration] load error:", err?.message);
+  }
+  return false;
 }
 
 export function startMediscoreCalibrationCron(): void {

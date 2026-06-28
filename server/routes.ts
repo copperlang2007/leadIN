@@ -37,7 +37,7 @@ import { priceLead } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
 import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
 import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
-import { runMediscoreCalibration, startMediscoreCalibrationCron } from "./mediscoreCalibrationJob";
+import { runMediscoreCalibration, startMediscoreCalibrationCron, loadPersistedCalibration } from "./mediscoreCalibrationJob";
 import { getActiveCalibratedWeightsMeta } from "./mediscoreActiveWeights";
 import { createHash } from "node:crypto";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
@@ -341,7 +341,8 @@ export async function registerRoutes(
   // Drop webhook_idempotency rows older than 7d. Sits at 04:00 after
   // the rest so log lines don't interleave with data-retention sweeps.
   startIdempotencyPruneCron();
-  // Weekly MediScore calibration: learn signal weights from conversions.
+  // Load any persisted calibrated weights, then schedule weekly recalibration.
+  loadPersistedCalibration().catch(() => {});
   startMediscoreCalibrationCron();
 
   // ──────────────────────────────────────────────────────
