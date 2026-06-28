@@ -54,7 +54,11 @@ async function verifySendGrid(apiKey: string): Promise<VerifyResult> {
   return {
     service: "email",
     outcome: "pass",
-    detail: `sendgrid auth ok${verifiedCount !== null ? `, ${verifiedCount} verified sender(s)` : ""}`,
+    // verified_senders isn't paginated through here — the count reflects
+    // the first page. It's only used to distinguish "some" from "zero"
+    // (the DKIM trap), so first-page presence is sufficient; we say
+    // "≥" to avoid implying it's the exact total.
+    detail: `sendgrid auth ok${verifiedCount !== null ? `, ≥${verifiedCount} verified sender(s)` : ""}`,
   };
 }
 
@@ -75,8 +79,17 @@ async function verifyResend(apiKey: string): Promise<VerifyResult> {
   }
   const body = (await res.json()) as { data?: Array<{ status?: string }> };
   const domains = body.data ?? [];
+  if (domains.length === 0) {
+    // Auth works but no sending domain exists — sends will fall back to
+    // an unverified address and fail. That's a misconfig, not a pass.
+    return {
+      service: "email",
+      outcome: "fail",
+      detail: "resend auth ok but NO sending domains configured — add + verify one in Resend",
+    };
+  }
   const verified = domains.filter((d) => d.status === "verified").length;
-  if (domains.length > 0 && verified === 0) {
+  if (verified === 0) {
     return {
       service: "email",
       outcome: "fail",

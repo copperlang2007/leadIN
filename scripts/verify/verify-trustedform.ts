@@ -3,9 +3,10 @@
 //
 // TrustedForm has no "account" resource to ping, so we probe the cert
 // endpoint with a sentinel (non-existent) cert id:
-//   - 401  → the API key is rejected (real failure)
-//   - 404 / 4xx-not-401 → auth succeeded, the cert just doesn't exist
-//     (exactly what we expect for a sentinel) → the key works
+//   - 401 → the API key is rejected (fail)
+//   - 403 → key authenticated but lacks cert-read permission (fail)
+//   - 404 / any other status → auth succeeded, the cert just doesn't
+//     exist (exactly what we expect for a sentinel) → the key works
 //
 // Skips cleanly if TRUSTEDFORM_API_KEY is unset. Run via
 // `npm run verify:trustedform`.
