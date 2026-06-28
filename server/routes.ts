@@ -30,7 +30,7 @@ import { notifyUsersAboutNewLead } from "./emailNotifications";
 import { getUncachableStripeClient } from "./stripeClient";
 import { startContentEngine, generateAndPublishArticle } from "./contentGeneration";
 import { checkDnc } from "./dncCompliance";
-import { verifyTrustedFormCert } from "./trustedForm";
+import { verifyTrustedFormCert, ERR_NO_API_KEY as TRUSTEDFORM_ERR_NO_API_KEY } from "./trustedForm";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
 import { priceLead, computeDemandIndex } from "./intentPricing";
@@ -206,14 +206,17 @@ async function ingestLeadForVendor(
     const result = await verifyTrustedFormCert(data.trustedFormCertUrl);
     if (result.ok && result.certId) {
       tcpa = { tcpaVerifiedAt: new Date(), tcpaCertId: result.certId, tcpaVerifiedSource: "trustedform" };
-    } else if (result.error && result.error !== "TRUSTEDFORM_API_KEY not configured") {
+    } else if (result.error && result.error !== TRUSTEDFORM_ERR_NO_API_KEY) {
       // The lead still ingests as vendor-claimed-but-unverified — but a
       // verification FAILURE (rejected cert, bad key, expired cert, network
       // error) is materially different from "no key configured in dev", and
-      // was previously dropped silently. Surface it so an operator can tell
-      // a misconfigured TrustedForm key / a vendor sending junk certs from
-      // a healthy unverified-by-design flow.
-      logError("trustedform verification failed", new Error(result.error));
+      // was previously dropped silently. Surface it WITH vendor context so
+      // an operator can tell a misconfigured TrustedForm key / a specific
+      // vendor sending junk certs from a healthy unverified-by-design flow.
+      logError(
+        `trustedform verification failed (vendor ${vendor.id})`,
+        new Error(result.error),
+      );
     }
   }
 
