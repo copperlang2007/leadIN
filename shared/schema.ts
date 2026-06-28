@@ -2402,3 +2402,22 @@ export const insertLeadOptionContractSchema = createInsertSchema(leadOptionContr
 export const insertDirectMailOrderSchema = createInsertSchema(directMailOrders);
 export const insertCarrierDirectPipelineSchema = createInsertSchema(carrierDirectPipelines);
 export const insertLanguagePackSchema = createInsertSchema(languagePacks);
+
+// Durable, versioned MediScore calibrated weights. The calibration job appends
+// a new row each run; the app loads the latest at boot so learned weights
+// survive restarts and are shared across instances (replacing the in-memory-only
+// holder as the source of truth).
+export const mediscoreWeights = pgTable("mediscore_weights", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  weights: jsonb("weights").notNull(), // Record<signalKey, number>
+  sampleSize: integer("sample_size").notNull().default(0),
+  conversions: integer("conversions").notNull().default(0),
+  baseRate: decimal("base_rate", { precision: 6, scale: 5 }),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_mediscore_weights_created").on(table.createdAt),
+]);
+
+export type MediscoreWeightsRow = typeof mediscoreWeights.$inferSelect;
+export type InsertMediscoreWeights = typeof mediscoreWeights.$inferInsert;
+export const insertMediscoreWeightsSchema = createInsertSchema(mediscoreWeights);

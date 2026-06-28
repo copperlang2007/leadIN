@@ -50,6 +50,13 @@
       "when": 1781543090135,
       "tag": "0006_webhook_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782646110761,
+      "tag": "0007_famous_sasquatch",
+      "breakpoints": true
     }
   ]
 }

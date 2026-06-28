@@ -18,6 +18,9 @@ import {
   savedListItems,
   vendorBalances,
   vendorPayouts,
+  mediscoreWeights,
+  type MediscoreWeightsRow,
+  type InsertMediscoreWeights,
   leadDisputes,
   tcpaPolicies,
   tcpaClaims,
@@ -187,6 +190,12 @@ export interface IStorage {
     ingestedToday: number;
     verificationPassRate: number;
   }>;
+  // Live supply/demand snapshot for surge pricing: recent purchases (demand)
+  // vs currently-available leads (supply).
+  getMarketDemandSnapshot(windowHours?: number): Promise<{
+    recentOrders: number;
+    availableLeads: number;
+  }>;
   getAllLeadsAdmin(): Promise<(Lead & { vendor: Vendor })[]>;
   setUserRole(userId: string, role: string): Promise<User>;
 
@@ -279,6 +288,10 @@ export interface IStorage {
     entries: { vendorId: number; amountCents: number; payoutId: number }[];
   }>;
   getVendorPayoutLog(vendorId: number, limit?: number): Promise<VendorPayout[]>;
+
+  // MediScore calibrated weights (durable, versioned)
+  getLatestMediscoreWeights(): Promise<MediscoreWeightsRow | undefined>;
+  saveMediscoreWeights(data: InsertMediscoreWeights): Promise<MediscoreWeightsRow>;
 
   // ──────────────────────────────────────────────────────
   // Wave 4: buyer-filed disputes + refunds
@@ -2153,6 +2166,33 @@ export class DatabaseStorage implements IStorage {
       .where(eq(vendorPayouts.vendorId, vendorId))
       .orderBy(desc(vendorPayouts.createdAt))
       .limit(limit);
+  }
+
+  async getMarketDemandSnapshot(windowHours: number = 24): Promise<{ recentOrders: number; availableLeads: number }> {
+    const cutoff = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    const [recent] = await db
+      .select({ count: count() })
+      .from(orders)
+      .where(sql`${orders.createdAt} > ${cutoff}`);
+    const [available] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(and(eq(leads.sold, false), eq(leads.removed, false)));
+    return { recentOrders: recent?.count ?? 0, availableLeads: available?.count ?? 0 };
+  }
+
+  async getLatestMediscoreWeights(): Promise<MediscoreWeightsRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(mediscoreWeights)
+      .orderBy(desc(mediscoreWeights.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async saveMediscoreWeights(data: InsertMediscoreWeights): Promise<MediscoreWeightsRow> {
+    const [row] = await db.insert(mediscoreWeights).values(data).returning();
+    return row;
   }
 
   // ──────────────────────────────────────────────────────

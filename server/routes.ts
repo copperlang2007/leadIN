@@ -33,11 +33,12 @@ import { checkDnc } from "./dncCompliance";
 import { verifyTrustedFormCert } from "./trustedForm";
 import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
-import { priceLead } from "./intentPricing";
+import { priceLead, computeDemandIndex } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
+import { evaluateQuote, type PlanType } from "./quoteEngine";
 import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
 import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
-import { runMediscoreCalibration, startMediscoreCalibrationCron } from "./mediscoreCalibrationJob";
+import { runMediscoreCalibration, startMediscoreCalibrationCron, loadPersistedCalibration } from "./mediscoreCalibrationJob";
 import { getActiveCalibratedWeightsMeta } from "./mediscoreActiveWeights";
 import { createHash } from "node:crypto";
 import { startSeoSignalCron, refreshKeywordSignals, getTopOpportunityKeywords } from "./seoSignals";
@@ -341,7 +342,8 @@ export async function registerRoutes(
   // Drop webhook_idempotency rows older than 7d. Sits at 04:00 after
   // the rest so log lines don't interleave with data-retention sweeps.
   startIdempotencyPruneCron();
-  // Weekly MediScore calibration: learn signal weights from conversions.
+  // Load any persisted calibrated weights, then schedule weekly recalibration.
+  loadPersistedCalibration().catch(err => logError("[mediscore] load-at-boot error:", err));
   startMediscoreCalibrationCron();
 
   // ──────────────────────────────────────────────────────
@@ -893,13 +895,19 @@ export async function registerRoutes(
   app.post("/api/pricing/quote", isAuthenticated, async (req: any, res) => {
     try {
       const { basePrice, mediscore, intentScore, exclusivity, demandIndex, floor, ceiling } = req.body ?? {};
+      // When the caller doesn't pin a demandIndex, surge with the live market.
+      let demand = demandIndex === undefined ? undefined : Number(demandIndex);
+      if (demand === undefined) {
+        const snap = await storage.getMarketDemandSnapshot();
+        demand = computeDemandIndex(snap.recentOrders, snap.availableLeads);
+      }
       res.json(
         priceLead({
           basePrice: Number(basePrice) || 0,
           mediscore: Number(mediscore) || 0,
           intentScore: Number(intentScore) || 0,
           exclusivity: String(exclusivity ?? "Shared"),
-          demandIndex: demandIndex === undefined ? undefined : Number(demandIndex),
+          demandIndex: demand,
           floor: floor === undefined ? undefined : Number(floor),
           ceiling: ceiling === undefined ? undefined : Number(ceiling),
         }),
@@ -907,6 +915,22 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error computing price quote:", error);
       res.status(500).json({ message: "Failed to compute price quote" });
+    }
+  });
+
+  // Live market demand snapshot + surge index (for buyer transparency).
+  // Authenticated: recent order volume / lead counts are sensitive business
+  // metrics that shouldn't be exposed to anonymous clients.
+  app.get("/api/pricing/demand", isAuthenticated, async (req: any, res) => {
+    try {
+      // Optional window override, validated to a sane 1h..168h (7d) range.
+      const raw = Number(req.query.windowHours);
+      const windowHours = Number.isFinite(raw) ? Math.min(168, Math.max(1, Math.round(raw))) : undefined;
+      const snap = await storage.getMarketDemandSnapshot(windowHours);
+      res.json({ ...snap, windowHours: windowHours ?? 24, demandIndex: computeDemandIndex(snap.recentOrders, snap.availableLeads) });
+    } catch (error) {
+      logError("Error computing demand index:", error);
+      res.status(500).json({ message: "Failed to compute demand index" });
     }
   });
 
@@ -918,6 +942,77 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error checking calling hours:", error);
       res.status(500).json({ message: "Failed to check calling hours" });
+    }
+  });
+
+  // Public quote-tool lead magnet: returns an instant eligibility + plan-match
+  // result, and (when the consumer consents and a house vendor is configured)
+  // captures a consented, source-attributed lead via the shared pipeline.
+  app.post("/api/quote", async (req: any, res) => {
+    try {
+      const b = req.body ?? {};
+      const result = evaluateQuote({
+        age: b.age === undefined ? undefined : Number(b.age),
+        dob: b.dob ? String(b.dob) : undefined,
+        state: String(b.state ?? ""),
+        zip: b.zip ? String(b.zip) : undefined,
+        currentlyOnMedicare: !!b.currentlyOnMedicare,
+        interest: b.interest as PlanType | undefined,
+        lowIncome: !!b.lowIncome,
+        chronicConditions: !!b.chronicConditions,
+        movedRecently: !!b.movedRecently,
+        lostCoverage: !!b.lostCoverage,
+      });
+
+      // Best-effort consented capture. Never let a capture failure break the
+      // consumer-facing quote response.
+      let captured = false;
+      const houseVendorId = Number(process.env.QUOTE_TOOL_VENDOR_ID) || 0;
+      const age = Number(b.age) || 0;
+      const consent = !!b.consent;
+      if (consent && houseVendorId && b.phone && b.zip && age >= 18 && String(b.state).length === 2) {
+        const vendor = await storage.getVendor(houseVendorId);
+        if (vendor) {
+          // All quote-tool interests are Medicare product lines; PDP shoppers
+          // are MA-adjacent (MA-PD bundles drug coverage), so they and the
+          // "not sure yet" default map to Medicare Advantage. We never default
+          // to Final Expense (a different, life-insurance product line).
+          const typeMap: Record<string, "Medicare Advantage" | "Medicare Supplement" | "Final Expense"> = {
+            Medigap: "Medicare Supplement",
+            "Medicare Advantage": "Medicare Advantage",
+            "Part D (PDP)": "Medicare Advantage",
+          };
+          const leadType = typeMap[String(b.interest)] ?? "Medicare Advantage";
+          const parsed = vendorLeadIngestSchema.safeParse({
+            type: leadType,
+            source: `Quote Tool${b.utmSource ? ` / ${String(b.utmSource).slice(0, 40)}` : ""}`,
+            exclusivity: "Exclusive",
+            price: Number(process.env.QUOTE_TOOL_PRICE) || 25,
+            consumerAge: age,
+            state: String(b.state).toUpperCase(),
+            zipCode: String(b.zip),
+            consumerName: b.name ? String(b.name) : undefined,
+            consumerPhone: String(b.phone),
+            consumerEmail: b.email ? String(b.email) : undefined,
+          });
+          if (parsed.success) {
+            // Only report capture when ingestion actually succeeds (201).
+            try {
+              const ingest = await ingestLeadForVendor({ id: vendor.id, name: vendor.name, orgId: null }, parsed.data);
+              captured = ingest.status === 201;
+            } catch (err) {
+              logError("[quote] capture error:", err);
+            }
+          } else {
+            logError("[quote] lead validation failed:", parsed.error);
+          }
+        }
+      }
+
+      res.json({ ...result, captured });
+    } catch (error) {
+      logError("Error handling quote:", error);
+      res.status(500).json({ message: "Failed to compute quote" });
     }
   });
 
