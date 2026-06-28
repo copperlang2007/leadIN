@@ -18,6 +18,12 @@ interface VerifyResult {
 const MAX_CERT_AGE_SECONDS = 90 * 24 * 3600; // 90 days
 const REQUEST_TIMEOUT_MS = 10_000;
 
+// Exported so callers can distinguish the benign "TrustedForm is off in
+// this environment" case from a real verification failure without
+// re-hardcoding the message string (which would silently drift if this
+// module changed its wording).
+export const ERR_NO_API_KEY = "TRUSTEDFORM_API_KEY not configured";
+
 /**
  * Extract the cert token from a TrustedForm cert URL.
  * Cert URLs look like `https://cert.trustedform.com/<token>` — the id is the
@@ -39,7 +45,7 @@ function extractCertId(certUrl: string): string | null {
 export async function verifyTrustedFormCert(certUrl: string): Promise<VerifyResult> {
   const apiKey = process.env.TRUSTEDFORM_API_KEY;
   if (!apiKey) {
-    return { ok: false, error: "TRUSTEDFORM_API_KEY not configured" };
+    return { ok: false, error: ERR_NO_API_KEY };
   }
 
   const certId = extractCertId(certUrl);
