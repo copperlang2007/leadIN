@@ -35,6 +35,7 @@ import { recomputeAndPersistMediScore, computeMediScore } from "./mediscore";
 import { buildBuyerRoiReport, type RoiRecord } from "./buyerRoi";
 import { priceLead, computeDemandIndex } from "./intentPricing";
 import { isWithinCallingHours } from "./callingHours";
+import { evaluateQuote, type PlanType } from "./quoteEngine";
 import { issueCertificateForLead, verifyWithConfiguredKey } from "./complianceCertService";
 import { evaluatePing, verifyOffer, getPingPostSecret, type PingAttributes } from "./pingPost";
 import { runMediscoreCalibration, startMediscoreCalibrationCron, loadPersistedCalibration } from "./mediscoreCalibrationJob";
@@ -936,6 +937,67 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error checking calling hours:", error);
       res.status(500).json({ message: "Failed to check calling hours" });
+    }
+  });
+
+  // Public quote-tool lead magnet: returns an instant eligibility + plan-match
+  // result, and (when the consumer consents and a house vendor is configured)
+  // captures a consented, source-attributed lead via the shared pipeline.
+  app.post("/api/quote", async (req: any, res) => {
+    try {
+      const b = req.body ?? {};
+      const result = evaluateQuote({
+        age: b.age === undefined ? undefined : Number(b.age),
+        dob: b.dob ? String(b.dob) : undefined,
+        state: String(b.state ?? ""),
+        zip: b.zip ? String(b.zip) : undefined,
+        currentlyOnMedicare: !!b.currentlyOnMedicare,
+        interest: b.interest as PlanType | undefined,
+        lowIncome: !!b.lowIncome,
+        chronicConditions: !!b.chronicConditions,
+        movedRecently: !!b.movedRecently,
+        lostCoverage: !!b.lostCoverage,
+      });
+
+      // Best-effort consented capture. Never let a capture failure break the
+      // consumer-facing quote response.
+      let captured = false;
+      const houseVendorId = Number(process.env.QUOTE_TOOL_VENDOR_ID) || 0;
+      const age = Number(b.age) || 0;
+      const consent = !!b.consent;
+      if (consent && houseVendorId && b.phone && b.zip && age >= 18 && String(b.state).length === 2) {
+        const vendor = await storage.getVendor(houseVendorId);
+        if (vendor) {
+          const typeMap: Record<string, "Medicare Advantage" | "Medicare Supplement" | "Final Expense"> = {
+            Medigap: "Medicare Supplement",
+            "Medicare Advantage": "Medicare Advantage",
+          };
+          const leadType = typeMap[String(b.interest)] ?? "Medicare Advantage";
+          const parsed = vendorLeadIngestSchema.safeParse({
+            type: leadType,
+            source: `Quote Tool${b.utmSource ? ` / ${String(b.utmSource).slice(0, 40)}` : ""}`,
+            exclusivity: "Exclusive",
+            price: Number(process.env.QUOTE_TOOL_PRICE) || 25,
+            consumerAge: age,
+            state: String(b.state).toUpperCase(),
+            zipCode: String(b.zip),
+            consumerName: b.name ? String(b.name) : undefined,
+            consumerPhone: String(b.phone),
+            consumerEmail: b.email ? String(b.email) : undefined,
+          });
+          if (parsed.success) {
+            await ingestLeadForVendor({ id: vendor.id, name: vendor.name, orgId: null }, parsed.data).catch(err =>
+              logError("[quote] capture error:", err),
+            );
+            captured = true;
+          }
+        }
+      }
+
+      res.json({ ...result, captured });
+    } catch (error) {
+      logError("Error handling quote:", error);
+      res.status(500).json({ message: "Failed to compute quote" });
     }
   });
 
