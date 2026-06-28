@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ShieldCheck, ShieldX } from "lucide-react";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useCanonicalUrl } from "@/hooks/useCanonicalUrl";
 
 interface VerifyResponse {
   valid: boolean;
@@ -17,6 +18,11 @@ interface VerifyResponse {
 // untampered — no account or trust in the seller required.
 export default function VerifyCertificate() {
   useDocumentTitle("Verify certificate");
+  // Public, shareable page — buyers land here from a link in a
+  // seller's compliance cert. Fixed canonical (no token in the URL;
+  // the cert is pasted into the form) keeps utm-tagged shares from
+  // fragmenting into duplicate indexed URLs.
+  useCanonicalUrl("/verify");
   const [input, setInput] = useState("");
   const [result, setResult] = useState<VerifyResponse | null>(null);
   const [payload, setPayload] = useState<any | null>(null);
