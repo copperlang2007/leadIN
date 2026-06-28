@@ -25,6 +25,8 @@
     "verify:stripe": "tsx scripts/verify/verify-stripe.ts",
     "verify:twilio": "tsx scripts/verify/verify-twilio.ts",
     "verify:nipr": "tsx scripts/verify/verify-nipr.ts",
+    "verify:email": "tsx scripts/verify/verify-email.ts",
+    "verify:trustedform": "tsx scripts/verify/verify-trustedform.ts",
     "verify:all": "tsx scripts/verify/verify-all.ts"
   },
   "dependencies": {
