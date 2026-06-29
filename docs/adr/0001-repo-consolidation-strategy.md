@@ -31,6 +31,31 @@ reference counts, endpoint cross-checks, cert-algorithm reads). Pinned commits:
 | **medicarecallforge** | Compliance-first inbound-call intake + routing engine | **Python / FastAPI** | none (JSONL files) | ~30 | Active, self-declared pre-production |
 | **mediflowleadsgunter** | Healthcare inquiry-capture form | Express + flat JSON file | none | 3 | Stale since 2026-04-23 |
 
+### Methodology: definition of "wired" (reproducible)
+
+So future readers can reproduce the audit without re-deriving it, "wired" is
+defined precisely as follows:
+
+- **Unit of analysis:** each `export const <var> = pgTable("<name>", …)` in
+  `shared/schema.ts` (Drizzle ORM table definitions). Total counted by
+  `grep -cE 'export const \w+ = pgTable\('` → **104**.
+- **WIRED** = the table's JS variable (or its snake_case table-name literal in
+  raw SQL) is referenced by **at least one non-test server file** — every `.ts`
+  file under `server/` including `server/lib/` and `server/__integration__/`,
+  **excluding** `*.test.ts` and `shared/schema.ts` itself (73 files at the
+  pinned commit). A reference means use by the Drizzle query builder
+  (`db.select/insert/update/delete(...)` against the table) or a raw-SQL
+  table-name literal in a handler/service — not merely a type import.
+- **SCHEMA-ONLY** = zero such references. The 65 schema-only tables were
+  triple-checked for false negatives: (1) related identifiers
+  (`insert<Name>`, `<name>Schema`, `<name>Relations`, `select<Name>`),
+  (2) raw snake_case table-name string literals, (3) any reference in
+  `*.test.ts` — all three returned zero for all 65.
+- **Caveat:** "wired" here is "referenced by server code." For the 39 wired
+  tables, reference locations are overwhelmingly `storage.ts` CRUD, making
+  genuine query usage clear; a handful could be type-only, so treat 39 as a
+  ceiling and 65-unwired as the load-bearing, unambiguous result.
+
 ### Key verified findings
 
 1. **`leadmarket` and `lead-connect-pro` are the same product.** Both are
@@ -40,11 +65,9 @@ reference counts, endpoint cross-checks, cert-algorithm reads). Pinned commits:
    branch; `leadmarket` is a lean, fully-wired core.
 
 2. **LCP's schema substantially overstates the working app.** Of **104**
-   `pgTable` definitions, only **39 are wired**; **65 are schema-only** with
-   zero references outside `shared/schema.ts` (verified by reference count,
-   triple-checked for variable/type/raw-SQL/test references). Completeness must
-   be judged on the 39 wired tables / ~115 endpoints — still by far the largest
-   working app of the four.
+   `pgTable` definitions, only **39 are wired**; **65 are schema-only** (per the
+   methodology above). Completeness must be judged on the 39 wired tables /
+   ~115 endpoints — still by far the largest working app of the four.
 
 3. **`leadmarket` is NOT a strict subset of LCP.** It has three capabilities
    LCP lacks: a real in-app **notification center** (LCP's `notifications`
@@ -129,35 +152,53 @@ datastore. The commercial hub must be LCP; MCF is the engine it calls.
 
 ## Roadmap
 
+Each phase names an owning repo and a measurable exit criterion so the ADR is
+actionable for implementation planning.
+
 **Phase 0 — Freeze & label (now)**
-- Mark `mediflowleadsgunter` archived.
-- Add deprecation notice to `leadmarket` README pointing here.
+- Owner: `mediflowleadsgunter`, `leadmarket`.
+- Work: mark `mediflowleadsgunter` archived; add a deprecation notice to
+  `leadmarket` README pointing here.
+- Done when: `mediflowleadsgunter` is set to GitHub "Archived"; `leadmarket`
+  README links this ADR. No code merges land in either repo afterward.
 
 **Phase 1 — Harvest `leadmarket` into LCP**
-- Notification center (table semantics + `GET /notifications`,
-  `POST /notifications/:id/read`, `read-all`).
-- Admin user management (`GET /admin/users`, `POST /admin/users/:id/role` with
-  self-demotion guard).
-- Session lead-comparison (`GET`/`POST /leads/compare`).
-- Adopt `purchaseLead` compare-and-swap as the canonical pattern.
-- Then archive `leadmarket`.
+- Owner: `lead-connect-pro` (source: `leadmarket`).
+- Work: notification center (table semantics + `GET /notifications`,
+  `POST /notifications/:id/read`, `read-all`); admin user management
+  (`GET /admin/users`, `POST /admin/users/:id/role` with self-demotion guard);
+  session lead-comparison (`GET`/`POST /leads/compare`); adopt the
+  `purchaseLead` compare-and-swap as the canonical pattern.
+- Done when: all three capabilities ship in LCP behind tests (Vitest unit +
+  one Playwright/integration path each); the unique-vs-leadmarket gap list is
+  empty; `leadmarket` is then archived.
 
 **Phase 2 — Schema hygiene in LCP**
-- Prune or explicitly quarantine the 65 unwired tables and orphan service stubs
-  so `db:push` stops creating dead tables and "completeness" is honest.
+- Owner: `lead-connect-pro`.
+- Work: prune or explicitly quarantine the 65 unwired tables and orphan service
+  stubs.
+- Done when: re-running the wired census yields wired == defined (no
+  schema-only tables remain), or each retained-but-unwired table carries an
+  inline `// roadmap:` annotation and is excluded from `db:push`; `db:push`
+  creates zero dead tables.
 
 **Phase 3 — Wire MCF as the compliance/telephony service**
-- Stand up MCF behind LCP for inbound-call intake, the Hard Compliance Gate, and
-  the hash-chained audit vault.
-- Supply the missing infra: live transcription feed + off-box WORM audit tier.
-- A future TS port of the gate is optional, pursued only if polyglot ops cost
-  outweighs the rewrite risk.
+- Owner: `medicarecallforge` + `lead-connect-pro` (integration).
+- Work: stand up MCF behind LCP for inbound-call intake, the Hard Compliance
+  Gate, and the hash-chained audit vault; supply a live transcription feed and
+  an off-box WORM (S3 Object-Lock) audit tier; a future TS port of the gate is
+  optional, pursued only if polyglot ops cost outweighs the rewrite risk.
+- Done when: an inbound call traverses the gate end-to-end with transcript-
+  derived evidence; every call produces a vault entry whose `verify_chain()`
+  passes against the off-box WORM tier; LCP records the returned compliance
+  hash on the lead.
 
 ---
 
 ## Residual uncertainties
 - LCP endpoint count (~115) is approximate (route scan, not a line-by-line count).
-- "Wired" means "referenced by server code," verified to query level for
-  high-traffic tables and to exactly-zero for the 65 schema-only tables.
+- "Wired" means "referenced by server code" per the methodology box; verified to
+  query level for high-traffic tables and to exactly-zero for the 65 schema-only
+  tables.
 - Lineage between `leadmarket` and LCP is inferred from shared origin markers
   (title, `rest-express`, Replit artifacts), not a traced shared git history.
