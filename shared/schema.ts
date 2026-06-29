@@ -734,6 +734,7 @@ export const leadClaims = pgTable("lead_claims", {
 ]);
 
 // M1 — Surge pricing snapshot.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadPriceHistory = pgTable("lead_price_history", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
@@ -747,6 +748,7 @@ export const leadPriceHistory = pgTable("lead_price_history", {
 ]);
 
 // M2 — Lead bundles offered by vendor.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadBundles = pgTable("lead_bundles", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
@@ -762,6 +764,7 @@ export const leadBundles = pgTable("lead_bundles", {
   index("idx_bundles_status").on(table.status),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadBundleItems = pgTable("lead_bundle_items", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   bundleId: integer("bundle_id").notNull().references(() => leadBundles.id, { onDelete: "cascade" }),
@@ -908,6 +911,7 @@ export const smartMatchSubscriptions = pgTable("smart_match_subscriptions", {
 ]);
 
 // A2 — Per-agent spend cap (agency tier).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const agentSpendCaps = pgTable("agent_spend_caps", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
@@ -918,6 +922,7 @@ export const agentSpendCaps = pgTable("agent_spend_caps", {
 });
 
 // A3 — Bulk buy + smart fanout
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const bulkOrders = pgTable("bulk_orders", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id),
@@ -932,6 +937,7 @@ export const bulkOrders = pgTable("bulk_orders", {
   index("idx_bulk_buyer").on(table.buyerUserId),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const bulkOrderItems = pgTable("bulk_order_items", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   bulkOrderId: integer("bulk_order_id").notNull().references(() => bulkOrders.id, { onDelete: "cascade" }),
@@ -941,6 +947,7 @@ export const bulkOrderItems = pgTable("bulk_order_items", {
 });
 
 // A4 — Custom routing rules DSL.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const routingRules = pgTable("routing_rules", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -955,6 +962,7 @@ export const routingRules = pgTable("routing_rules", {
 ]);
 
 // A5 — White-label agency branding.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const orgBranding = pgTable("org_branding", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
@@ -978,6 +986,7 @@ export const leadPersonas = pgTable("lead_personas", {
 });
 
 // D5 — AI-drafted outreach (email/SMS) cache
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const outreachDrafts = pgTable("outreach_drafts", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
@@ -990,6 +999,7 @@ export const outreachDrafts = pgTable("outreach_drafts", {
 ]);
 
 // D3 — News-aware re-engagement events
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const newsEvents = pgTable("news_events", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   category: varchar("category", { length: 50 }).notNull(), // 'cms_announcement'|'plan_change'|'state_regulation'
@@ -1006,6 +1016,7 @@ export const newsEvents = pgTable("news_events", {
 ]);
 
 // N1 — Public agency directory profile.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const agencyProfiles = pgTable("agency_profiles", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
@@ -1023,6 +1034,7 @@ export const agencyProfiles = pgTable("agency_profiles", {
 });
 
 // N2 — Agent & vendor referral codes.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const referralCodes = pgTable("referral_codes", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   code: varchar("code", { length: 30 }).notNull().unique(),
@@ -1033,6 +1045,7 @@ export const referralCodes = pgTable("referral_codes", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const referrals = pgTable("referrals", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   codeId: integer("code_id").notNull().references(() => referralCodes.id),
@@ -1047,6 +1060,7 @@ export const referrals = pgTable("referrals", {
 ]);
 
 // N3 — Marketplace integrations directory.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const marketplaceIntegrations = pgTable("marketplace_integrations", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   slug: varchar("slug", { length: 80 }).notNull().unique(),
@@ -1060,6 +1074,7 @@ export const marketplaceIntegrations = pgTable("marketplace_integrations", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const marketplaceIntegrationInstalls = pgTable("marketplace_integration_installs", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   integrationId: integer("integration_id").notNull().references(() => marketplaceIntegrations.id),
@@ -1300,6 +1315,7 @@ export const insertMarketplaceIntegrationInstallSchema = createInsertSchema(mark
 // ──────────────────────────────────────────────────────
 
 // F2 — Lead-backed credit line. balanceCents positive = available credit remaining.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const creditLines = pgTable("credit_lines", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1316,6 +1332,7 @@ export const creditLines = pgTable("credit_lines", {
 ]);
 
 // F2 — One row per charge / repayment / interest entry against a credit line.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const creditRepayments = pgTable("credit_repayments", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   lineId: integer("line_id").notNull().references(() => creditLines.id, { onDelete: "cascade" }),
@@ -1329,6 +1346,7 @@ export const creditRepayments = pgTable("credit_repayments", {
 ]);
 
 // F3 — Commission escrow: held funds released to agent or vendor on a schedule.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const commissionEscrows = pgTable("commission_escrows", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orderId: integer("order_id").notNull().unique().references(() => orders.id, { onDelete: "cascade" }),
@@ -1345,6 +1363,7 @@ export const commissionEscrows = pgTable("commission_escrows", {
 ]);
 
 // F1 — Pay-per-close: agent reserves the lead, only pays on close.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const payPerCloseOrders = pgTable("pay_per_close_orders", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
@@ -1360,6 +1379,7 @@ export const payPerCloseOrders = pgTable("pay_per_close_orders", {
 ]);
 
 // F4 — Per-order refund insurance policy purchased at checkout.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const refundInsurancePolicies = pgTable("refund_insurance_policies", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orderId: integer("order_id").notNull().unique().references(() => orders.id, { onDelete: "cascade" }),
@@ -1374,6 +1394,7 @@ export const refundInsurancePolicies = pgTable("refund_insurance_policies", {
 ]);
 
 // F5 — Issued wallet debit cards (via Stripe Issuing).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const walletCards = pgTable("wallet_cards", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1391,6 +1412,7 @@ export const walletCards = pgTable("wallet_cards", {
 // ──────────────────────────────────────────────────────
 
 // CM1 — DOI (Department of Insurance) complaints filed against an agent/org.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const doiComplaints = pgTable("doi_complaints", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
@@ -1410,6 +1432,7 @@ export const doiComplaints = pgTable("doi_complaints", {
 ]);
 
 // CM1 — Auto-generated defense packet (PDF + evidence bundle) for a complaint.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const defensePackets = pgTable("defense_packets", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   complaintId: integer("complaint_id").references(() => doiComplaints.id, { onDelete: "cascade" }),
@@ -1426,6 +1449,7 @@ export const defensePackets = pgTable("defense_packets", {
 ]);
 
 // CM4 — "Certified by LeadMarket" issued certifications.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const complianceCertifications = pgTable("compliance_certifications", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -1442,6 +1466,7 @@ export const complianceCertifications = pgTable("compliance_certifications", {
 ]);
 
 // CM3 — CMS MIPPA marketing-material filings.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const cmsFilings = pgTable("cms_filings", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -1474,6 +1499,7 @@ export const piiRetentionPolicies = pgTable("pii_retention_policies", {
 });
 
 // CM5 / TCPA watchdog: realtime events flagged by the compliance monitor.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const tcpaWatchdogEvents = pgTable("tcpa_watchdog_events", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
@@ -1496,6 +1522,7 @@ export const tcpaWatchdogEvents = pgTable("tcpa_watchdog_events", {
 // ──────────────────────────────────────────────────────
 
 // MM1 — Reverse auction (buyer specifies criteria, vendors bid).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const reverseAuctions = pgTable("reverse_auctions", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1512,6 +1539,7 @@ export const reverseAuctions = pgTable("reverse_auctions", {
   index("idx_reverse_auctions_status").on(table.status),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const reverseAuctionBids = pgTable("reverse_auction_bids", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   auctionId: integer("auction_id").notNull().references(() => reverseAuctions.id, { onDelete: "cascade" }),
@@ -1528,6 +1556,7 @@ export const reverseAuctionBids = pgTable("reverse_auction_bids", {
 ]);
 
 // MM2 — Wishlist: buyer subscribes to a criteria + gets notified on match.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const wishlists = pgTable("wishlists", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1542,6 +1571,7 @@ export const wishlists = pgTable("wishlists", {
   index("idx_wishlists_active").on(table.active),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const wishlistMatches = pgTable("wishlist_matches", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   wishlistId: integer("wishlist_id").notNull().references(() => wishlists.id, { onDelete: "cascade" }),
@@ -1571,6 +1601,7 @@ export const leadTradeInCredits = pgTable("lead_tradein_credits", {
 ]);
 
 // MM4 — Lead share syndication group.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadShares = pgTable("lead_shares", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1584,6 +1615,7 @@ export const leadShares = pgTable("lead_shares", {
   index("idx_lead_shares_lead").on(table.leadId),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadShareMembers = pgTable("lead_share_members", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   shareId: integer("share_id").notNull().references(() => leadShares.id, { onDelete: "cascade" }),
@@ -1596,6 +1628,7 @@ export const leadShareMembers = pgTable("lead_share_members", {
 ]);
 
 // MM5 — Lead X-ray: cached aggregate stats per lead.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadXrayStats = pgTable("lead_xray_stats", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
@@ -1610,6 +1643,7 @@ export const leadXrayStats = pgTable("lead_xray_stats", {
 ]);
 
 // MM6 — Verified review (post-close).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const vendorReviews = pgTable("vendor_reviews", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id, { onDelete: "cascade" }),
@@ -1627,6 +1661,7 @@ export const vendorReviews = pgTable("vendor_reviews", {
 ]);
 
 // MM7 — Agent streak ledger (one row per day with activity).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const agentStreaks = pgTable("agent_streaks", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1639,6 +1674,7 @@ export const agentStreaks = pgTable("agent_streaks", {
 ]);
 
 // MM7 — Daily challenges (issued and completed).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const dailyChallenges = pgTable("daily_challenges", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1657,6 +1693,7 @@ export const dailyChallenges = pgTable("daily_challenges", {
 ]);
 
 // MM7 — Agent achievements (lifetime badges).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const agentAchievements = pgTable("agent_achievements", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1670,6 +1707,7 @@ export const agentAchievements = pgTable("agent_achievements", {
 ]);
 
 // MM8 — "Won deals" public feed posts.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const winsFeedPosts = pgTable("wins_feed_posts", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1691,6 +1729,7 @@ export const winsFeedPosts = pgTable("wins_feed_posts", {
 // ──────────────────────────────────────────────────────
 
 // VR1 — Video call escalation sessions (LiveKit / Twilio Video).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const videoCallSessions = pgTable("video_call_sessions", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   callLogId: integer("call_log_id").references(() => callLogs.id, { onDelete: "set null" }),
@@ -1709,6 +1748,7 @@ export const videoCallSessions = pgTable("video_call_sessions", {
 ]);
 
 // VR3 — Voice clone for personalized voicemail drops.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const voiceClones = pgTable("voice_clones", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
@@ -1722,6 +1762,7 @@ export const voiceClones = pgTable("voice_clones", {
 });
 
 // VR5 — AI-narrated audio tour cache per lead.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadAudioTours = pgTable("lead_audio_tours", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   leadId: integer("lead_id").notNull().unique().references(() => leads.id, { onDelete: "cascade" }),
@@ -1732,6 +1773,7 @@ export const leadAudioTours = pgTable("lead_audio_tours", {
 });
 
 // VR4 — Sentiment snapshots from call streams (every N seconds).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const sentimentSnapshots = pgTable("sentiment_snapshots", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   callLogId: integer("call_log_id").notNull().references(() => callLogs.id, { onDelete: "cascade" }),
@@ -1749,6 +1791,7 @@ export const sentimentSnapshots = pgTable("sentiment_snapshots", {
 // ──────────────────────────────────────────────────────
 
 // ES1 — Embeddable quote widget configs.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const quoteWidgets = pgTable("quote_widgets", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -1765,6 +1808,7 @@ export const quoteWidgets = pgTable("quote_widgets", {
 ]);
 
 // ES2 — No-code landing pages.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const landingPages = pgTable("landing_pages", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -1783,6 +1827,7 @@ export const landingPages = pgTable("landing_pages", {
 ]);
 
 // ES4 — Provisioned Twilio phone numbers (per agent or org).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const provisionedPhoneNumbers = pgTable("provisioned_phone_numbers", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "cascade" }),
@@ -1805,6 +1850,7 @@ export const provisionedPhoneNumbers = pgTable("provisioned_phone_numbers", {
 // ──────────────────────────────────────────────────────
 
 // DP3 — MediScore API keys (B2B consumers).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const mediscoreApiKeys = pgTable("mediscore_api_keys", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
@@ -1821,6 +1867,7 @@ export const mediscoreApiKeys = pgTable("mediscore_api_keys", {
 ]);
 
 // DP3 — MediScore API usage log.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const mediscoreApiUsage = pgTable("mediscore_api_usage", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   apiKeyId: integer("api_key_id").notNull().references(() => mediscoreApiKeys.id, { onDelete: "cascade" }),
@@ -1835,6 +1882,7 @@ export const mediscoreApiUsage = pgTable("mediscore_api_usage", {
 ]);
 
 // DP1/DP2 — Saleable data products (datasets, reports).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const dataProducts = pgTable("data_products", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   slug: varchar("slug", { length: 100 }).notNull().unique(),
@@ -1851,6 +1899,7 @@ export const dataProducts = pgTable("data_products", {
   index("idx_data_products_kind").on(table.kind),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const dataProductSubscriptions = pgTable("data_product_subscriptions", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   productId: integer("product_id").notNull().references(() => dataProducts.id, { onDelete: "cascade" }),
@@ -1871,6 +1920,7 @@ export const dataProductSubscriptions = pgTable("data_product_subscriptions", {
 // ──────────────────────────────────────────────────────
 
 // OM1 — Compliance webinars.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const webinars = pgTable("webinars", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   slug: varchar("slug", { length: 100 }).notNull().unique(),
@@ -1890,6 +1940,7 @@ export const webinars = pgTable("webinars", {
   index("idx_webinars_status").on(table.status),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const webinarRegistrations = pgTable("webinar_registrations", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   webinarId: integer("webinar_id").notNull().references(() => webinars.id, { onDelete: "cascade" }),
@@ -1904,6 +1955,7 @@ export const webinarRegistrations = pgTable("webinar_registrations", {
 ]);
 
 // OM2 — Daily AI news brief.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const newsBriefs = pgTable("news_briefs", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   briefDate: timestamp("brief_date").notNull(),
@@ -1920,6 +1972,7 @@ export const newsBriefs = pgTable("news_briefs", {
 ]);
 
 // OM4 — Affiliates publishing program.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const affiliates = pgTable("affiliates", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
@@ -1932,6 +1985,7 @@ export const affiliates = pgTable("affiliates", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const affiliatePayouts = pgTable("affiliate_payouts", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   affiliateId: integer("affiliate_id").notNull().references(() => affiliates.id, { onDelete: "cascade" }),
@@ -1947,6 +2001,7 @@ export const affiliatePayouts = pgTable("affiliate_payouts", {
 ]);
 
 // OM7 — Mentor matches.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const mentorMatches = pgTable("mentor_matches", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   mentorUserId: varchar("mentor_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1965,6 +2020,7 @@ export const mentorMatches = pgTable("mentor_matches", {
 ]);
 
 // OM3 — Agent Academy certifications earned.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const agentCertifications = pgTable("agent_certifications", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   agentUserId: varchar("agent_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -1985,6 +2041,7 @@ export const agentCertifications = pgTable("agent_certifications", {
 // ──────────────────────────────────────────────────────
 
 // DE2 — Public webhooks subscribed by orgs/integrations.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const publicWebhooks = pgTable("public_webhooks", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -2001,6 +2058,7 @@ export const publicWebhooks = pgTable("public_webhooks", {
   index("idx_public_webhooks_active").on(table.active),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const webhookDeliveries = pgTable("webhook_deliveries", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   webhookId: integer("webhook_id").notNull().references(() => publicWebhooks.id, { onDelete: "cascade" }),
@@ -2018,6 +2076,7 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
 ]);
 
 // DE4 — SDK install metrics (telemetry from npm/TS SDK).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const sdkInstallMetrics = pgTable("sdk_install_metrics", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   sdkName: varchar("sdk_name", { length: 60 }).notNull(),
@@ -2036,6 +2095,7 @@ export const sdkInstallMetrics = pgTable("sdk_install_metrics", {
 // ──────────────────────────────────────────────────────
 
 // OT1 — Obituary scraper signals → final expense pipeline.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const obituarySignals = pgTable("obituary_signals", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   source: varchar("source", { length: 100 }).notNull(),
@@ -2054,6 +2114,7 @@ export const obituarySignals = pgTable("obituary_signals", {
 ]);
 
 // OT3 — Lead options/futures: option contract definitions.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadOptions = pgTable("lead_options", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   writerVendorId: integer("writer_vendor_id").references(() => vendors.id, { onDelete: "set null" }),
@@ -2069,6 +2130,7 @@ export const leadOptions = pgTable("lead_options", {
   index("idx_lead_options_expires").on(table.expiresAt),
 ]);
 
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const leadOptionContracts = pgTable("lead_option_contracts", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   optionId: integer("option_id").notNull().references(() => leadOptions.id, { onDelete: "cascade" }),
@@ -2085,6 +2147,7 @@ export const leadOptionContracts = pgTable("lead_option_contracts", {
 ]);
 
 // OT4 — Direct mail marketplace orders.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const directMailOrders = pgTable("direct_mail_orders", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   buyerUserId: varchar("buyer_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -2105,6 +2168,7 @@ export const directMailOrders = pgTable("direct_mail_orders", {
 ]);
 
 // OT5 — Carrier-direct binding pipelines (per org per carrier).
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const carrierDirectPipelines = pgTable("carrier_direct_pipelines", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -2124,6 +2188,7 @@ export const carrierDirectPipelines = pgTable("carrier_direct_pipelines", {
 ]);
 
 // OT6 — Language packs for the Spanish-language (and future) vertical.
+// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
 export const languagePacks = pgTable("language_packs", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   locale: varchar("locale", { length: 10 }).notNull().unique(),
