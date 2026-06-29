@@ -60,6 +60,7 @@ import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
+import { validateRoleChange } from "./adminUsers";
 import { stripeWebhookIdempotency, markSeenOnceDb, startIdempotencyPruneCron } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
@@ -1217,6 +1218,62 @@ export async function registerRoutes(
     } catch (err: any) {
       logError("Error fetching dispute:", err);
       res.status(500).json({ message: err?.message || "Failed to fetch dispute" });
+    }
+  });
+
+  // ── Admin: user management ───────────────────────────────────────────────
+  // Harvested from the leadmarket sibling repo (see ADR 0001): list users and
+  // assign the platform role ("user" | "admin"). Org-level roles live in
+  // org_members and are unaffected. Both routes require an admin caller.
+  app.get("/api/admin/users", isAuthenticated, async (req: any, res) => {
+    try {
+      const me = await storage.getUser(req.user.claims.sub);
+      if (me?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const allUsers = await storage.listUsers();
+      res.json(allUsers);
+    } catch (error) {
+      logError("Error listing users:", error);
+      res.status(500).json({ message: "Failed to list users" });
+    }
+  });
+
+  app.post("/api/admin/users/:id/role", isAuthenticated, async (req: any, res) => {
+    try {
+      const me = await storage.getUser(req.user.claims.sub);
+      if (me?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const targetId = req.params.id;
+      const { role } = req.body ?? {};
+      if (typeof role !== "string") {
+        return res.status(400).json({ message: "role is required" });
+      }
+
+      const target = await storage.getUser(targetId);
+      if (!target) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const adminCount = await storage.countAdminUsers();
+      const check = validateRoleChange({
+        actorId: me.id,
+        targetId,
+        newRole: role,
+        targetCurrentRole: target.role,
+        adminCount,
+      });
+      if (!check.ok) {
+        return res.status(check.status).json({ message: check.message });
+      }
+
+      const updated = await storage.setUserRole(targetId, role);
+      res.json(updated);
+    } catch (error) {
+      logError("Error updating user role:", error);
+      res.status(500).json({ message: "Failed to update user role" });
     }
   });
 

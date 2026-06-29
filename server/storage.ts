@@ -199,6 +199,7 @@ export interface IStorage {
   }>;
   getAllLeadsAdmin(): Promise<(Lead & { vendor: Vendor })[]>;
   setUserRole(userId: string, role: string): Promise<User>;
+  listUsers(): Promise<User[]>;
 
   // Notification preferences
   updateNotificationPreference(userId: string, enabled: boolean): Promise<User>;
@@ -1050,6 +1051,10 @@ export class DatabaseStorage implements IStorage {
       .where(eq(users.id, userId))
       .returning();
     return user;
+  }
+
+  async listUsers(): Promise<User[]> {
+    return db.select().from(users).orderBy(desc(users.createdAt));
   }
 
   async updateNotificationPreference(userId: string, enabled: boolean): Promise<User> {
