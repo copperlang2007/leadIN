@@ -7,6 +7,7 @@ import {
   orders,
   stripeCheckoutSessions,
   notifications,
+  userNotifications,
   contentArticles,
   organizations,
   orgMembers,
@@ -76,6 +77,8 @@ import {
   type CrmSyncEvent,
   type InsertCrmSyncEvent,
   type AgentReputationEvent,
+  type UserNotification,
+  type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
@@ -177,6 +180,12 @@ export interface IStorage {
   getMatchingUsersForLead(leadType: string, leadState: string): Promise<User[]>;
   recordNotification(userId: string, leadId: number): Promise<void>;
   hasNotification(userId: string, leadId: number): Promise<boolean>;
+
+  // In-app notification center (user_notifications)
+  getUserNotifications(userId: string): Promise<UserNotification[]>;
+  createUserNotification(notification: InsertUserNotification): Promise<UserNotification>;
+  markUserNotificationRead(id: number, userId: string): Promise<void>;
+  markAllUserNotificationsRead(userId: string): Promise<void>;
 
   // Admin operations
   countAdminUsers(): Promise<number>;
@@ -956,6 +965,42 @@ export class DatabaseStorage implements IStorage {
         )
       );
     return !!existing;
+  }
+
+  // In-app notification center (user_notifications)
+  async getUserNotifications(userId: string): Promise<UserNotification[]> {
+    return db
+      .select()
+      .from(userNotifications)
+      .where(eq(userNotifications.userId, userId))
+      .orderBy(desc(userNotifications.createdAt));
+  }
+
+  async createUserNotification(
+    notification: InsertUserNotification,
+  ): Promise<UserNotification> {
+    const [row] = await db.insert(userNotifications).values(notification).returning();
+    return row;
+  }
+
+  // Scoped by userId so a user can only mark their own notification read.
+  async markUserNotificationRead(id: number, userId: string): Promise<void> {
+    await db
+      .update(userNotifications)
+      .set({ isRead: true })
+      .where(and(eq(userNotifications.id, id), eq(userNotifications.userId, userId)));
+  }
+
+  async markAllUserNotificationsRead(userId: string): Promise<void> {
+    await db
+      .update(userNotifications)
+      .set({ isRead: true })
+      .where(
+        and(
+          eq(userNotifications.userId, userId),
+          eq(userNotifications.isRead, false),
+        ),
+      );
   }
 
   // Admin operations
