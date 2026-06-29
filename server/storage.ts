@@ -99,6 +99,7 @@ import {
   REPUTATION_WINDOW_DAYS,
   clampReputationScore,
   type ReputationEventType,
+  type RecordEventInput,
 } from "./reputation";
 import { withTxAdvisoryLock } from "./lib/lock";
 import { toUsd, divUsd, mulUsdMany } from "./lib/money";
@@ -746,15 +747,21 @@ export class DatabaseStorage implements IStorage {
       const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
       await this.creditVendorOnSaleTx(tx, orderRow.id, lead.id, lead.vendorId, salePriceCents);
 
-      // Reputation: +5 for a purchase. Best-effort — recordReputationEvent
-      // swallows errors so a hiccup here can't roll back a paid order.
-      await recordReputationEventCore({
-        agentUserId: userId,
-        eventType: "purchase",
-        relatedLeadId: leadId,
-      });
-
       return orderRow;
+    });
+
+    // Reputation: +5 for a purchase. Recorded AFTER the transaction commits,
+    // on a separate pooled connection. It must not run inside the tx above:
+    // that tx holds `FOR UPDATE` locks on the buyer's `users` row and the
+    // `leads` row, and the reputation insert's foreign keys to both would
+    // need a conflicting `FOR KEY SHARE` lock — a self-deadlock the DB can't
+    // detect (the tx is awaiting an insert that is waiting on the tx's own
+    // locks). Post-commit it's also genuinely best-effort: a reputation
+    // hiccup can no longer roll back a paid order.
+    await recordReputationEventCore({
+      agentUserId: userId,
+      eventType: "purchase",
+      relatedLeadId: leadId,
     });
 
     // Fire-and-forget CRM sync after the purchase commits. Importing here
@@ -1757,7 +1764,11 @@ export class DatabaseStorage implements IStorage {
     agentUserId: string,
     status: "accepted" | "declined",
   ): Promise<LeadAssignment | null> {
-    return await db.transaction(async (tx) => {
+    // Reputation event is captured inside the tx but recorded after commit —
+    // see purchaseLead for why reputation writes must never share the tx that
+    // holds the `FOR UPDATE` locks (FK self-deadlock + best-effort semantics).
+    let pendingReputation: RecordEventInput | null = null;
+    const result = await db.transaction(async (tx) => {
       const [a] = await tx
         .select()
         .from(leadAssignments)
@@ -1781,15 +1792,18 @@ export class DatabaseStorage implements IStorage {
       }
 
       // Reputation: accept = +2, decline = -1.
-      await recordReputationEventCore({
+      pendingReputation = {
         agentUserId,
         eventType: status === "accepted" ? "accepted_assignment" : "declined_assignment",
         relatedLeadId: a.leadId,
         metadata: { assignmentId: a.id },
-      });
+      };
 
       return updated;
     });
+
+    if (pendingReputation) await recordReputationEventCore(pendingReputation);
+    return result;
   }
 
   async getAgentAssignments(agentUserId: string): Promise<(LeadAssignment & { lead: Lead & { vendor: Vendor } })[]> {
@@ -2216,7 +2230,9 @@ export class DatabaseStorage implements IStorage {
     reason: DisputeReason;
     notes?: string;
   }): Promise<LeadDispute> {
-    return await db.transaction(async (tx) => {
+    // Captured in-tx, recorded post-commit — see purchaseLead.
+    let pendingReputation: RecordEventInput | null = null;
+    const result = await db.transaction(async (tx) => {
       // Verify the order belongs to the buyer.
       const [order] = await tx
         .select()
@@ -2254,12 +2270,12 @@ export class DatabaseStorage implements IStorage {
         // buyer filing the dispute — they bought it, found it bad, and the
         // platform takes that as a negative signal on their judgment / the
         // routed match). The bigger hit (-5) lands only if admin approves.
-        await recordReputationEventCore({
+        pendingReputation = {
           agentUserId: input.buyerUserId,
           eventType: "dispute_filed_against",
           relatedLeadId: order.leadId,
           metadata: { orderId: input.orderId, disputeId: dispute.id },
-        });
+        };
         return dispute;
       }
 
@@ -2271,6 +2287,9 @@ export class DatabaseStorage implements IStorage {
       if (!winner) throw new Error("Failed to create or read dispute");
       return winner;
     });
+
+    if (pendingReputation) await recordReputationEventCore(pendingReputation);
+    return result;
   }
 
   // T2 — Update dispute with AI classification + confidence. Never throws.
@@ -2379,7 +2398,11 @@ export class DatabaseStorage implements IStorage {
     resolverUserId: string,
     refundCents: number,
   ): Promise<LeadDispute> {
-    return await db.transaction(async (tx) => {
+    // Captured in-tx, recorded post-commit — see purchaseLead. This tx locks
+    // the buyer's `users` row `FOR UPDATE`, so an in-tx reputation insert
+    // (FK -> users) would self-deadlock.
+    let pendingReputation: RecordEventInput | null = null;
+    const result = await db.transaction(async (tx) => {
       const [dispute] = await tx
         .select()
         .from(leadDisputes)
@@ -2462,16 +2485,19 @@ export class DatabaseStorage implements IStorage {
       // approved dispute nets -8 over the trailing window. Only when the
       // buyer id is still present (it can be null after GDPR delete).
       if (dispute.buyerUserId) {
-        await recordReputationEventCore({
+        pendingReputation = {
           agentUserId: dispute.buyerUserId,
           eventType: "dispute_approved",
           relatedLeadId: dispute.leadId,
           metadata: { orderId: dispute.orderId, disputeId },
-        });
+        };
       }
 
       return updated;
     });
+
+    if (pendingReputation) await recordReputationEventCore(pendingReputation);
+    return result;
   }
 
   async denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute> {
