@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
+import { addToComparison, removeFromComparison } from "./leadComparison";
 import {
   insertUserProfileSchema,
   vendorLeadIngestSchema,
@@ -671,6 +672,38 @@ export async function registerRoutes(
       logError("Error fetching leads:", error);
       res.status(500).json({ message: "Failed to fetch leads" });
     }
+  });
+
+  // ── Lead comparison (session-scoped, max 3) ──────────────────────────────
+  // Harvested from the leadmarket sibling repo (see ADR 0001). Stored on the
+  // session so it works for anonymous browsing. Registered before the
+  // `/api/leads/:id` param route so "compare" is never matched as an id.
+  app.get("/api/leads/compare", (req: any, res) => {
+    const list: number[] = req.session?.comparison ?? [];
+    res.json(list);
+  });
+
+  app.delete("/api/leads/compare", (req: any, res) => {
+    req.session.comparison = [];
+    res.json({ comparison: [] });
+  });
+
+  app.post("/api/leads/:id/compare", (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid lead id" });
+    const current: number[] = req.session?.comparison ?? [];
+    const result = addToComparison(current, id);
+    if (!result.ok) return res.status(result.status).json({ message: result.message });
+    req.session.comparison = result.list;
+    res.json({ comparison: result.list });
+  });
+
+  app.delete("/api/leads/:id/compare", (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid lead id" });
+    const current: number[] = req.session?.comparison ?? [];
+    req.session.comparison = removeFromComparison(current, id);
+    res.json({ comparison: req.session.comparison });
   });
 
   app.get("/api/leads/:id", async (req: any, res) => {
