@@ -291,6 +291,25 @@ export const notifications = pgTable("notifications", {
   unique("uniq_notification_user_lead").on(table.userId, table.leadId, table.type),
 ]);
 
+// In-app notification center. Distinct from `notifications` above, which is an
+// email-dedup ledger keyed to leads. Harvested from the leadmarket sibling repo
+// (see docs/adr/0001-repo-consolidation-strategy.md): arbitrary per-user,
+// readable in-app messages.
+export const userNotifications = pgTable("user_notifications", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  message: text("message").notNull(),
+  type: varchar("type", { length: 20 }).notNull().default("info"), // info | success | warning | error
+  isRead: boolean("is_read").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_user_notifications_user").on(table.userId),
+]);
+
+export type UserNotification = typeof userNotifications.$inferSelect;
+export type InsertUserNotification = typeof userNotifications.$inferInsert;
+
 // Relations
 export const organizationsRelations = relations(organizations, ({ many }) => ({
   members: many(orgMembers),

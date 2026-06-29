@@ -61,6 +61,7 @@ import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes
 import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { validateRoleChange } from "./adminUsers";
+import { purchaseNotification, walletFundedNotification } from "./userNotificationMessages";
 import { stripeWebhookIdempotency, markSeenOnceDb, startIdempotencyPruneCron } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
@@ -411,6 +412,10 @@ export async function registerRoutes(
           if (ourSession && ourSession.status === "pending" && ourSession.userId) {
             await storage.creditUserFromStripe(ourSession.userId, stripeSessionId, amountPaid);
             console.log(`Credited $${amountPaid} to user ${ourSession.userId} via Stripe session ${stripeSessionId}`);
+            // In-app notification (fire-and-forget — never block the webhook).
+            storage
+              .createUserNotification(walletFundedNotification(ourSession.userId, amountPaid))
+              .catch((err) => logError("Error creating wallet notification:", err));
           }
         }
       }
@@ -621,6 +626,46 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error deleting account:", error);
       res.status(500).json({ message: "Failed to delete account" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // In-app notification center
+  // Harvested from the leadmarket sibling repo (see ADR 0001). Backed by the
+  // user_notifications table — distinct from the `notifications` email-dedup
+  // ledger. Producers live at lead purchase and Stripe wallet credit.
+  // ──────────────────────────────────────────────────────
+  app.get("/api/notifications", isAuthenticated, async (req: any, res) => {
+    try {
+      const list = await storage.getUserNotifications(req.user.claims.sub);
+      res.json(list);
+    } catch (error) {
+      logError("Error fetching notifications:", error);
+      res.status(500).json({ message: "Failed to fetch notifications" });
+    }
+  });
+
+  app.post("/api/notifications/read-all", isAuthenticated, async (req: any, res) => {
+    try {
+      await storage.markAllUserNotificationsRead(req.user.claims.sub);
+      res.json({ success: true });
+    } catch (error) {
+      logError("Error marking notifications read:", error);
+      res.status(500).json({ message: "Failed to mark notifications read" });
+    }
+  });
+
+  app.post("/api/notifications/:id/read", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) {
+        return res.status(400).json({ message: "Invalid notification id" });
+      }
+      await storage.markUserNotificationRead(id, req.user.claims.sub);
+      res.json({ success: true });
+    } catch (error) {
+      logError("Error marking notification read:", error);
+      res.status(500).json({ message: "Failed to mark notification read" });
     }
   });
 
@@ -891,6 +936,10 @@ export async function registerRoutes(
       const userId = req.user.claims.sub;
       const leadId = parseInt(req.params.id);
       const order = await storage.purchaseLead(leadId, userId);
+      // In-app notification (fire-and-forget — never block/break the purchase).
+      storage
+        .createUserNotification(purchaseNotification(userId, leadId))
+        .catch((err) => logError("Error creating purchase notification:", err));
       res.json(order);
     } catch (error: any) {
       logError("Error purchasing lead:", error);

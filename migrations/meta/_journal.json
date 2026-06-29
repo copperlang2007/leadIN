@@ -57,6 +57,13 @@
       "when": 1782646110761,
       "tag": "0007_famous_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782760528465,
+      "tag": "0008_cold_mister_sinister",
+      "breakpoints": true
     }
   ]
 }
