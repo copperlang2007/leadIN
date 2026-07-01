@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { MAX_COMPARE } from "@shared/constants";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
@@ -256,6 +257,15 @@ export default function Marketplace() {
     }
   };
 
+  // Mirror the current selection into a ref so toggleCompare's existence/cap
+  // checks read the latest committed state (not a stale render closure) without
+  // putting the persistence side-effects inside a state updater — updaters must
+  // stay pure because StrictMode invokes them twice in dev.
+  const selectedLeadsRef = useRef<Lead[]>([]);
+  useEffect(() => {
+    selectedLeadsRef.current = selectedLeads;
+  }, [selectedLeads]);
+
   // Hydrate the compare selection from the session-backed list (harvested
   // backend, ADR 0001 / #125) so it survives reloads and navigation.
   // Best-effort: failures leave the local selection empty as before.
@@ -263,14 +273,17 @@ export default function Marketplace() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/leads/compare", { credentials: "include" });
-        if (!res.ok) return;
+        const res = await apiRequest("GET", "/api/leads/compare");
         const ids: number[] = await res.json();
         if (!Array.isArray(ids) || ids.length === 0) return;
         const fetched = await Promise.all(
           ids.map(async (id) => {
-            const r = await fetch(`/api/leads/${id}`, { credentials: "include" });
-            return r.ok ? ((await r.json()) as Lead) : null;
+            try {
+              const r = await apiRequest("GET", `/api/leads/${id}`);
+              return (await r.json()) as Lead;
+            } catch {
+              return null;
+            }
           }),
         );
         if (cancelled) return;
@@ -289,13 +302,14 @@ export default function Marketplace() {
   }, []);
 
   const toggleCompare = (lead: Lead) => {
-    if (selectedLeads.find(l => l.id === lead.id)) {
-      setSelectedLeads(prev => prev.filter(l => l.id !== lead.id));
+    const current = selectedLeadsRef.current;
+    if (current.some((l) => l.id === lead.id)) {
+      setSelectedLeads((prev) => prev.filter((l) => l.id !== lead.id));
       // Persist to the session-backed compare list (best-effort).
       apiRequest("DELETE", `/api/leads/${lead.id}/compare`).catch(() => {});
     } else {
-      if (selectedLeads.length >= 4) return;
-      setSelectedLeads(prev => [...prev, lead]);
+      if (current.length >= MAX_COMPARE) return;
+      setSelectedLeads((prev) => [...prev, lead]);
       apiRequest("POST", `/api/leads/${lead.id}/compare`).catch(() => {});
     }
   };
@@ -688,7 +702,7 @@ export default function Marketplace() {
               </div>
               <div>
                 <p className="font-semibold">{selectedLeads.length} leads selected</p>
-                <p className="text-xs text-muted-foreground">Compare up to 4 items</p>
+                <p className="text-xs text-muted-foreground">Compare up to {MAX_COMPARE} items</p>
               </div>
             </div>
             <div className="flex gap-2">

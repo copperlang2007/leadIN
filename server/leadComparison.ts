@@ -6,8 +6,9 @@
 // the source behaviour. These helpers are pure so they can be unit-tested
 // without an HTTP/session round-trip; the route handlers own the session I/O.
 
-// 4 matches the marketplace compare UI ("Compare up to 4 items").
-export const MAX_COMPARE = 4;
+// Single source of truth shared with the client (marketplace compare UI).
+import { MAX_COMPARE } from "@shared/constants";
+export { MAX_COMPARE };
 
 export type CompareResult =
   | { ok: true; list: number[] }
