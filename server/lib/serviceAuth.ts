@@ -19,11 +19,20 @@ export const SIGNATURE_HEADER = "x-lcp-signature";
 // bounds both clock skew and how long a captured request stays replayable.
 export const DEFAULT_MAX_SKEW_MS = 5 * 60 * 1000;
 
+// Nonce charset/length guard (defense-in-depth on top of the injective
+// encoding below). Random hex nonces satisfy this; a caller that forwards a
+// user-controlled string not matching this is rejected rather than signed.
+export const NONCE_RE = /^[A-Za-z0-9_-]{8,128}$/;
+
+// Injective encoding. Joining fields with a delimiter that can also appear
+// inside a field (e.g. `.` in a nonce) is ambiguous — a different (nonce, body)
+// split could produce byte-identical HMAC input and therefore the same
+// signature. JSON.stringify of a fixed-shape tuple quotes/escapes each field so
+// the mapping from (timestamp, nonce, body) to bytes is one-to-one.
+// NOTE: the MCF-side signer MUST use this exact canonical form.
 function computeSignature(secret: string, timestamp: string, nonce: string, body: string): string {
-  return crypto
-    .createHmac("sha256", secret)
-    .update(`${timestamp}.${nonce}.${body}`)
-    .digest("hex");
+  const canonical = JSON.stringify([timestamp, nonce, body]);
+  return crypto.createHmac("sha256", secret).update(canonical).digest("hex");
 }
 
 export type SignedHeaders = Record<string, string>;
@@ -39,6 +48,9 @@ export function signServiceRequest(
 ): SignedHeaders {
   const timestamp = String(opts.timestamp ?? Date.now());
   const nonce = opts.nonce ?? crypto.randomBytes(16).toString("hex");
+  if (!NONCE_RE.test(nonce)) {
+    throw new Error("invalid nonce: must match [A-Za-z0-9_-]{8,128}");
+  }
   return {
     [TIMESTAMP_HEADER]: timestamp,
     [NONCE_HEADER]: nonce,
@@ -77,6 +89,9 @@ export function verifyServiceRequest(
   const provided = read(SIGNATURE_HEADER);
   if (!timestamp || !nonce || !provided) {
     return { ok: false, status: 401, reason: "missing auth headers" };
+  }
+  if (!NONCE_RE.test(nonce)) {
+    return { ok: false, status: 401, reason: "bad nonce" };
   }
 
   const ts = Number(timestamp);

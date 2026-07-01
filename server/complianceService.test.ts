@@ -53,3 +53,34 @@ describe("complianceService (disabled / unconfigured)", () => {
     await expect(pingComplianceService()).resolves.toBe(false);
   });
 });
+
+// When enabled but the body can't be serialized (BigInt / cyclic ref), the
+// client must still fail open to null rather than throw into the caller.
+describe("complianceService (enabled, un-serializable body fails open)", () => {
+  const prevUrl = process.env.MCF_URL;
+  const prevSecret = process.env.MCF_SERVICE_SECRET;
+
+  beforeEach(() => {
+    // Unroutable port so any (non-thrown) request fails fast; the point is the
+    // pre-fetch serialization throw is caught, not the network.
+    process.env.MCF_URL = "http://127.0.0.1:1";
+    process.env.MCF_SERVICE_SECRET = "s";
+  });
+
+  afterEach(() => {
+    if (prevUrl === undefined) delete process.env.MCF_URL;
+    else process.env.MCF_URL = prevUrl;
+    if (prevSecret === undefined) delete process.env.MCF_SERVICE_SECRET;
+    else process.env.MCF_SERVICE_SECRET = prevSecret;
+  });
+
+  it("resolves null for a BigInt in the body", async () => {
+    await expect(verifyCertificate({ bad: 1n } as unknown)).resolves.toBeNull();
+  });
+
+  it("resolves null for a cyclic body", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await expect(verifyCertificate(cyclic)).resolves.toBeNull();
+  });
+});

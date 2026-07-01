@@ -34,29 +34,49 @@ export function getComplianceServiceStatus(): ComplianceServiceStatus {
   return { enabled: !!url && !!secret, urlConfigured: !!url, secretConfigured: !!secret };
 }
 
-async function signedFetch(
+interface ServiceResponse<T> {
+  ok: boolean;
+  status: number;
+  body: T | null;
+}
+
+async function signedFetch<T = unknown>(
   path: string,
   method: "GET" | "POST",
   body?: unknown,
-): Promise<Response | null> {
+): Promise<ServiceResponse<T> | null> {
   const { url, secret } = config();
   if (!url || !secret) return null;
-
-  const payload = body === undefined ? "" : JSON.stringify(body);
-  const headers: Record<string, string> = {
-    ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    ...signServiceRequest(payload, secret),
-  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(`${url.replace(/\/$/, "")}${path}`, {
+    // Serialize inside the guard so an un-serializable body (BigInt, cyclic
+    // ref) fails open to null instead of throwing into the caller.
+    const payload = body === undefined ? "" : JSON.stringify(body);
+    const headers: Record<string, string> = {
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...signServiceRequest(payload, secret),
+    };
+    // Strip ALL trailing slashes so a `MCF_URL=…//` misconfig doesn't produce
+    // a `//path` that strict routers 404.
+    const res = await fetch(`${url.replace(/\/+$/, "")}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : payload,
       signal: controller.signal,
     });
+    // Read the body while the timeout is still armed — otherwise a stalled
+    // chunked body would hang past REQUEST_TIMEOUT_MS.
+    let parsed: T | null = null;
+    if (res.ok) {
+      try {
+        parsed = (await res.json()) as T;
+      } catch {
+        parsed = null;
+      }
+    }
+    return { ok: res.ok, status: res.status, body: parsed };
   } catch (err) {
     logError("[compliance-service] request failed:", err);
     return null;
@@ -77,13 +97,11 @@ export interface CertificateVerification {
 export async function verifyCertificate(
   certificate: unknown,
 ): Promise<CertificateVerification | null> {
-  const res = await signedFetch("/compliance/verify", "POST", { certificate });
+  const res = await signedFetch<CertificateVerification>("/compliance/verify", "POST", {
+    certificate,
+  });
   if (!res || !res.ok) return null;
-  try {
-    return (await res.json()) as CertificateVerification;
-  } catch {
-    return null;
-  }
+  return res.body;
 }
 
 /** Best-effort health check against MCF. False when disabled or unreachable. */
