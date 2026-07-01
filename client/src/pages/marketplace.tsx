@@ -266,18 +266,37 @@ export default function Marketplace() {
     selectedLeadsRef.current = selectedLeads;
   }, [selectedLeads]);
 
-  // Hydrate the compare selection from the session-backed list (harvested
-  // backend, ADR 0001 / #125) so it survives reloads and navigation.
-  // Best-effort: failures leave the local selection empty as before.
+  // Compare-list persistence (session-backed; harvested from leadmarket —
+  // ADR 0001 / #125). The server is the source of truth:
+  //  - every mutation runs through one serialized promise chain, so rapid
+  //    clicks can't fire concurrent writes that clobber the session's
+  //    non-atomic read-modify-write;
+  //  - after each op, local state is reconciled from the server's returned
+  //    `{comparison}` id list rather than trusted blindly;
+  //  - `interactedRef` makes the one-shot hydration yield to any user action,
+  //    so it can never resurrect a removed lead, override a Clear, or push the
+  //    selection past MAX_COMPARE.
+  const interactedRef = useRef(false);
+  const opChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueCompareOp = (op: () => Promise<void>) => {
+    opChainRef.current = opChainRef.current.then(op, op);
+  };
+
+  // Reconcile local selection with the server's authoritative id list.
+  const reconcileCompare = (ids: number[]) =>
+    setSelectedLeads((prev) => prev.filter((l) => ids.includes(l.id)));
+
+  // Hydrate once from the session list so the selection survives reloads.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    enqueueCompareOp(async () => {
+      if (cancelled || interactedRef.current) return;
       try {
         const res = await apiRequest("GET", "/api/leads/compare");
         const ids: number[] = await res.json();
         if (!Array.isArray(ids) || ids.length === 0) return;
         const fetched = await Promise.all(
-          ids.map(async (id) => {
+          ids.slice(0, MAX_COMPARE).map(async (id) => {
             try {
               const r = await apiRequest("GET", `/api/leads/${id}`);
               return (await r.json()) as Lead;
@@ -286,38 +305,65 @@ export default function Marketplace() {
             }
           }),
         );
-        if (cancelled) return;
+        // Yield to the user: if they interacted during the fetch window their
+        // intent wins, so we neither repopulate nor override their action.
+        if (cancelled || interactedRef.current) return;
         const valid = fetched.filter((l): l is Lead => !!l && !l.removed);
-        setSelectedLeads((prev) => {
-          const have = new Set(prev.map((l) => l.id));
-          return [...prev, ...valid.filter((l) => !have.has(l.id))];
-        });
+        setSelectedLeads(valid.slice(0, MAX_COMPARE));
       } catch {
         // best-effort hydration
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
   }, []);
 
   const toggleCompare = (lead: Lead) => {
-    const current = selectedLeadsRef.current;
-    if (current.some((l) => l.id === lead.id)) {
-      setSelectedLeads((prev) => prev.filter((l) => l.id !== lead.id));
-      // Persist to the session-backed compare list (best-effort).
-      apiRequest("DELETE", `/api/leads/${lead.id}/compare`).catch(() => {});
-    } else {
-      if (current.length >= MAX_COMPARE) return;
-      setSelectedLeads((prev) => [...prev, lead]);
-      apiRequest("POST", `/api/leads/${lead.id}/compare`).catch(() => {});
-    }
+    interactedRef.current = true;
+    const wasSelected = selectedLeadsRef.current.some((l) => l.id === lead.id);
+    if (!wasSelected && selectedLeadsRef.current.length >= MAX_COMPARE) return;
+    // Optimistic update for snappy UX; reconciled against the server below.
+    setSelectedLeads((prev) =>
+      wasSelected
+        ? prev.filter((l) => l.id !== lead.id)
+        : prev.some((l) => l.id === lead.id)
+          ? prev
+          : [...prev, lead],
+    );
+    enqueueCompareOp(async () => {
+      try {
+        const r = await apiRequest(
+          wasSelected ? "DELETE" : "POST",
+          `/api/leads/${lead.id}/compare`,
+        );
+        const body = await r.json().catch(() => null);
+        if (body && Array.isArray(body.comparison)) reconcileCompare(body.comparison);
+      } catch {
+        // Server rejected (e.g. full/duplicate) or failed — roll back to its
+        // authoritative state instead of trusting the optimistic change.
+        try {
+          const r = await apiRequest("GET", "/api/leads/compare");
+          const ids = await r.json();
+          if (Array.isArray(ids)) reconcileCompare(ids);
+        } catch {
+          // leave optimistic state as a last resort
+        }
+      }
+    });
   };
 
   // Clear both the local selection and the persisted session list.
   const clearCompare = () => {
+    interactedRef.current = true;
     setSelectedLeads([]);
-    apiRequest("DELETE", "/api/leads/compare").catch(() => {});
+    enqueueCompareOp(async () => {
+      try {
+        await apiRequest("DELETE", "/api/leads/compare");
+      } catch {
+        // best-effort
+      }
+    });
   };
 
   const handleViewDetails = (lead: Lead) => {
