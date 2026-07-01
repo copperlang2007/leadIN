@@ -15,6 +15,7 @@ import {
 import type { Lead } from "@/lib/types";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { EmptyState } from "@/components/empty-state";
+import { AdminUsersCard } from "@/components/admin-users-card";
 
 interface PlatformStats {
   totalLeads: number;
@@ -338,6 +339,8 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
+
+        <AdminUsersCard />
       </div>
     </Layout>
   );
