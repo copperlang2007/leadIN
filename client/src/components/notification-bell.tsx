@@ -31,6 +31,8 @@ const DOT_COLOR: Record<UserNotification["type"], string> = {
 
 const QUERY_KEY = ["/api/notifications"] as const;
 
+type MutationContext = { prev?: UserNotification[] };
+
 export function NotificationBell() {
   const { isAuthenticated } = useAuth();
   const { toast } = useToast();
@@ -39,7 +41,12 @@ export function NotificationBell() {
 
   // Poll on a light interval so the unread badge stays roughly live without a
   // socket. The list also refetches whenever the popover is opened.
-  const { data: notifications = [], isLoading } = useQuery<UserNotification[]>({
+  const {
+    data: notifications = [],
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery<UserNotification[]>({
     queryKey: QUERY_KEY,
     enabled: isAuthenticated,
     refetchInterval: 30_000,
@@ -50,23 +57,49 @@ export function NotificationBell() {
     [notifications],
   );
 
-  const markRead = useMutation({
-    mutationFn: async (id: number) => {
+  // Optimistically flip read state so the badge/list feel instant; roll back
+  // on error and reconcile with the server on settle.
+  const markRead = useMutation<void, Error, number, MutationContext>({
+    mutationFn: async (id) => {
       await apiRequest("POST", `/api/notifications/${id}/read`);
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
-    onError: (err: Error) =>
-      toast({ title: "Couldn't update notification", description: err.message, variant: "destructive" }),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: QUERY_KEY });
+      const prev = queryClient.getQueryData<UserNotification[]>(QUERY_KEY);
+      queryClient.setQueryData<UserNotification[]>(QUERY_KEY, (old) =>
+        (old ?? []).map((n) => (n.id === id ? { ...n, isRead: true } : n)),
+      );
+      return { prev };
+    },
+    onError: (err, _id, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(QUERY_KEY, ctx.prev);
+      toast({ title: "Couldn't update notification", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
   });
 
-  const markAllRead = useMutation({
+  const markAllRead = useMutation<void, Error, void, MutationContext>({
     mutationFn: async () => {
       await apiRequest("POST", "/api/notifications/read-all");
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
-    onError: (err: Error) =>
-      toast({ title: "Couldn't update notifications", description: err.message, variant: "destructive" }),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: QUERY_KEY });
+      const prev = queryClient.getQueryData<UserNotification[]>(QUERY_KEY);
+      queryClient.setQueryData<UserNotification[]>(QUERY_KEY, (old) =>
+        (old ?? []).map((n) => ({ ...n, isRead: true })),
+      );
+      return { prev };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(QUERY_KEY, ctx.prev);
+      toast({ title: "Couldn't update notifications", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
   });
+
+  // The bell lives in the authenticated app shell, but guard anyway so an
+  // unauthenticated render doesn't show a bell that can never load data.
+  if (!isAuthenticated) return null;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -115,6 +148,13 @@ export function NotificationBell() {
         {isLoading ? (
           <div className="flex items-center justify-center py-10 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
+          </div>
+        ) : isError ? (
+          <div className="px-4 py-10 text-center text-sm text-muted-foreground" data-testid="text-notifications-error">
+            <p>Couldn't load notifications.</p>
+            <Button variant="ghost" size="sm" className="mt-2" onClick={() => refetch()} data-testid="button-notifications-retry">
+              Retry
+            </Button>
           </div>
         ) : notifications.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-muted-foreground" data-testid="text-notifications-empty">
