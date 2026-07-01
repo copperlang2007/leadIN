@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
@@ -218,6 +219,7 @@ export default function Marketplace() {
       queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
       setIsCompareOpen(false);
       setSelectedLeads([]);
+      apiRequest("DELETE", "/api/leads/compare").catch(() => {});
       setIsDetailsOpen(false);
       setPendingPurchase(null);
     } catch (error: any) {
@@ -254,13 +256,54 @@ export default function Marketplace() {
     }
   };
 
+  // Hydrate the compare selection from the session-backed list (harvested
+  // backend, ADR 0001 / #125) so it survives reloads and navigation.
+  // Best-effort: failures leave the local selection empty as before.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/leads/compare", { credentials: "include" });
+        if (!res.ok) return;
+        const ids: number[] = await res.json();
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        const fetched = await Promise.all(
+          ids.map(async (id) => {
+            const r = await fetch(`/api/leads/${id}`, { credentials: "include" });
+            return r.ok ? ((await r.json()) as Lead) : null;
+          }),
+        );
+        if (cancelled) return;
+        const valid = fetched.filter((l): l is Lead => !!l && !l.removed);
+        setSelectedLeads((prev) => {
+          const have = new Set(prev.map((l) => l.id));
+          return [...prev, ...valid.filter((l) => !have.has(l.id))];
+        });
+      } catch {
+        // best-effort hydration
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleCompare = (lead: Lead) => {
     if (selectedLeads.find(l => l.id === lead.id)) {
       setSelectedLeads(prev => prev.filter(l => l.id !== lead.id));
+      // Persist to the session-backed compare list (best-effort).
+      apiRequest("DELETE", `/api/leads/${lead.id}/compare`).catch(() => {});
     } else {
       if (selectedLeads.length >= 4) return;
       setSelectedLeads(prev => [...prev, lead]);
+      apiRequest("POST", `/api/leads/${lead.id}/compare`).catch(() => {});
     }
+  };
+
+  // Clear both the local selection and the persisted session list.
+  const clearCompare = () => {
+    setSelectedLeads([]);
+    apiRequest("DELETE", "/api/leads/compare").catch(() => {});
   };
 
   const handleViewDetails = (lead: Lead) => {
@@ -649,7 +692,7 @@ export default function Marketplace() {
               </div>
             </div>
             <div className="flex gap-2">
-              <Button variant="ghost" onClick={() => setSelectedLeads([])}>Clear</Button>
+              <Button variant="ghost" onClick={clearCompare}>Clear</Button>
               <Drawer open={isCompareOpen} onOpenChange={setIsCompareOpen}>
                 <DrawerTrigger asChild>
                   <Button className="gap-2">

@@ -1,4 +1,4 @@
-// Session-scoped lead comparison list (max 3 leads).
+// Session-scoped lead comparison list (max 4 leads).
 //
 // Harvested from the `leadmarket` sibling repo as part of the consolidation
 // into this app (see docs/adr/0001-repo-consolidation-strategy.md). The list
@@ -6,7 +6,8 @@
 // the source behaviour. These helpers are pure so they can be unit-tested
 // without an HTTP/session round-trip; the route handlers own the session I/O.
 
-export const MAX_COMPARE = 3;
+// 4 matches the marketplace compare UI ("Compare up to 4 items").
+export const MAX_COMPARE = 4;
 
 export type CompareResult =
   | { ok: true; list: number[] }
