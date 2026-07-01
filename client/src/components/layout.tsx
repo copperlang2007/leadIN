@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Search, Bell, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, WifiOff, Loader2, Plus, DollarSign, BookOpen, Briefcase, TrendingUp, Sparkles } from "lucide-react";
+import { Search, Menu, ShieldCheck, User, LayoutGrid, FileText, BarChart3, Settings, LogOut, WifiOff, Loader2, Plus, DollarSign, BookOpen, Briefcase, TrendingUp, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -9,6 +9,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useWebSocketContext } from "@/hooks/useWebSocketContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { NotificationBell } from "@/components/notification-bell";
 
 interface AddFundsDialogProps {
   open: boolean;
@@ -403,10 +404,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <LiveFeedIndicator />
 
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="h-5 w-5 text-muted-foreground" />
-              <span className="absolute top-2 right-2 h-2 w-2 bg-destructive rounded-full border-2 border-card"></span>
-            </Button>
+            <NotificationBell />
 
             <div className="h-8 w-px bg-border mx-1"></div>
 
