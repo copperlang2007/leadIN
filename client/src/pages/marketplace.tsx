@@ -1,5 +1,7 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { MAX_COMPARE } from "@shared/constants";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
@@ -218,6 +220,7 @@ export default function Marketplace() {
       queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
       setIsCompareOpen(false);
       setSelectedLeads([]);
+      apiRequest("DELETE", "/api/leads/compare").catch(() => {});
       setIsDetailsOpen(false);
       setPendingPurchase(null);
     } catch (error: any) {
@@ -254,13 +257,113 @@ export default function Marketplace() {
     }
   };
 
+  // Mirror the current selection into a ref so toggleCompare's existence/cap
+  // checks read the latest committed state (not a stale render closure) without
+  // putting the persistence side-effects inside a state updater — updaters must
+  // stay pure because StrictMode invokes them twice in dev.
+  const selectedLeadsRef = useRef<Lead[]>([]);
+  useEffect(() => {
+    selectedLeadsRef.current = selectedLeads;
+  }, [selectedLeads]);
+
+  // Compare-list persistence (session-backed; harvested from leadmarket —
+  // ADR 0001 / #125). The server is the source of truth:
+  //  - every mutation runs through one serialized promise chain, so rapid
+  //    clicks can't fire concurrent writes that clobber the session's
+  //    non-atomic read-modify-write;
+  //  - after each op, local state is reconciled from the server's returned
+  //    `{comparison}` id list rather than trusted blindly;
+  //  - `interactedRef` makes the one-shot hydration yield to any user action,
+  //    so it can never resurrect a removed lead, override a Clear, or push the
+  //    selection past MAX_COMPARE.
+  const interactedRef = useRef(false);
+  const opChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueCompareOp = (op: () => Promise<void>) => {
+    opChainRef.current = opChainRef.current.then(op, op);
+  };
+
+  // Reconcile local selection with the server's authoritative id list.
+  const reconcileCompare = (ids: number[]) =>
+    setSelectedLeads((prev) => prev.filter((l) => ids.includes(l.id)));
+
+  // Hydrate once from the session list so the selection survives reloads.
+  useEffect(() => {
+    let cancelled = false;
+    enqueueCompareOp(async () => {
+      if (cancelled || interactedRef.current) return;
+      try {
+        const res = await apiRequest("GET", "/api/leads/compare");
+        const ids: number[] = await res.json();
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        const fetched = await Promise.all(
+          ids.slice(0, MAX_COMPARE).map(async (id) => {
+            try {
+              const r = await apiRequest("GET", `/api/leads/${id}`);
+              return (await r.json()) as Lead;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        // Yield to the user: if they interacted during the fetch window their
+        // intent wins, so we neither repopulate nor override their action.
+        if (cancelled || interactedRef.current) return;
+        const valid = fetched.filter((l): l is Lead => !!l && !l.removed);
+        setSelectedLeads(valid.slice(0, MAX_COMPARE));
+      } catch {
+        // best-effort hydration
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleCompare = (lead: Lead) => {
-    if (selectedLeads.find(l => l.id === lead.id)) {
-      setSelectedLeads(prev => prev.filter(l => l.id !== lead.id));
-    } else {
-      if (selectedLeads.length >= 4) return;
-      setSelectedLeads(prev => [...prev, lead]);
-    }
+    interactedRef.current = true;
+    const wasSelected = selectedLeadsRef.current.some((l) => l.id === lead.id);
+    if (!wasSelected && selectedLeadsRef.current.length >= MAX_COMPARE) return;
+    // Optimistic update for snappy UX; reconciled against the server below.
+    setSelectedLeads((prev) =>
+      wasSelected
+        ? prev.filter((l) => l.id !== lead.id)
+        : prev.some((l) => l.id === lead.id)
+          ? prev
+          : [...prev, lead],
+    );
+    enqueueCompareOp(async () => {
+      try {
+        const r = await apiRequest(
+          wasSelected ? "DELETE" : "POST",
+          `/api/leads/${lead.id}/compare`,
+        );
+        const body = await r.json().catch(() => null);
+        if (body && Array.isArray(body.comparison)) reconcileCompare(body.comparison);
+      } catch {
+        // Server rejected (e.g. full/duplicate) or failed — roll back to its
+        // authoritative state instead of trusting the optimistic change.
+        try {
+          const r = await apiRequest("GET", "/api/leads/compare");
+          const ids = await r.json();
+          if (Array.isArray(ids)) reconcileCompare(ids);
+        } catch {
+          // leave optimistic state as a last resort
+        }
+      }
+    });
+  };
+
+  // Clear both the local selection and the persisted session list.
+  const clearCompare = () => {
+    interactedRef.current = true;
+    setSelectedLeads([]);
+    enqueueCompareOp(async () => {
+      try {
+        await apiRequest("DELETE", "/api/leads/compare");
+      } catch {
+        // best-effort
+      }
+    });
   };
 
   const handleViewDetails = (lead: Lead) => {
@@ -645,11 +748,11 @@ export default function Marketplace() {
               </div>
               <div>
                 <p className="font-semibold">{selectedLeads.length} leads selected</p>
-                <p className="text-xs text-muted-foreground">Compare up to 4 items</p>
+                <p className="text-xs text-muted-foreground">Compare up to {MAX_COMPARE} items</p>
               </div>
             </div>
             <div className="flex gap-2">
-              <Button variant="ghost" onClick={() => setSelectedLeads([])}>Clear</Button>
+              <Button variant="ghost" onClick={clearCompare}>Clear</Button>
               <Drawer open={isCompareOpen} onOpenChange={setIsCompareOpen}>
                 <DrawerTrigger asChild>
                   <Button className="gap-2">
