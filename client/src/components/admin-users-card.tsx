@@ -40,6 +40,11 @@ export function AdminUsersCard() {
       toast({ title: "Couldn't update role", description: err.message, variant: "destructive" }),
   });
 
+  // The card is only rendered inside the admin-gated page, but guard anyway so
+  // a non-admin render doesn't show an empty "No users yet" table for a query
+  // that was never allowed to run.
+  if (me?.role !== "admin") return null;
+
   return (
     <Card>
       <CardHeader>
