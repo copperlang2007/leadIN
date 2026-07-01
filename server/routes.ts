@@ -66,6 +66,7 @@ import { stripeWebhookIdempotency, markSeenOnceDb, startIdempotencyPruneCron } f
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
+import { getComplianceServiceStatus, pingComplianceService } from "./complianceService";
 import { logError } from "./lib/safeError";
 import { captureException } from "./lib/sentry";
 import { buildBlogSitemap } from "./lib/blogSitemap";
@@ -3152,6 +3153,24 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error removing lead:", error);
       res.status(500).json({ message: "Failed to remove lead" });
+    }
+  });
+
+  // Compliance/telephony service (MedicareCallForge) integration status.
+  // Flag-gated + read-only: reports whether MCF is configured and, if so,
+  // reachable. Inert until MCF_URL + MCF_SERVICE_SECRET are set (ADR-0002).
+  app.get("/api/admin/compliance-service", isAuthenticated, async (req: any, res) => {
+    try {
+      const me = await storage.getUser(req.user.claims.sub);
+      if (me?.role !== "admin") {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      const status = getComplianceServiceStatus();
+      const reachable = status.enabled ? await pingComplianceService() : false;
+      res.json({ ...status, reachable });
+    } catch (error) {
+      logError("Error checking compliance service:", error);
+      res.status(500).json({ message: "Failed to check compliance service" });
     }
   });
 
