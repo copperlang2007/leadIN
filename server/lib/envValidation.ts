@@ -49,6 +49,11 @@ export const PROD_ENV_RULES: EnvRule[] = [
     requires: { whenSet: "FEATURE_NIPR", keys: ["NIPR_API_KEY"] },
     note: "NIPR license check requires API key",
   },
+  {
+    key: "MCF_URL",
+    requires: { whenSet: "MCF_URL", keys: ["MCF_SERVICE_SECRET"] },
+    note: "MedicareCallForge integration requires the HMAC service secret (ADR-0002)",
+  },
 ];
 
 export interface ValidationResult {
