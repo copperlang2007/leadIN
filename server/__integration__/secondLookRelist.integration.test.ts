@@ -164,6 +164,37 @@ describe.skipIf(!LIVE)("second-look re-list (live DB)", () => {
     expect(Number(lead.price)).toBe(8.5); // tier 1, not starved by the settled tier-2 rows
   });
 
+  it("reprices a settled row at EXACTLY age = 3*fresh (boundary matches computeReprice)", async () => {
+    // Settle a lead at tier 2 ($7), then sweep with now = createdAt + exactly
+    // 72h. computeReprice classifies age==3*fresh as tier 3, so the SQL bands
+    // (lte/gt) must agree and decay it to the floor rather than leaving it at $7.
+    const created = new Date(Date.now() - 50 * H); // starts in tier 2
+    const leadId = await seedLead({ createdAt: created });
+    await storage.repriceAgingLeads();
+    expect(Number((await getLeadRow(leadId)).price)).toBe(7);
+
+    const exactly3Fresh = new Date(created.getTime() + 3 * 24 * H); // fresh=24
+    await storage.repriceAgingLeads(exactly3Fresh);
+
+    expect(Number((await getLeadRow(leadId)).price)).toBe(5); // tier-3 floor
+  });
+
+  it("freezes quarantined inventory: flagged / dncFlagged leads are not decayed", async () => {
+    const flaggedId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+    const dncId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+    await db.update(leads).set({ flagged: true }).where(eq(leads.id, flaggedId));
+    await db.update(leads).set({ dncFlagged: true }).where(eq(leads.id, dncId));
+
+    await storage.repriceAgingLeads();
+
+    for (const id of [flaggedId, dncId]) {
+      const lead = await getLeadRow(id);
+      expect(Number(lead.price)).toBe(10); // untouched sticker
+      expect(lead.secondLook).toBe(false);
+      expect(lead.originalPrice).toBeNull();
+    }
+  });
+
   it("money path: buying a re-listed lead charges the DECAYED price", async () => {
     const buyer = await seedUser();
     await setBalance(buyer, "100.00");

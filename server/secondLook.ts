@@ -173,6 +173,10 @@ export interface RepriceableLead {
   sold: boolean;
   removed: boolean;
   pricingMode: string;
+  // Quarantine flags: a lead under admin review (flagged) or DNC-blocked
+  // (dncFlagged, hidden from the marketplace) is frozen — not decayed.
+  flagged: boolean;
+  dncFlagged: boolean;
 }
 
 export interface RepricePlan {
@@ -202,8 +206,11 @@ export function computeReprice(lead: RepriceableLead, now: Date): RepricePlan {
     discountPct: 0,
   };
 
-  // Only per-lead priced, live, unsold inventory is eligible.
+  // Only per-lead priced, live, unsold, non-quarantined inventory is eligible.
+  // flagged/dncFlagged leads aren't available to buy, so their aging clock is
+  // frozen (mirrors the repricer's candidate SQL).
   if (lead.sold || lead.removed || lead.pricingMode !== "per_lead") return noop;
+  if (lead.flagged || lead.dncFlagged) return noop;
   if (!lead.createdAt) return noop;
 
   const ageHours = (now.getTime() - lead.createdAt.getTime()) / 3_600_000;

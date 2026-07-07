@@ -81,7 +81,7 @@ import {
   type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
@@ -715,6 +715,12 @@ export class DatabaseStorage implements IStorage {
    * is already at its tier price yields shouldReprice=false and is skipped —
    * and every UPDATE re-checks `sold=false` so a lead that sold between the
    * scan and the write is left alone.
+   *
+   * Quarantined inventory is frozen: `flagged` (under admin review) and
+   * `dncFlagged` (DNC-blocked, hidden from the marketplace) leads are NOT
+   * decayed. They aren't actually available to buy, so their "aging in the
+   * market" clock is paused — otherwise clearing the flag later (e.g. a DNC
+   * recheck) would surface a lead that had silently decayed while invisible.
    */
   async repriceAgingLeads(
     now: Date = new Date(),
@@ -722,6 +728,9 @@ export class DatabaseStorage implements IStorage {
     const fresh = freshHours();
     const ms = 3_600_000;
     // Age-tier boundaries as createdAt cutoffs (earlier timestamp = older lead).
+    // computeReprice uses half-open buckets where the LOWER edge belongs to the
+    // HIGHER tier (ageHours >= N*fresh), so the createdAt comparisons use
+    // `lte`/`gt` to match exactly at the boundary (age == N*fresh).
     const tier1Cutoff = new Date(now.getTime() - fresh * ms); // age >= 1x fresh
     const tier2Cutoff = new Date(now.getTime() - 2 * fresh * ms); // age >= 2x
     const tier3Cutoff = new Date(now.getTime() - 3 * fresh * ms); // age >= 3x
@@ -743,22 +752,25 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(leads.sold, false),
           eq(leads.removed, false),
+          // Freeze pricing while a lead is quarantined (see docstring).
+          eq(leads.flagged, false),
+          eq(leads.dncFlagged, false),
           eq(leads.pricingMode, "per_lead"),
-          lt(leads.createdAt, tier1Cutoff),
+          lte(leads.createdAt, tier1Cutoff),
           // Admit a row ONLY if it can actually move this sweep: its price is
           // still above the settled price for its current age-tier. This
           // excludes ALL no-ops (mid-tier settled rows, not just the floor),
           // so a large settled backlog can never consume the LIMIT budget and
           // starve leads that just crossed a tier — the reported failure mode.
           or(
-            and(lt(leads.createdAt, tier3Cutoff), sql`${leads.price}::numeric > ${basis} * ${f3}`),
+            and(lte(leads.createdAt, tier3Cutoff), sql`${leads.price}::numeric > ${basis} * ${f3}`),
             and(
-              gte(leads.createdAt, tier3Cutoff),
-              lt(leads.createdAt, tier2Cutoff),
+              gt(leads.createdAt, tier3Cutoff),
+              lte(leads.createdAt, tier2Cutoff),
               sql`${leads.price}::numeric > ${basis} * ${f2}`,
             ),
-            // Remaining band (tier2Cutoff <= createdAt < tier1Cutoff) is tier 1.
-            and(gte(leads.createdAt, tier2Cutoff), sql`${leads.price}::numeric > ${basis} * ${f1}`),
+            // Remaining band (tier2Cutoff < createdAt <= tier1Cutoff) is tier 1.
+            and(gt(leads.createdAt, tier2Cutoff), sql`${leads.price}::numeric > ${basis} * ${f1}`),
           )!,
         ),
       )

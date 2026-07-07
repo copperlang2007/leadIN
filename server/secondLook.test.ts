@@ -154,6 +154,8 @@ describe("computeReprice — eligibility + idempotency", () => {
     sold: false,
     removed: false,
     pricingMode: "per_lead",
+    flagged: false,
+    dncFlagged: false,
   };
 
   it("reprices an aged, unsold, per-lead lead and preserves the sticker as basis", () => {
@@ -173,6 +175,11 @@ describe("computeReprice — eligibility + idempotency", () => {
     expect(computeReprice({ ...base, sold: true }, now).shouldReprice).toBe(false);
     expect(computeReprice({ ...base, removed: true }, now).shouldReprice).toBe(false);
     expect(computeReprice({ ...base, pricingMode: "pay_per_close" }, now).shouldReprice).toBe(false);
+  });
+
+  it("freezes quarantined inventory (flagged / dncFlagged)", () => {
+    expect(computeReprice({ ...base, flagged: true }, now).shouldReprice).toBe(false);
+    expect(computeReprice({ ...base, dncFlagged: true }, now).shouldReprice).toBe(false);
   });
 
   it("keeps decaying from the ORIGINAL, not the already-discounted price", () => {
