@@ -792,7 +792,7 @@ export default function Marketplace() {
 
                           <div className="h-8 flex items-center gap-2 font-bold text-lg text-primary">
                             <span data-testid={`text-price-${lead.id}`}>${lead.price}</span>
-                            {lead.secondLook && lead.originalPrice && parseFloat(lead.originalPrice) > parseFloat(lead.price) && (
+                            {lead.secondLook && lead.originalPrice != null && parseFloat(lead.originalPrice) > parseFloat(lead.price) && (
                               <>
                                 <span className="text-xs font-normal text-muted-foreground line-through" data-testid={`text-original-price-${lead.id}`}>
                                   ${lead.originalPrice}

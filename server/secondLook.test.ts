@@ -96,6 +96,15 @@ describe("secondLookQuote — decay ladder", () => {
     const q = secondLookQuote("9.99", 30); // 15% off 9.99 = 8.4915
     expect(q.price).toBe("8.49");
   });
+
+  it("clamps a misconfigured 0/negative fresh window to 1h so tiers stay sane", () => {
+    // A 0-hour window must not push a truly-fresh lead into decay immediately;
+    // freshHours() clamps to 1h, so a 0.5h-old lead is still tier 0.
+    process.env.SECOND_LOOK_FRESH_HOURS = "0";
+    expect(secondLookQuote("100.00", 0.5).tier).toBe(0);
+    process.env.SECOND_LOOK_FRESH_HOURS = "-5";
+    expect(secondLookQuote("100.00", 0.5).tier).toBe(0);
+  });
 });
 
 describe("computeReprice — eligibility + idempotency", () => {

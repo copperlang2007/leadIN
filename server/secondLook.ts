@@ -26,8 +26,11 @@ import { log } from "./logger";
 // ── Tunables (env-overridable so ops can adjust the curve without a deploy) ──
 
 // A lead is "fresh" (never repriced) for this many hours after creation.
+// Clamped to a 1h minimum: a zero/sub-hour window would push every lead into
+// decay immediately and make the tier boundaries (fresh, 2*fresh, 3*fresh)
+// degenerate, so a misconfigured 0 or negative value fails safe to 1h.
 export function freshHours(): number {
-  return positiveNumber(process.env.SECOND_LOOK_FRESH_HOURS, 24);
+  return Math.max(1, positiveNumber(process.env.SECOND_LOOK_FRESH_HOURS, 24));
 }
 
 // The hard floor: a re-listed lead never drops below this fraction of its
