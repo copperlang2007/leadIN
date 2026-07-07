@@ -248,9 +248,9 @@ export function startSecondLookCron(): void {
       // statically imports the pure helpers from this module).
       const { storage } = await import("./storage.js");
       const result = await storage.repriceAgingLeads();
-      if (result.repriced > 0) {
-        log.info("[second-look] reprice sweep complete", { ...result });
-      }
+      // Log every tick (even repriced:0) so "ran and found nothing" is
+      // distinguishable from "didn't run" in a financial-adjacent sweep.
+      log.info("[second-look] reprice sweep complete", { ...result });
     },
   });
 }

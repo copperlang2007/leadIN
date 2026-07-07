@@ -5,6 +5,7 @@
 
 import cron from "node-cron";
 import { withAdvisoryLock } from "./lock";
+import { log } from "../logger";
 
 export interface CronJob {
   name: string;
@@ -24,7 +25,9 @@ export function registerCron(job: CronJob): void {
       try {
         await job.fn();
       } catch (err: any) {
-        console.error(`[cron:${job.name}] error:`, err?.message);
+        // Route through the structured logger so cron failures land in the
+        // same telemetry as the rest of the service.
+        log.error(`[cron:${job.name}] error`, { err: err?.message ?? String(err) });
       }
     });
     if (result === null) {

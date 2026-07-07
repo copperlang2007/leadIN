@@ -786,26 +786,41 @@ export class DatabaseStorage implements IStorage {
       const plan = computeReprice(lead, now);
       if (!plan.shouldReprice) continue;
 
-      const updated = await db
-        .update(leads)
-        .set({
-          price: plan.newPrice,
-          originalPrice: plan.basisPrice,
-          secondLook: true,
-          repricedAt: now,
-        })
-        // Compare-and-swap: re-assert sold=false to avoid racing a purchase
-        // that landed after the scan (a sold lead's order already captured
-        // its own price), AND that `price` still equals the scanned value so
-        // any future writer of leads.price (admin edit, surge pricing, vendor
-        // update) isn't silently clobbered by a stale reprice. Today nothing
-        // else writes leads.price, so this only ever no-ops defensively.
-        .where(and(eq(leads.id, lead.id), eq(leads.sold, false), eq(leads.price, lead.price)))
-        .returning({ id: leads.id });
+      try {
+        const updated = await db
+          .update(leads)
+          .set({
+            price: plan.newPrice,
+            originalPrice: plan.basisPrice,
+            secondLook: true,
+            repricedAt: now,
+          })
+          // Compare-and-swap: re-assert every candidate-SELECT predicate a
+          // concurrent writer could flip between the scan and this write, so a
+          // mismatch is a no-op instead of clobbering the concurrent change:
+          //   sold            — a purchase landed (its order captured the price)
+          //   flagged/dncFlagged — the lead was just quarantined (freeze it)
+          //   price           — another writer (admin/surge/vendor) moved it
+          .where(
+            and(
+              eq(leads.id, lead.id),
+              eq(leads.sold, false),
+              eq(leads.flagged, false),
+              eq(leads.dncFlagged, false),
+              eq(leads.price, lead.price),
+            ),
+          )
+          .returning({ id: leads.id });
 
-      if (updated.length > 0) {
-        repriced++;
-        byTier[plan.tier] = (byTier[plan.tier] ?? 0) + 1;
+        if (updated.length > 0) {
+          repriced++;
+          byTier[plan.tier] = (byTier[plan.tier] ?? 0) + 1;
+        }
+      } catch (err) {
+        // One flaky row must not forfeit the rest of the tick's LIMIT budget.
+        // The sweep is idempotent (a settled row is filtered out next scan),
+        // so a failed row is simply retried on the next :15 tick.
+        logError(`[second-look] reprice row failed (lead ${lead.id})`, err);
       }
     }
 
