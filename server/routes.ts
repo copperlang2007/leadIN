@@ -47,6 +47,7 @@ import { startCmsSignalCron, refreshCmsPlanSignals } from "./cmsPlanSignals";
 import { startDncRecheckCron, runDncRecheck } from "./dncRecheck";
 import { startEmailDigestCron, runDailyDigest } from "./emailDigest";
 import { startNiprRenewalCron, verifyAgentLicense } from "./niprSync";
+import { startSecondLookCron } from "./secondLook";
 import {
   attemptDeliveryForLead,
   startSmartMatchCycleCron,
@@ -360,6 +361,8 @@ export async function registerRoutes(
   // Load any persisted calibrated weights, then schedule weekly recalibration.
   loadPersistedCalibration().catch(err => logError("[mediscore] load-at-boot error:", err));
   startMediscoreCalibrationCron();
+  // M6 — hourly re-list of aging unsold inventory at a decaying price.
+  startSecondLookCron();
 
   // ──────────────────────────────────────────────────────
   // Stripe Webhook (raw body required – register BEFORE json middleware in index.ts)

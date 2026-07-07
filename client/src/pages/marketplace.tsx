@@ -790,7 +790,19 @@ export default function Marketplace() {
                             <span className="text-xs text-muted-foreground truncate">{lead.vendor.name}</span>
                           </div>
 
-                          <div className="h-8 flex items-center font-bold text-lg text-primary">${lead.price}</div>
+                          <div className="h-8 flex items-center gap-2 font-bold text-lg text-primary">
+                            <span data-testid={`text-price-${lead.id}`}>${lead.price}</span>
+                            {lead.secondLook && lead.originalPrice && parseFloat(lead.originalPrice) > parseFloat(lead.price) && (
+                              <>
+                                <span className="text-xs font-normal text-muted-foreground line-through" data-testid={`text-original-price-${lead.id}`}>
+                                  ${lead.originalPrice}
+                                </span>
+                                <Badge variant="secondary" className="text-[10px] font-semibold uppercase tracking-wide" data-testid={`badge-second-look-${lead.id}`}>
+                                  Second look
+                                </Badge>
+                              </>
+                            )}
+                          </div>
                           <div className="h-8 flex items-center">
                             <Badge variant={lead.compatibilityScore > 80 ? "default" : "secondary"}>
                               {lead.compatibilityScore}% Match

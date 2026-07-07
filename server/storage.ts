@@ -85,6 +85,7 @@ import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "dr
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import { computeReprice, freshHours, maxPerRun } from "./secondLook";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -703,6 +704,64 @@ export class DatabaseStorage implements IStorage {
   async createLead(data: InsertLead): Promise<Lead> {
     const [lead] = await db.insert(leads).values(data).returning();
     return lead;
+  }
+
+  /**
+   * Second-Look Re-list (M6): decay the price of aging, unsold, per-lead
+   * inventory so it can still convert instead of expiring at sticker price.
+   *
+   * Pure decay policy lives in secondLook.ts; this method just selects the
+   * eligible candidates and persists the plan. It's idempotent — a lead that
+   * is already at its tier price yields shouldReprice=false and is skipped —
+   * and every UPDATE re-checks `sold=false` so a lead that sold between the
+   * scan and the write is left alone.
+   */
+  async repriceAgingLeads(
+    now: Date = new Date(),
+  ): Promise<{ scanned: number; repriced: number; byTier: Record<number, number> }> {
+    const cutoff = new Date(now.getTime() - freshHours() * 3_600_000);
+
+    const candidates = await db
+      .select()
+      .from(leads)
+      .where(
+        and(
+          eq(leads.sold, false),
+          eq(leads.removed, false),
+          eq(leads.pricingMode, "per_lead"),
+          lt(leads.createdAt, cutoff),
+        ),
+      )
+      .orderBy(leads.createdAt) // oldest (most decayed) first
+      .limit(maxPerRun());
+
+    let repriced = 0;
+    const byTier: Record<number, number> = {};
+
+    for (const lead of candidates) {
+      const plan = computeReprice(lead, now);
+      if (!plan.shouldReprice) continue;
+
+      const updated = await db
+        .update(leads)
+        .set({
+          price: plan.newPrice,
+          originalPrice: plan.basisPrice,
+          secondLook: true,
+          repricedAt: now,
+        })
+        // Re-assert sold=false to avoid racing a purchase that landed after
+        // the scan; a sold lead's order already captured its own price.
+        .where(and(eq(leads.id, lead.id), eq(leads.sold, false)))
+        .returning({ id: leads.id });
+
+      if (updated.length > 0) {
+        repriced++;
+        byTier[plan.tier] = (byTier[plan.tier] ?? 0) + 1;
+      }
+    }
+
+    return { scanned: candidates.length, repriced, byTier };
   }
 
   async purchaseLead(leadId: number, userId: string): Promise<Order> {

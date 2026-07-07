@@ -1,0 +1,129 @@
+// Integration test: Second-Look Re-list (storage.repriceAgingLeads) — the
+// aging-inventory decay path.
+//
+// The repricer walks unsold, per-lead inventory older than the freshness
+// window and decays `price` toward a floor while preserving the sticker value
+// in `originalPrice`. The invariants below need a real Postgres: the numeric
+// price column, the createdAt-based age filter, and — critically — that a
+// re-listed lead's purchase then charges the DECAYED price (proving the money
+// path reads the same column the repricer wrote).
+//
+// Skipped unless LIVE_DB_TESTS=1 and DATABASE_URL is set.
+
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { LIVE, seedUser, seedLead, assertDbReachable } from "./setup.js";
+import { db } from "../db";
+import { storage } from "../storage";
+import { users, leads, orders } from "@shared/schema";
+
+const H = 3_600_000; // ms per hour
+
+async function setBalance(userId: string, balance: string): Promise<void> {
+  await db.update(users).set({ balance }).where(eq(users.id, userId));
+}
+async function getBalance(userId: string): Promise<number> {
+  const [u] = await db.select({ balance: users.balance }).from(users).where(eq(users.id, userId));
+  return Number(u.balance);
+}
+async function getLeadRow(leadId: number) {
+  const [l] = await db.select().from(leads).where(eq(leads.id, leadId));
+  return l;
+}
+
+describe.skipIf(!LIVE)("second-look re-list (live DB)", () => {
+  // Pin the decay knobs so the assertions are deterministic against the DB.
+  const KNOBS = ["SECOND_LOOK_FRESH_HOURS", "SECOND_LOOK_FLOOR_PCT", "SECOND_LOOK_MIN_PRICE"];
+  let saved: Record<string, string | undefined>;
+
+  beforeAll(async () => {
+    await assertDbReachable();
+  });
+
+  beforeEach(() => {
+    saved = {};
+    for (const k of KNOBS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    process.env.SECOND_LOOK_FRESH_HOURS = "24";
+    process.env.SECOND_LOOK_FLOOR_PCT = "0.5";
+  });
+  afterEach(() => {
+    for (const k of KNOBS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("decays an aged unsold lead to the floor and preserves the sticker price", async () => {
+    // 100h old, default sticker $10.00 → tier 3 → 50% floor → $5.00.
+    const leadId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+
+    const result = await storage.repriceAgingLeads();
+    expect(result.repriced).toBeGreaterThanOrEqual(1);
+
+    const lead = await getLeadRow(leadId);
+    expect(Number(lead.price)).toBe(5);
+    expect(Number(lead.originalPrice)).toBe(10);
+    expect(lead.secondLook).toBe(true);
+    expect(lead.repricedAt).not.toBeNull();
+  });
+
+  it("leaves a still-fresh lead untouched", async () => {
+    const leadId = await seedLead({ createdAt: new Date(Date.now() - 1 * H) });
+
+    await storage.repriceAgingLeads();
+
+    const lead = await getLeadRow(leadId);
+    expect(Number(lead.price)).toBe(10);
+    expect(lead.secondLook).toBe(false);
+    expect(lead.originalPrice).toBeNull();
+  });
+
+  it("is idempotent — a second sweep does not move an already-decayed lead", async () => {
+    const leadId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+
+    await storage.repriceAgingLeads();
+    const afterFirst = await getLeadRow(leadId);
+    const repricedAt1 = afterFirst.repricedAt;
+
+    await storage.repriceAgingLeads();
+    const afterSecond = await getLeadRow(leadId);
+
+    // Price is unchanged AND the row wasn't rewritten (repricedAt is stable),
+    // proving computeReprice returned shouldReprice=false the second time.
+    expect(Number(afterSecond.price)).toBe(5);
+    expect(afterSecond.repricedAt?.getTime()).toBe(repricedAt1?.getTime());
+  });
+
+  it("does not touch removed inventory", async () => {
+    const leadId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+    await db.update(leads).set({ removed: true }).where(eq(leads.id, leadId));
+
+    await storage.repriceAgingLeads();
+
+    const lead = await getLeadRow(leadId);
+    expect(Number(lead.price)).toBe(10);
+    expect(lead.secondLook).toBe(false);
+  });
+
+  it("money path: buying a re-listed lead charges the DECAYED price", async () => {
+    const buyer = await seedUser();
+    await setBalance(buyer, "100.00");
+    const leadId = await seedLead({ createdAt: new Date(Date.now() - 100 * H) });
+
+    await storage.repriceAgingLeads(); // → $5.00
+
+    const order = await storage.purchaseLead(leadId, buyer);
+
+    // Charged the decayed $5, not the $10 sticker.
+    expect(await getBalance(buyer)).toBe(95);
+    expect(Number(order.price)).toBe(5);
+
+    const lead = await getLeadRow(leadId);
+    expect(lead.sold).toBe(true);
+    // Sticker price is still visible for "was $10" display.
+    expect(Number(lead.originalPrice)).toBe(10);
+  });
+});

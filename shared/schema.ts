@@ -207,6 +207,14 @@ export const leads = pgTable("leads", {
   soldAt: timestamp("sold_at"),
   purchasedBy: varchar("purchased_by").references(() => users.id),
 
+  // ──── M6: Second-Look Re-list ────
+  // When an unsold lead ages past the freshness window, the repricer decays
+  // `price` and records the sticker value here so the UI can show "was $X"
+  // and the next decay is computed from the original, not the discounted, price.
+  originalPrice: decimal("original_price", { precision: 10, scale: 2 }),
+  secondLook: boolean("second_look").notNull().default(false),
+  repricedAt: timestamp("repriced_at"),
+
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_leads_state").on(table.state),
