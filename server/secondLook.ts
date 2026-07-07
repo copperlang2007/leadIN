@@ -26,17 +26,40 @@ import { log } from "./logger";
 // ── Tunables (env-overridable so ops can adjust the curve without a deploy) ──
 
 // A lead is "fresh" (never repriced) for this many hours after creation.
-// Clamped to a 1h minimum: a zero/sub-hour window would push every lead into
-// decay immediately and make the tier boundaries (fresh, 2*fresh, 3*fresh)
-// degenerate, so a misconfigured 0 or negative value fails safe to 1h.
+// A zero/sub-hour window would collapse the tier boundaries (fresh, 2*fresh,
+// 3*fresh) to ~0 and drop the entire live inventory to the floor on the next
+// tick, so anything < 1h (or non-numeric) falls back to the default with a
+// warning — a visible misconfiguration instead of a silently-broken feature.
 export function freshHours(): number {
-  return Math.max(1, positiveNumber(process.env.SECOND_LOOK_FRESH_HOURS, 24));
+  const raw = process.env.SECOND_LOOK_FRESH_HOURS;
+  if (raw === undefined) return 24;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) {
+    log.warn(
+      "[second-look] SECOND_LOOK_FRESH_HOURS must be a number of hours >= 1; falling back to default 24",
+      { got: raw },
+    );
+    return 24;
+  }
+  return n;
 }
 
 // The hard floor: a re-listed lead never drops below this fraction of its
 // original price (default 50%). Also caps every tier's discount.
 export function floorPct(): number {
   const raw = positiveNumber(process.env.SECOND_LOOK_FLOOR_PCT, 0.5);
+  // This knob is a FRACTION in (0, 1], not a percentage. A percent-shaped
+  // value like "50" (meaning 50%) would clamp to 1.0 → floor = 100% of
+  // original → every tier's discount collapses to 0 and the whole feature
+  // silently no-ops. Reject > 1 loudly and fall back to the default so the
+  // misconfiguration is visible instead of a dead cron.
+  if (raw > 1) {
+    log.warn(
+      "[second-look] SECOND_LOOK_FLOOR_PCT must be a fraction in (0,1] (e.g. 0.5 for 50%); falling back to default 0.5",
+      { got: raw },
+    );
+    return 0.5;
+  }
   // Clamp to a sane (0, 1] range — a floor of 0 would let leads go free.
   return Math.min(1, Math.max(0.01, raw));
 }

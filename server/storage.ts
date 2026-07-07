@@ -750,9 +750,13 @@ export class DatabaseStorage implements IStorage {
           secondLook: true,
           repricedAt: now,
         })
-        // Re-assert sold=false to avoid racing a purchase that landed after
-        // the scan; a sold lead's order already captured its own price.
-        .where(and(eq(leads.id, lead.id), eq(leads.sold, false)))
+        // Compare-and-swap: re-assert sold=false to avoid racing a purchase
+        // that landed after the scan (a sold lead's order already captured
+        // its own price), AND that `price` still equals the scanned value so
+        // any future writer of leads.price (admin edit, surge pricing, vendor
+        // update) isn't silently clobbered by a stale reprice. Today nothing
+        // else writes leads.price, so this only ever no-ops defensively.
+        .where(and(eq(leads.id, lead.id), eq(leads.sold, false), eq(leads.price, lead.price)))
         .returning({ id: leads.id });
 
       if (updated.length > 0) {

@@ -97,13 +97,24 @@ describe("secondLookQuote — decay ladder", () => {
     expect(q.price).toBe("8.49");
   });
 
-  it("clamps a misconfigured 0/negative fresh window to 1h so tiers stay sane", () => {
-    // A 0-hour window must not push a truly-fresh lead into decay immediately;
-    // freshHours() clamps to 1h, so a 0.5h-old lead is still tier 0.
-    process.env.SECOND_LOOK_FRESH_HOURS = "0";
-    expect(secondLookQuote("100.00", 0.5).tier).toBe(0);
-    process.env.SECOND_LOOK_FRESH_HOURS = "-5";
-    expect(secondLookQuote("100.00", 0.5).tier).toBe(0);
+  it("falls back to the 24h default on a misconfigured 0/negative/NaN fresh window", () => {
+    // A 0/sub-1h window would collapse the tiers and drop all inventory to the
+    // floor on the next tick; freshHours() falls back to 24, so a 10h-old lead
+    // stays fresh (tier 0) rather than jumping straight to tier 3.
+    for (const bad of ["0", "-5", "not-a-number"]) {
+      process.env.SECOND_LOOK_FRESH_HOURS = bad;
+      expect(secondLookQuote("100.00", 10).tier).toBe(0);
+    }
+  });
+
+  it("falls back to the 0.5 floor default when FLOOR_PCT is percent-shaped (> 1)", () => {
+    // "50" reads as 50 (i.e. 5000%), which would clamp to a 100% floor and
+    // silently disable all discounting. Reject > 1 and use the default so a
+    // deep-tier lead still decays to 50%.
+    process.env.SECOND_LOOK_FLOOR_PCT = "50";
+    const q = secondLookQuote("100.00", 100); // tier 3
+    expect(q.price).toBe("50.00");
+    expect(q.discountPct).toBeCloseTo(0.5, 5);
   });
 });
 
