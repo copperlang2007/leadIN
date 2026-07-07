@@ -81,11 +81,11 @@ import {
   type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, gt, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
-import { computeReprice, freshHours, maxPerRun } from "./secondLook";
+import { computeReprice, freshHours, maxPerRun, floorPct } from "./secondLook";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -730,9 +730,24 @@ export class DatabaseStorage implements IStorage {
           eq(leads.removed, false),
           eq(leads.pricingMode, "per_lead"),
           lt(leads.createdAt, cutoff),
+          // Exclude leads already at (or below) their floor: they can never
+          // move again, so including them just burns the LIMIT budget on
+          // guaranteed no-ops. Without this, an at-floor backlog larger than
+          // maxPerRun() permanently starves newly-aged leads and the sweep
+          // silently reports repriced:0. `secondLook=false` rows have never
+          // been repriced (originalPrice is null) so are always kept; the
+          // HALF_UP-rounded price is always >= the exact floor, so this can
+          // never wrongly exclude a still-movable row.
+          or(
+            eq(leads.secondLook, false),
+            gt(leads.price, sql`${leads.originalPrice} * ${floorPct()}`),
+          )!,
         ),
       )
-      .orderBy(leads.createdAt) // oldest (most decayed) first
+      // Never-repriced (just-aged) leads first, then least-recently-repriced,
+      // so a large partially-decayed backlog can't crowd out leads that just
+      // crossed a tier boundary.
+      .orderBy(sql`${leads.repricedAt} ASC NULLS FIRST`, leads.createdAt)
       .limit(maxPerRun());
 
     let repriced = 0;

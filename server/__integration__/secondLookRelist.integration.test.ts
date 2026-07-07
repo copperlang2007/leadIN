@@ -33,7 +33,12 @@ async function getLeadRow(leadId: number) {
 
 describe.skipIf(!LIVE)("second-look re-list (live DB)", () => {
   // Pin the decay knobs so the assertions are deterministic against the DB.
-  const KNOBS = ["SECOND_LOOK_FRESH_HOURS", "SECOND_LOOK_FLOOR_PCT", "SECOND_LOOK_MIN_PRICE"];
+  const KNOBS = [
+    "SECOND_LOOK_FRESH_HOURS",
+    "SECOND_LOOK_FLOOR_PCT",
+    "SECOND_LOOK_MIN_PRICE",
+    "SECOND_LOOK_MAX_PER_RUN",
+  ];
   let saved: Record<string, string | undefined>;
 
   beforeAll(async () => {
@@ -106,6 +111,33 @@ describe.skipIf(!LIVE)("second-look re-list (live DB)", () => {
     const lead = await getLeadRow(leadId);
     expect(Number(lead.price)).toBe(10);
     expect(lead.secondLook).toBe(false);
+  });
+
+  it("does not starve a newly-aged lead behind an at-floor backlog larger than the per-run cap", async () => {
+    // Build a fully-decayed (at-floor) backlog, then verify a lead that just
+    // crossed into tier 1 still reprices in the next sweep even though the
+    // backlog exceeds SECOND_LOOK_MAX_PER_RUN — i.e. at-floor rows don't
+    // monopolize the LIMIT budget (the reported starvation bug).
+    process.env.SECOND_LOOK_MAX_PER_RUN = "100"; // decay the backlog first
+    const backlog: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      backlog.push(await seedLead({ createdAt: new Date(Date.now() - (100 + i) * H) }));
+    }
+    await storage.repriceAgingLeads();
+    for (const id of backlog) expect(Number((await getLeadRow(id)).price)).toBe(5);
+
+    // Now impose a tight per-run cap (2) that's smaller than the backlog (3),
+    // and add a freshly-tier-1 lead (30h old, never repriced).
+    process.env.SECOND_LOOK_MAX_PER_RUN = "2";
+    const newlyAged = await seedLead({ createdAt: new Date(Date.now() - 30 * H) });
+
+    await storage.repriceAgingLeads();
+
+    // The at-floor backlog is excluded from candidacy, so the tight cap is
+    // spent on the lead that can actually move.
+    const lead = await getLeadRow(newlyAged);
+    expect(lead.secondLook).toBe(true);
+    expect(Number(lead.price)).toBe(8.5); // 15% off the $10 sticker (tier 1)
   });
 
   it("money path: buying a re-listed lead charges the DECAYED price", async () => {
