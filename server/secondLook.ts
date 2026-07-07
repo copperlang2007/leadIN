@@ -93,6 +93,24 @@ function positiveNumber(raw: string | undefined, fallback: number): number {
 //   tier 3  age ≥ 3x fresh     → floor   (max discount)
 const TIER_DISCOUNTS = [0, 0.15, 0.3] as const;
 
+/**
+ * The fraction of the ORIGINAL price a lead settles at once it has been
+ * repriced for a given tier (1..3) — i.e. `settled price / original`. Derived
+ * from the same discount ladder + floor as secondLookQuote, so the repricer's
+ * candidate SQL can cheaply express "this row is still ABOVE its tier's
+ * settled price, so it can still move" without re-implementing the curve.
+ *
+ * A row at age-tier T is a repricing no-op exactly when its current price is
+ * already <= original * tierPriceFraction(T); the sweep uses this to exclude
+ * settled rows (at any tier, not just the floor) from the LIMIT budget.
+ */
+export function tierPriceFraction(tier: 1 | 2 | 3): number {
+  const floor = floorPct();
+  if (tier === 3) return floor;
+  const discount = Math.min(TIER_DISCOUNTS[tier], 1 - floor);
+  return 1 - discount;
+}
+
 export interface SecondLookQuote {
   price: string; // decayed price, 2-dp string (canonical for the numeric column)
   tier: number; // 0 = fresh/no discount, 1..3 = decay tier

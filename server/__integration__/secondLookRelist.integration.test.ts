@@ -140,6 +140,30 @@ describe.skipIf(!LIVE)("second-look re-list (live DB)", () => {
     expect(Number(lead.price)).toBe(8.5); // 15% off the $10 sticker (tier 1)
   });
 
+  it("does not starve tier-1 leads behind a MID-TIER settled backlog over the cap", async () => {
+    // Regression for the subtler starvation: a tier-2 SETTLED lead ($7 on a
+    // $10 sticker) is a computeReprice no-op but sits ABOVE the floor, so a
+    // floor-only exclusion would still let it consume budget. Verify the
+    // age-tier-aware predicate excludes it too.
+    process.env.SECOND_LOOK_MAX_PER_RUN = "100";
+    const tier2: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      tier2.push(await seedLead({ createdAt: new Date(Date.now() - (50 + i) * H) })); // tier 2
+    }
+    await storage.repriceAgingLeads();
+    for (const id of tier2) expect(Number((await getLeadRow(id)).price)).toBe(7); // 30% off
+
+    // Cap below the settled backlog; add a freshly-tier-1 lead.
+    process.env.SECOND_LOOK_MAX_PER_RUN = "2";
+    const newlyAged = await seedLead({ createdAt: new Date(Date.now() - 30 * H) });
+
+    await storage.repriceAgingLeads();
+
+    const lead = await getLeadRow(newlyAged);
+    expect(lead.secondLook).toBe(true);
+    expect(Number(lead.price)).toBe(8.5); // tier 1, not starved by the settled tier-2 rows
+  });
+
   it("money path: buying a re-listed lead charges the DECAYED price", async () => {
     const buyer = await seedUser();
     await setBalance(buyer, "100.00");

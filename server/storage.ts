@@ -81,11 +81,11 @@ import {
   type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, gt, lt, count, sum, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
-import { computeReprice, freshHours, maxPerRun, floorPct } from "./secondLook";
+import { computeReprice, freshHours, maxPerRun, tierPriceFraction } from "./secondLook";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -719,7 +719,22 @@ export class DatabaseStorage implements IStorage {
   async repriceAgingLeads(
     now: Date = new Date(),
   ): Promise<{ scanned: number; repriced: number; byTier: Record<number, number> }> {
-    const cutoff = new Date(now.getTime() - freshHours() * 3_600_000);
+    const fresh = freshHours();
+    const ms = 3_600_000;
+    // Age-tier boundaries as createdAt cutoffs (earlier timestamp = older lead).
+    const tier1Cutoff = new Date(now.getTime() - fresh * ms); // age >= 1x fresh
+    const tier2Cutoff = new Date(now.getTime() - 2 * fresh * ms); // age >= 2x
+    const tier3Cutoff = new Date(now.getTime() - 3 * fresh * ms); // age >= 3x
+
+    // The settled price/original fraction for each tier. A row is a repricing
+    // no-op once its price is already <= basis * fraction for its CURRENT tier.
+    const f1 = tierPriceFraction(1);
+    const f2 = tierPriceFraction(2);
+    const f3 = tierPriceFraction(3);
+    // Never-repriced rows have originalPrice=null; fall back to the current
+    // price as the basis (matches computeReprice's `originalPrice ?? price`),
+    // so a fresh lead is always ABOVE its tier fraction and stays a candidate.
+    const basis = sql`coalesce(${leads.originalPrice}, ${leads.price})::numeric`;
 
     const candidates = await db
       .select()
@@ -729,24 +744,26 @@ export class DatabaseStorage implements IStorage {
           eq(leads.sold, false),
           eq(leads.removed, false),
           eq(leads.pricingMode, "per_lead"),
-          lt(leads.createdAt, cutoff),
-          // Exclude leads already at (or below) their floor: they can never
-          // move again, so including them just burns the LIMIT budget on
-          // guaranteed no-ops. Without this, an at-floor backlog larger than
-          // maxPerRun() permanently starves newly-aged leads and the sweep
-          // silently reports repriced:0. `secondLook=false` rows have never
-          // been repriced (originalPrice is null) so are always kept; the
-          // HALF_UP-rounded price is always >= the exact floor, so this can
-          // never wrongly exclude a still-movable row.
+          lt(leads.createdAt, tier1Cutoff),
+          // Admit a row ONLY if it can actually move this sweep: its price is
+          // still above the settled price for its current age-tier. This
+          // excludes ALL no-ops (mid-tier settled rows, not just the floor),
+          // so a large settled backlog can never consume the LIMIT budget and
+          // starve leads that just crossed a tier — the reported failure mode.
           or(
-            eq(leads.secondLook, false),
-            gt(leads.price, sql`${leads.originalPrice} * ${floorPct()}`),
+            and(lt(leads.createdAt, tier3Cutoff), sql`${leads.price}::numeric > ${basis} * ${f3}`),
+            and(
+              gte(leads.createdAt, tier3Cutoff),
+              lt(leads.createdAt, tier2Cutoff),
+              sql`${leads.price}::numeric > ${basis} * ${f2}`,
+            ),
+            // Remaining band (tier2Cutoff <= createdAt < tier1Cutoff) is tier 1.
+            and(gte(leads.createdAt, tier2Cutoff), sql`${leads.price}::numeric > ${basis} * ${f1}`),
           )!,
         ),
       )
-      // Never-repriced (just-aged) leads first, then least-recently-repriced,
-      // so a large partially-decayed backlog can't crowd out leads that just
-      // crossed a tier boundary.
+      // Among movable rows, process never-repriced (just-aged) first, then
+      // least-recently-repriced, for fair progress across tier transitions.
       .orderBy(sql`${leads.repricedAt} ASC NULLS FIRST`, leads.createdAt)
       .limit(maxPerRun());
 

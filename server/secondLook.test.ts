@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { secondLookQuote, computeReprice, type RepriceableLead } from "./secondLook";
+import { secondLookQuote, computeReprice, tierPriceFraction, type RepriceableLead } from "./secondLook";
 
 // The pricing curve reads a handful of env knobs; pin them to known defaults
 // so the assertions are deterministic regardless of the ambient environment.
@@ -115,6 +115,33 @@ describe("secondLookQuote — decay ladder", () => {
     const q = secondLookQuote("100.00", 100); // tier 3
     expect(q.price).toBe("50.00");
     expect(q.discountPct).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe("tierPriceFraction — settled price/original per tier", () => {
+  it("matches the decay ladder at the default 0.5 floor", () => {
+    expect(tierPriceFraction(1)).toBeCloseTo(0.85, 5); // 15% off
+    expect(tierPriceFraction(2)).toBeCloseTo(0.7, 5); // 30% off
+    expect(tierPriceFraction(3)).toBeCloseTo(0.5, 5); // floor
+  });
+
+  it("caps every tier at the floor when the floor is shallow", () => {
+    process.env.SECOND_LOOK_FLOOR_PCT = "0.9"; // max 10% off
+    expect(tierPriceFraction(1)).toBeCloseTo(0.9, 5);
+    expect(tierPriceFraction(2)).toBeCloseTo(0.9, 5);
+    expect(tierPriceFraction(3)).toBeCloseTo(0.9, 5);
+  });
+
+  it("agrees with secondLookQuote's settled price at each tier", () => {
+    // The fraction * original must equal the quote at that tier's age.
+    for (const [tier, age] of [
+      [1, 30],
+      [2, 50],
+      [3, 100],
+    ] as const) {
+      const settled = Number(secondLookQuote("100.00", age).price);
+      expect(settled).toBeCloseTo(100 * tierPriceFraction(tier), 2);
+    }
   });
 });
 
