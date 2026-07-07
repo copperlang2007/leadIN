@@ -81,10 +81,11 @@ import {
   type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, lt, count, sum, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
+import { computeReprice, freshHours, maxPerRun, tierPriceFraction } from "./secondLook";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -703,6 +704,127 @@ export class DatabaseStorage implements IStorage {
   async createLead(data: InsertLead): Promise<Lead> {
     const [lead] = await db.insert(leads).values(data).returning();
     return lead;
+  }
+
+  /**
+   * Second-Look Re-list (M6): decay the price of aging, unsold, per-lead
+   * inventory so it can still convert instead of expiring at sticker price.
+   *
+   * Pure decay policy lives in secondLook.ts; this method just selects the
+   * eligible candidates and persists the plan. It's idempotent — a lead that
+   * is already at its tier price yields shouldReprice=false and is skipped —
+   * and every UPDATE re-checks `sold=false` so a lead that sold between the
+   * scan and the write is left alone.
+   *
+   * Quarantined inventory is frozen: `flagged` (under admin review) and
+   * `dncFlagged` (DNC-blocked, hidden from the marketplace) leads are NOT
+   * decayed. They aren't actually available to buy, so their "aging in the
+   * market" clock is paused — otherwise clearing the flag later (e.g. a DNC
+   * recheck) would surface a lead that had silently decayed while invisible.
+   */
+  async repriceAgingLeads(
+    now: Date = new Date(),
+  ): Promise<{ scanned: number; repriced: number; byTier: Record<number, number> }> {
+    const fresh = freshHours();
+    const ms = 3_600_000;
+    // Age-tier boundaries as createdAt cutoffs (earlier timestamp = older lead).
+    // computeReprice uses half-open buckets where the LOWER edge belongs to the
+    // HIGHER tier (ageHours >= N*fresh), so the createdAt comparisons use
+    // `lte`/`gt` to match exactly at the boundary (age == N*fresh).
+    const tier1Cutoff = new Date(now.getTime() - fresh * ms); // age >= 1x fresh
+    const tier2Cutoff = new Date(now.getTime() - 2 * fresh * ms); // age >= 2x
+    const tier3Cutoff = new Date(now.getTime() - 3 * fresh * ms); // age >= 3x
+
+    // The settled price/original fraction for each tier. A row is a repricing
+    // no-op once its price is already <= basis * fraction for its CURRENT tier.
+    const f1 = tierPriceFraction(1);
+    const f2 = tierPriceFraction(2);
+    const f3 = tierPriceFraction(3);
+    // Never-repriced rows have originalPrice=null; fall back to the current
+    // price as the basis (matches computeReprice's `originalPrice ?? price`),
+    // so a fresh lead is always ABOVE its tier fraction and stays a candidate.
+    const basis = sql`coalesce(${leads.originalPrice}, ${leads.price})::numeric`;
+
+    const candidates = await db
+      .select()
+      .from(leads)
+      .where(
+        and(
+          eq(leads.sold, false),
+          eq(leads.removed, false),
+          // Freeze pricing while a lead is quarantined (see docstring).
+          eq(leads.flagged, false),
+          eq(leads.dncFlagged, false),
+          eq(leads.pricingMode, "per_lead"),
+          lte(leads.createdAt, tier1Cutoff),
+          // Admit a row ONLY if it can actually move this sweep: its price is
+          // still above the settled price for its current age-tier. This
+          // excludes ALL no-ops (mid-tier settled rows, not just the floor),
+          // so a large settled backlog can never consume the LIMIT budget and
+          // starve leads that just crossed a tier — the reported failure mode.
+          or(
+            and(lte(leads.createdAt, tier3Cutoff), sql`${leads.price}::numeric > ${basis} * ${f3}`),
+            and(
+              gt(leads.createdAt, tier3Cutoff),
+              lte(leads.createdAt, tier2Cutoff),
+              sql`${leads.price}::numeric > ${basis} * ${f2}`,
+            ),
+            // Remaining band (tier2Cutoff < createdAt <= tier1Cutoff) is tier 1.
+            and(gt(leads.createdAt, tier2Cutoff), sql`${leads.price}::numeric > ${basis} * ${f1}`),
+          )!,
+        ),
+      )
+      // Among movable rows, process never-repriced (just-aged) first, then
+      // least-recently-repriced, for fair progress across tier transitions.
+      .orderBy(sql`${leads.repricedAt} ASC NULLS FIRST`, leads.createdAt)
+      .limit(maxPerRun());
+
+    let repriced = 0;
+    const byTier: Record<number, number> = {};
+
+    for (const lead of candidates) {
+      const plan = computeReprice(lead, now);
+      if (!plan.shouldReprice) continue;
+
+      try {
+        const updated = await db
+          .update(leads)
+          .set({
+            price: plan.newPrice,
+            originalPrice: plan.basisPrice,
+            secondLook: true,
+            repricedAt: now,
+          })
+          // Compare-and-swap: re-assert every candidate-SELECT predicate a
+          // concurrent writer could flip between the scan and this write, so a
+          // mismatch is a no-op instead of clobbering the concurrent change:
+          //   sold            — a purchase landed (its order captured the price)
+          //   flagged/dncFlagged — the lead was just quarantined (freeze it)
+          //   price           — another writer (admin/surge/vendor) moved it
+          .where(
+            and(
+              eq(leads.id, lead.id),
+              eq(leads.sold, false),
+              eq(leads.flagged, false),
+              eq(leads.dncFlagged, false),
+              eq(leads.price, lead.price),
+            ),
+          )
+          .returning({ id: leads.id });
+
+        if (updated.length > 0) {
+          repriced++;
+          byTier[plan.tier] = (byTier[plan.tier] ?? 0) + 1;
+        }
+      } catch (err) {
+        // One flaky row must not forfeit the rest of the tick's LIMIT budget.
+        // The sweep is idempotent (a settled row is filtered out next scan),
+        // so a failed row is simply retried on the next :15 tick.
+        logError(`[second-look] reprice row failed (lead ${lead.id})`, err);
+      }
+    }
+
+    return { scanned: candidates.length, repriced, byTier };
   }
 
   async purchaseLead(leadId: number, userId: string): Promise<Order> {

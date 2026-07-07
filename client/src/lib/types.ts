@@ -42,6 +42,11 @@ export interface Lead {
   removed: boolean;
   soldAt: string | null;
   purchasedBy: string | null;
+  // M6 — Second-Look Re-list: sticker price + flag when the lead has been
+  // re-listed at a decayed price.
+  originalPrice: string | null;
+  secondLook: boolean;
+  repricedAt: string | null;
   createdAt: string | null;
   vendor: Vendor;
   // PII fields (null until purchased)
