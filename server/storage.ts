@@ -908,6 +908,92 @@ export class DatabaseStorage implements IStorage {
     return order;
   }
 
+  /**
+   * Atomic multi-lead purchase (Bulk Buy). Buys every requested lead in a
+   * single transaction with a single wallet debit, or nothing at all:
+   *   - all-or-nothing: if ANY lead is missing/sold/removed, or the buyer
+   *     can't afford the combined price, the whole batch rolls back and no
+   *     lead is sold and no money moves;
+   *   - deadlock-safe: leads are locked FOR UPDATE in ascending id order and
+   *     the buyer's wallet last, matching purchaseLead's lead-then-user order,
+   *     so single and batch purchases (and two overlapping batches) can't
+   *     form a lock cycle;
+   *   - duplicate ids in the request collapse to one purchase each.
+   *
+   * Reputation events and CRM sync run post-commit, per order, for the same
+   * FK-self-deadlock / best-effort reasons documented on purchaseLead.
+   */
+  async purchaseLeads(leadIds: number[], userId: string): Promise<Order[]> {
+    const ids = Array.from(new Set(leadIds)).sort((a, b) => a - b);
+    if (ids.length === 0) throw new Error("No leads specified");
+
+    const createdOrders = await db.transaction(async (tx) => {
+      // Lock every requested lead in a stable (ascending id) order.
+      const lockedLeads = await tx
+        .select()
+        .from(leads)
+        .where(inArray(leads.id, ids))
+        .orderBy(leads.id)
+        .for("update");
+
+      // All-or-nothing validation — surface the first blocking lead by id.
+      if (lockedLeads.length !== ids.length) throw new Error("One or more leads not found");
+      for (const lead of lockedLeads) {
+        if (lead.sold) throw new Error(`Lead ${lead.id} already sold`);
+        if (lead.removed) throw new Error(`Lead ${lead.id} is no longer available`);
+      }
+
+      const [user] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
+      if (!user) throw new Error("User not found");
+
+      // Combined price with Decimal to avoid float drift across the batch.
+      const total = lockedLeads.reduce((sum, l) => sum.plus(new Decimal(l.price)), new Decimal(0));
+      const userBalance = new Decimal(user.balance);
+      if (userBalance.lessThan(total)) throw new Error("Insufficient balance");
+
+      await tx
+        .update(users)
+        .set({ balance: userBalance.minus(total).toFixed(2), updatedAt: new Date() })
+        .where(eq(users.id, userId));
+
+      const soldAt = new Date();
+      const result: Order[] = [];
+      for (const lead of lockedLeads) {
+        await tx
+          .update(leads)
+          .set({ sold: true, soldAt, purchasedBy: userId })
+          .where(eq(leads.id, lead.id));
+
+        const [orderRow] = await tx
+          .insert(orders)
+          .values({ userId, leadId: lead.id, orgId: lead.orgId ?? null, price: lead.price, status: "completed" })
+          .returning();
+
+        const salePriceCents = new Decimal(lead.price).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+        await this.creditVendorOnSaleTx(tx, orderRow.id, lead.id, lead.vendorId, salePriceCents);
+        result.push(orderRow);
+      }
+      return result;
+    });
+
+    // Post-commit, best-effort, one per order (see purchaseLead for why these
+    // must not run inside the FOR UPDATE transaction).
+    for (const order of createdOrders) {
+      await recordReputationEventCore({
+        agentUserId: userId,
+        eventType: "purchase",
+        relatedLeadId: order.leadId,
+      });
+      if (order.orgId) {
+        void import("./crmSync.js")
+          .then(m => m.syncOrderToCrms(order, { storage: this }))
+          .catch(err => logError("[crmSync] post-purchase sync failed", err));
+      }
+    }
+
+    return createdOrders;
+  }
+
   async checkDuplicateLead(phone: string | undefined, type: string): Promise<boolean> {
     if (!phone) return false;
     const [existing] = await db
