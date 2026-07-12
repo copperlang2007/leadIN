@@ -30,6 +30,9 @@ interface PurchaseConfirmDialogProps {
   balance: number;
   onConfirm: () => Promise<void> | void;
   isPending: boolean;
+  // Bulk Buy: when set (> 1), the dialog confirms an atomic multi-lead
+  // purchase — `price` is the combined total and `leadId` is null.
+  count?: number;
 }
 
 export function PurchaseConfirmDialog({
@@ -40,7 +43,13 @@ export function PurchaseConfirmDialog({
   balance,
   onConfirm,
   isPending,
+  count,
 }: PurchaseConfirmDialogProps) {
+  // A batch confirm is any leadless purchase with a count (including a
+  // single-item "Buy all" selection), so the dialog always shows batch copy
+  // rather than falling through to an empty description + "Lead price" label.
+  const isBatch = leadId == null && (count ?? 0) >= 1;
+  const leadWord = (count ?? 0) === 1 ? "lead" : "leads";
   const numPrice = parseFloat(price || "0");
   const hasFunds = balance >= numPrice;
   const afterBalance = Math.max(0, balance - numPrice);
@@ -54,15 +63,17 @@ export function PurchaseConfirmDialog({
         <DialogHeader>
           <DialogTitle>Confirm purchase</DialogTitle>
           <DialogDescription>
-            {leadId !== null && (
+            {isBatch ? (
+              <>You're about to buy {count} {leadWord}. This debits your wallet immediately and can't be undone.</>
+            ) : leadId !== null ? (
               <>You're about to buy lead #{leadId}. This debits your wallet immediately and can't be undone.</>
-            )}
+            ) : null}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3 py-2">
           <div className="flex justify-between items-center text-sm">
-            <span className="text-muted-foreground">Lead price</span>
+            <span className="text-muted-foreground">{isBatch ? `Total (${count} ${leadWord})` : "Lead price"}</span>
             <span className="font-semibold flex items-center gap-1">
               <DollarSign className="h-3.5 w-3.5" />
               {numPrice.toFixed(2)}
@@ -89,7 +100,7 @@ export function PurchaseConfirmDialog({
             >
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <span>
-                You need ${(numPrice - balance).toFixed(2)} more to buy this lead. Add funds first.
+                You need ${(numPrice - balance).toFixed(2)} more to buy {isBatch && (count ?? 0) > 1 ? "these leads" : "this lead"}. Add funds first.
               </span>
             </div>
           )}

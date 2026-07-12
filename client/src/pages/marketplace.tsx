@@ -65,6 +65,9 @@ export default function Marketplace() {
   //                  giving them a direct path instead of a bare error toast.
   const [pendingPurchase, setPendingPurchase] = useState<{ leadId: number; price: string } | null>(null);
   const [addFundsOpen, setAddFundsOpen] = useState(false);
+  // Bulk Buy confirm + in-flight state.
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const [isBatchPending, setIsBatchPending] = useState(false);
 
   // Subscribe to shared WebSocket context for real-time new leads (no new connection created)
   const { subscribeToNewLeads, subscribeToAuctions } = useWebSocketContext();
@@ -236,6 +239,54 @@ export default function Marketplace() {
   // a single mis-click can't debit the wallet.
   const requestPurchase = (leadId: number, price: string) => {
     setPendingPurchase({ leadId, price });
+  };
+
+  // Bulk Buy — atomic multi-lead purchase of the current compare selection.
+  const selectedTotal = useMemo(
+    () => selectedLeads.reduce((sum, l) => sum + parseFloat(l.price || "0"), 0),
+    [selectedLeads],
+  );
+
+  const handleBatchPurchase = async () => {
+    const ids = selectedLeads.map((l) => l.id);
+    if (ids.length === 0) return;
+    setIsBatchPending(true);
+    try {
+      const response = await fetch("/api/leads/purchase-batch", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: ids }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        const message = (error.message ?? "").toString();
+        // Same recoverable dead-end as the single-buy path.
+        if (response.status === 400 && /insufficient balance/i.test(message)) {
+          setBatchConfirmOpen(false);
+          setAddFundsOpen(true);
+          return;
+        }
+        throw new Error(message || "Purchase failed");
+      }
+      const purchased = await response.json().catch(() => []);
+      const count = Array.isArray(purchased) ? purchased.length : ids.length;
+      toast({
+        title: "Purchase successful!",
+        description: `You've purchased ${count} lead${count === 1 ? "" : "s"} for $${selectedTotal.toFixed(2)}`,
+      });
+      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      setBatchConfirmOpen(false);
+      setIsCompareOpen(false);
+      setSelectedLeads([]);
+      apiRequest("DELETE", "/api/leads/compare").catch(() => {});
+    } catch (error: any) {
+      toast({ title: "Purchase failed", description: error.message, variant: "destructive" });
+    } finally {
+      setIsBatchPending(false);
+    }
   };
 
   const handleDialogPurchase = () => {
@@ -753,6 +804,14 @@ export default function Marketplace() {
             </div>
             <div className="flex gap-2">
               <Button variant="ghost" onClick={clearCompare}>Clear</Button>
+              <Button
+                variant="secondary"
+                className="gap-1"
+                onClick={() => setBatchConfirmOpen(true)}
+                data-testid="button-buy-all"
+              >
+                Buy all ({selectedLeads.length}) · ${selectedTotal.toFixed(2)}
+              </Button>
               <Drawer open={isCompareOpen} onOpenChange={setIsCompareOpen}>
                 <DrawerTrigger asChild>
                   <Button className="gap-2">
@@ -866,6 +925,17 @@ export default function Marketplace() {
         balance={parseFloat(user?.balance ?? "0")}
         onConfirm={confirmPurchase}
         isPending={isPurchasePending}
+      />
+
+      <PurchaseConfirmDialog
+        open={batchConfirmOpen}
+        onOpenChange={(o) => !o && setBatchConfirmOpen(false)}
+        leadId={null}
+        count={selectedLeads.length}
+        price={selectedTotal.toFixed(2)}
+        balance={parseFloat(user?.balance ?? "0")}
+        onConfirm={handleBatchPurchase}
+        isPending={isBatchPending}
       />
 
       <AddFundsDialog open={addFundsOpen} onOpenChange={setAddFundsOpen} />

@@ -55,6 +55,7 @@ import {
 } from "./smartMatch";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
+import { MAX_BULK_PURCHASE } from "@shared/constants";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { recordAudit, listAudit, recordLeadRevealAudit } from "./audit";
 import { deleteAccount } from "./gdprDelete";
@@ -948,6 +949,35 @@ export async function registerRoutes(
     } catch (error: any) {
       logError("Error purchasing lead:", error);
       res.status(400).json({ message: error.message || "Failed to purchase lead" });
+    }
+  });
+
+  // Bulk Buy — atomic multi-lead purchase (all-or-nothing single wallet debit).
+  app.post("/api/leads/purchase-batch", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const leadIds = Array.isArray(req.body?.leadIds)
+        ? req.body.leadIds.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)
+        : [];
+      if (leadIds.length === 0) {
+        return res.status(400).json({ message: "No leads specified" });
+      }
+      // Bound the transaction size so one request can't lock unbounded rows.
+      if (leadIds.length > MAX_BULK_PURCHASE) {
+        return res
+          .status(400)
+          .json({ message: `Too many leads in one purchase (max ${MAX_BULK_PURCHASE})` });
+      }
+      const purchasedOrders = await storage.purchaseLeads(leadIds, userId);
+      for (const order of purchasedOrders) {
+        storage
+          .createUserNotification(purchaseNotification(userId, order.leadId))
+          .catch((err) => logError("Error creating purchase notification:", err));
+      }
+      res.json(purchasedOrders);
+    } catch (error: any) {
+      logError("Error purchasing leads (batch):", error);
+      res.status(400).json({ message: error.message || "Failed to purchase leads" });
     }
   });
 
