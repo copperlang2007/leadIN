@@ -81,7 +81,7 @@ import {
   type InsertUserNotification,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
@@ -854,37 +854,40 @@ export class DatabaseStorage implements IStorage {
   /**
    * Enforce the buyer's monthly Spend Cap (A2) INSIDE a purchase transaction.
    * Throws ERR_SPEND_CAP when this purchase would push the buyer's total lead
-   * spend for the current calendar month past the cap set on their ACTIVE org
-   * membership. A null cap (the default) is a no-op. Must run while the buyer's
-   * `users` row is locked FOR UPDATE so two concurrent purchases can't each
-   * pass the check and jointly exceed the cap.
+   * spend for the current calendar month past their cap.
+   *
+   * The cap is a HARD per-user ceiling: the TIGHTEST cap across every org the
+   * buyer is a capped member of applies, regardless of which org is active, so
+   * an agent can't evade a cap by switching their active org (and there's no
+   * retroactive "fill" surprise from spend under a different org). A user with
+   * no capped membership is a no-op.
+   *
+   * Spend counts only chargeable orders (status "completed"): a fully-refunded
+   * order is flipped to "refunded" by approveDispute, so it drops out here and
+   * restores cap headroom (net-spend semantics).
+   *
+   * Must run while the buyer's `users` row is locked FOR UPDATE so two
+   * concurrent purchases can't each pass the check and jointly exceed the cap.
    */
   private async enforceSpendCapTx(
     tx: any,
-    buyer: { id: string; activeOrgId: string | null },
+    userId: string,
     addCents: number,
     now: Date,
   ): Promise<void> {
-    if (!buyer.activeOrgId) return;
-    const [member] = await tx
+    const caps = await tx
       .select({ cap: orgMembers.monthlySpendCapCents })
       .from(orgMembers)
-      .where(and(eq(orgMembers.orgId, buyer.activeOrgId), eq(orgMembers.userId, buyer.id)));
-    const capCents: number | null = member?.cap ?? null;
-    if (capCents === null) return;
+      .where(and(eq(orgMembers.userId, userId), isNotNull(orgMembers.monthlySpendCapCents)));
+    if (caps.length === 0) return;
+    const tightestCap = Math.min(...caps.map((c: { cap: number }) => c.cap));
 
-    // Count only chargeable orders. Purchases write status "completed"; a
-    // future refund/cancel flow that sets a different status would then be
-    // excluded automatically so returned money doesn't count against the cap.
-    // Scope is the member's TOTAL monthly lead spend (across their scoped
-    // inventory, incl. global leads), keyed off their active org — not just
-    // this org's owned leads — so the cap can't be evaded via global leads.
     const [row] = await tx
       .select({ spent: sql<string>`coalesce(sum(${orders.price}), 0)` })
       .from(orders)
       .where(
         and(
-          eq(orders.userId, buyer.id),
+          eq(orders.userId, userId),
           eq(orders.status, "completed"),
           gte(orders.createdAt, startOfMonthUtc(now)),
         ),
@@ -894,7 +897,7 @@ export class DatabaseStorage implements IStorage {
       .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
       .toNumber();
 
-    if (exceedsCap(existingCents, addCents, capCents)) throw new Error(ERR_SPEND_CAP);
+    if (exceedsCap(existingCents, addCents, tightestCap)) throw new Error(ERR_SPEND_CAP);
   }
 
   async purchaseLead(leadId: number, userId: string): Promise<Order> {
@@ -927,7 +930,7 @@ export class DatabaseStorage implements IStorage {
 
       // A2 — org-set monthly spend cap (no-op when uncapped).
       const leadPriceCents = leadPrice.mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-      await this.enforceSpendCapTx(tx, user, leadPriceCents, new Date());
+      await this.enforceSpendCapTx(tx, userId, leadPriceCents, new Date());
 
       const newBalance = userBalance.minus(leadPrice).toFixed(2);
       await tx
@@ -1027,7 +1030,7 @@ export class DatabaseStorage implements IStorage {
 
       // A2 — the cap applies to the COMBINED batch total (no-op when uncapped).
       const totalCents = total.mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-      await this.enforceSpendCapTx(tx, user, totalCents, new Date());
+      await this.enforceSpendCapTx(tx, userId, totalCents, new Date());
 
       await tx
         .update(users)
@@ -2813,6 +2816,14 @@ export class DatabaseStorage implements IStorage {
             order.id,
             lead.id,
           );
+        }
+
+        // 4) A2 net-spend: a FULLY-refunded order no longer represents spend,
+        // so flip it to "refunded" — the monthly spend-cap sum only counts
+        // "completed" orders, so the buyer's cap headroom is restored. Partial
+        // refunds stay "completed" (the buyer still paid the un-refunded part).
+        if (finalRefundCents === orderPriceCents) {
+          await tx.update(orders).set({ status: "refunded" }).where(eq(orders.id, order.id));
         }
       }
 

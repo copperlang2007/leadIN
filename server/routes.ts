@@ -2429,8 +2429,15 @@ export async function registerRoutes(
       if (role !== "owner" && role !== "admin") {
         return res.status(403).json({ message: "Owner or admin role required" });
       }
-      if (!(await storage.getUserOrgRole(userId, orgId))) {
+      const targetRole = await storage.getUserOrgRole(userId, orgId);
+      if (!targetRole) {
         return res.status(404).json({ message: "Member not found in this org" });
+      }
+      // Governance: spend caps apply to agents only. This keeps an owner/admin
+      // from capping themselves or a peer to 0 (which — with exceedsCap's
+      // strict `>` — would reject every purchase) and locking each other out.
+      if (targetRole !== "agent") {
+        return res.status(400).json({ message: "Spend caps apply to agent members only" });
       }
       if (!req.body || !("capCents" in req.body)) {
         return res.status(400).json({ message: "capCents is required (whole cents, or null to clear the cap)" });
@@ -2439,22 +2446,37 @@ export async function registerRoutes(
       let capCents: number | null;
       if (raw === null) {
         capCents = null;
-      } else {
-        const n = Number(raw);
+      } else if (
+        // Require a real number — Number(raw) would coerce true→1, [50]→50,
+        // ""→0, etc., silently applying a garbage cap on a money-path setting.
+        typeof raw !== "number" ||
+        !Number.isInteger(raw) ||
+        raw < 0 ||
         // Bound by the PG `integer` range so a huge value can't overflow the
         // column (max int4 = 2,147,483,647 cents ≈ $21.4M/month).
-        if (!Number.isInteger(n) || n < 0 || n > 2_147_483_647) {
-          return res
-            .status(400)
-            .json({ message: "capCents must be an integer between 0 and 2147483647, or null" });
-        }
-        capCents = n;
+        raw > 2_147_483_647
+      ) {
+        return res
+          .status(400)
+          .json({ message: "capCents must be an integer between 0 and 2147483647, or null" });
+      } else {
+        capCents = raw;
       }
+      const previousCapCents = await storage.getMemberSpendCap(orgId, userId);
       const updated = await storage.setMemberSpendCap(orgId, userId, capCents);
       if (!updated) {
         // Membership vanished between the check above and the write.
         return res.status(404).json({ message: "Member not found in this org" });
       }
+      // Money-path governance: attribute who changed the cap, and to what.
+      recordAudit({
+        actorUserId: requesterId,
+        orgId,
+        action: "spend_cap.update",
+        targetKind: "org_member",
+        targetId: userId,
+        metadata: { capCents, previousCapCents },
+      }).catch((e) => logError("Error recording spend-cap audit:", e));
       res.json({ capCents });
     } catch (err) {
       logError("Error updating spend cap:", err);

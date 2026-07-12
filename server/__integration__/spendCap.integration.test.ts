@@ -134,6 +134,51 @@ describe.skipIf(!LIVE)("monthly spend caps (live DB)", () => {
     expect(await storage.setMemberSpendCap(org, stranger, 5000)).toBe(false);
   });
 
+  it("hard ceiling: a cap can't be evaded by switching to an uncapped active org", async () => {
+    // Buyer is a capped member of orgA ($15) AND an uncapped member of orgB,
+    // with orgB active. The tightest cap across ALL memberships still applies,
+    // so spend under the uncapped active org is governed by orgA's cap.
+    const orgA = await seedOrg();
+    const orgB = await seedOrg();
+    const buyer = await seedUser({ orgId: orgB }); // active org = uncapped orgB
+    await db.insert(orgMembers).values({ orgId: orgA, userId: buyer, role: "agent", monthlySpendCapCents: 1500 });
+    await db.insert(orgMembers).values({ orgId: orgB, userId: buyer, role: "agent", monthlySpendCapCents: null });
+    await setBalance(buyer, "1000.00");
+
+    // First $10 fits under the $15 ceiling.
+    await storage.purchaseLead(await seedLead(), buyer);
+    // A second $10 would be $20 > $15 — rejected despite the active org being uncapped.
+    const blocked = await seedLead();
+    await expect(storage.purchaseLead(blocked, buyer)).rejects.toThrow(/spend cap/i);
+    expect(await isSold(blocked)).toBe(false);
+  });
+
+  it("net spend: a fully-refunded order restores cap headroom", async () => {
+    const org = await seedOrg();
+    const resolver = await seedUser({ orgId: org });
+    const buyer = await seedCappedBuyer(org, 1500); // $15 cap
+    const first = await seedLead();
+
+    const firstOrder = await storage.purchaseLead(first, buyer); // spent $10
+    // Without a refund, a second $10 would exceed the $15 cap.
+    // Dispute + fully refund the first order.
+    const dispute = await storage.createDispute({
+      orderId: firstOrder.id,
+      buyerUserId: buyer,
+      reason: "not_as_described",
+    });
+    await storage.approveDispute(dispute.id, resolver, 1000); // full $10 refund
+
+    // The order is now "refunded" and drops out of the cap sum.
+    const [refunded] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, firstOrder.id));
+    expect(refunded.status).toBe("refunded");
+
+    // So a fresh $10 purchase is allowed again (counted spend is $0).
+    const second = await seedLead();
+    await storage.purchaseLead(second, buyer);
+    expect(await isSold(second)).toBe(true);
+  });
+
   it("race-safe: two concurrent purchases can't jointly exceed the cap", async () => {
     const org = await seedOrg();
     const buyer = await seedCappedBuyer(org, 1500); // $15 cap — fits ONE $10, not two
