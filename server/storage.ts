@@ -86,6 +86,7 @@ import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
 import { computeReprice, freshHours, maxPerRun, tierPriceFraction } from "./secondLook";
+import { startOfMonthUtc, exceedsCap, ERR_SPEND_CAP } from "./spendCaps";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -232,6 +233,10 @@ export interface IStorage {
   getUserOrgMemberships(userId: string): Promise<(OrgMember & { org: Organization })[]>;
   getUserOrgRole(userId: string, orgId: string): Promise<string | null>;
   updateOrgRoutingThreshold(orgId: string, threshold: number): Promise<Organization>;
+  // A2 — Spend Caps: read/set a member's monthly lead-spend ceiling (cents;
+  // null = uncapped). Returns null if the (orgId, userId) pair isn't a member.
+  getMemberSpendCap(orgId: string, userId: string): Promise<number | null>;
+  setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<void>;
   updateOrgSubscription(orgId: string, fields: Partial<InsertOrganization>): Promise<Organization>;
   getOrgByStripeSubscription(subscriptionId: string): Promise<Organization | undefined>;
 
@@ -827,6 +832,55 @@ export class DatabaseStorage implements IStorage {
     return { scanned: candidates.length, repriced, byTier };
   }
 
+  async getMemberSpendCap(orgId: string, userId: string): Promise<number | null> {
+    const [member] = await db
+      .select({ cap: orgMembers.monthlySpendCapCents })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)));
+    return member?.cap ?? null;
+  }
+
+  async setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<void> {
+    await db
+      .update(orgMembers)
+      .set({ monthlySpendCapCents: capCents })
+      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)));
+  }
+
+  /**
+   * Enforce the buyer's monthly Spend Cap (A2) INSIDE a purchase transaction.
+   * Throws ERR_SPEND_CAP when this purchase would push the buyer's total lead
+   * spend for the current calendar month past the cap set on their ACTIVE org
+   * membership. A null cap (the default) is a no-op. Must run while the buyer's
+   * `users` row is locked FOR UPDATE so two concurrent purchases can't each
+   * pass the check and jointly exceed the cap.
+   */
+  private async enforceSpendCapTx(
+    tx: any,
+    buyer: { id: string; activeOrgId: string | null },
+    addCents: number,
+    now: Date,
+  ): Promise<void> {
+    if (!buyer.activeOrgId) return;
+    const [member] = await tx
+      .select({ cap: orgMembers.monthlySpendCapCents })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.orgId, buyer.activeOrgId), eq(orgMembers.userId, buyer.id)));
+    const capCents: number | null = member?.cap ?? null;
+    if (capCents === null) return;
+
+    const [row] = await tx
+      .select({ spent: sql<string>`coalesce(sum(${orders.price}), 0)` })
+      .from(orders)
+      .where(and(eq(orders.userId, buyer.id), gte(orders.createdAt, startOfMonthUtc(now))));
+    const existingCents = new Decimal(row?.spent ?? "0")
+      .mul(100)
+      .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+      .toNumber();
+
+    if (exceedsCap(existingCents, addCents, capCents)) throw new Error(ERR_SPEND_CAP);
+  }
+
   async purchaseLead(leadId: number, userId: string): Promise<Order> {
     const order = await db.transaction(async (tx) => {
       const [lead] = await tx
@@ -854,6 +908,10 @@ export class DatabaseStorage implements IStorage {
       const userBalance = new Decimal(user.balance);
 
       if (userBalance.lessThan(leadPrice)) throw new Error("Insufficient balance");
+
+      // A2 — org-set monthly spend cap (no-op when uncapped).
+      const leadPriceCents = leadPrice.mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+      await this.enforceSpendCapTx(tx, user, leadPriceCents, new Date());
 
       const newBalance = userBalance.minus(leadPrice).toFixed(2);
       await tx
@@ -950,6 +1008,10 @@ export class DatabaseStorage implements IStorage {
       const total = lockedLeads.reduce((sum, l) => sum.plus(new Decimal(l.price)), new Decimal(0));
       const userBalance = new Decimal(user.balance);
       if (userBalance.lessThan(total)) throw new Error("Insufficient balance");
+
+      // A2 — the cap applies to the COMBINED batch total (no-op when uncapped).
+      const totalCents = total.mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+      await this.enforceSpendCapTx(tx, user, totalCents, new Date());
 
       await tx
         .update(users)

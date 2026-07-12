@@ -2400,6 +2400,60 @@ export async function registerRoutes(
     }
   });
 
+  // A2 — Spend Caps. Org owner/admin reads or sets a member's monthly lead-
+  // spend ceiling (in cents; null = uncapped). Enforced in the purchase path.
+  app.get("/api/orgs/:orgId/members/:userId/spend-cap", isAuthenticated, async (req: any, res) => {
+    try {
+      const requesterId = req.user.claims.sub;
+      const { orgId, userId } = req.params;
+      const role = await storage.getUserOrgRole(requesterId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      if (!(await storage.getUserOrgRole(userId, orgId))) {
+        return res.status(404).json({ message: "Member not found in this org" });
+      }
+      const capCents = await storage.getMemberSpendCap(orgId, userId);
+      res.json({ capCents });
+    } catch (err) {
+      logError("Error reading spend cap:", err);
+      res.status(500).json({ message: "Failed to read spend cap" });
+    }
+  });
+
+  app.patch("/api/orgs/:orgId/members/:userId/spend-cap", isAuthenticated, async (req: any, res) => {
+    try {
+      const requesterId = req.user.claims.sub;
+      const { orgId, userId } = req.params;
+      const role = await storage.getUserOrgRole(requesterId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      if (!(await storage.getUserOrgRole(userId, orgId))) {
+        return res.status(404).json({ message: "Member not found in this org" });
+      }
+      if (!req.body || !("capCents" in req.body)) {
+        return res.status(400).json({ message: "capCents is required (whole cents, or null to clear the cap)" });
+      }
+      const raw = req.body.capCents;
+      let capCents: number | null;
+      if (raw === null) {
+        capCents = null;
+      } else {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 0) {
+          return res.status(400).json({ message: "capCents must be a non-negative integer or null" });
+        }
+        capCents = n;
+      }
+      await storage.setMemberSpendCap(orgId, userId, capCents);
+      res.json({ capCents });
+    } catch (err) {
+      logError("Error updating spend cap:", err);
+      res.status(500).json({ message: "Failed to update spend cap" });
+    }
+  });
+
   // ──────────────────────────────────────────────────────
   // Phase 3 – Agent onboarding & dashboard
   // ──────────────────────────────────────────────────────

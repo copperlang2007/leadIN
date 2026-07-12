@@ -1,0 +1,1 @@
+ALTER TABLE "org_members" ADD COLUMN "monthly_spend_cap_cents" integer;
