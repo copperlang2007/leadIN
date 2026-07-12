@@ -71,6 +71,13 @@
       "when": 1783438821181,
       "tag": "0009_second_look_relist",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783896182046,
+      "tag": "0010_spend_caps",
+      "breakpoints": true
     }
   ]
 }

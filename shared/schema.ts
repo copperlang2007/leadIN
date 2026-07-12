@@ -71,6 +71,10 @@ export const orgMembers = pgTable("org_members", {
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   role: varchar("role", { length: 20 }).notNull().default("agent"), // 'owner' | 'admin' | 'agent'
+  // A2 — Spend Caps: this member's monthly lead-spend ceiling in whole cents.
+  // NULL = uncapped (the default). Enforced in the purchase path against the
+  // member's total lead spend for the current calendar month.
+  monthlySpendCapCents: integer("monthly_spend_cap_cents"),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   unique("uniq_org_member").on(table.orgId, table.userId),
