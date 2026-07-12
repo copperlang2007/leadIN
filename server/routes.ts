@@ -957,7 +957,7 @@ export async function registerRoutes(
     try {
       const userId = req.user.claims.sub;
       const leadIds = Array.isArray(req.body?.leadIds)
-        ? req.body.leadIds.map(Number).filter((n: number) => Number.isInteger(n))
+        ? req.body.leadIds.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)
         : [];
       if (leadIds.length === 0) {
         return res.status(400).json({ message: "No leads specified" });

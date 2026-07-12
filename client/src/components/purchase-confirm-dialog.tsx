@@ -45,7 +45,11 @@ export function PurchaseConfirmDialog({
   isPending,
   count,
 }: PurchaseConfirmDialogProps) {
-  const isBatch = (count ?? 0) > 1;
+  // A batch confirm is any leadless purchase with a count (including a
+  // single-item "Buy all" selection), so the dialog always shows batch copy
+  // rather than falling through to an empty description + "Lead price" label.
+  const isBatch = leadId == null && (count ?? 0) >= 1;
+  const leadWord = (count ?? 0) === 1 ? "lead" : "leads";
   const numPrice = parseFloat(price || "0");
   const hasFunds = balance >= numPrice;
   const afterBalance = Math.max(0, balance - numPrice);
@@ -60,7 +64,7 @@ export function PurchaseConfirmDialog({
           <DialogTitle>Confirm purchase</DialogTitle>
           <DialogDescription>
             {isBatch ? (
-              <>You're about to buy {count} leads. This debits your wallet immediately and can't be undone.</>
+              <>You're about to buy {count} {leadWord}. This debits your wallet immediately and can't be undone.</>
             ) : leadId !== null ? (
               <>You're about to buy lead #{leadId}. This debits your wallet immediately and can't be undone.</>
             ) : null}
@@ -69,7 +73,7 @@ export function PurchaseConfirmDialog({
 
         <div className="space-y-3 py-2">
           <div className="flex justify-between items-center text-sm">
-            <span className="text-muted-foreground">{isBatch ? `Total (${count} leads)` : "Lead price"}</span>
+            <span className="text-muted-foreground">{isBatch ? `Total (${count} ${leadWord})` : "Lead price"}</span>
             <span className="font-semibold flex items-center gap-1">
               <DollarSign className="h-3.5 w-3.5" />
               {numPrice.toFixed(2)}
@@ -96,7 +100,7 @@ export function PurchaseConfirmDialog({
             >
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <span>
-                You need ${(numPrice - balance).toFixed(2)} more to buy {isBatch ? "these leads" : "this lead"}. Add funds first.
+                You need ${(numPrice - balance).toFixed(2)} more to buy {isBatch && (count ?? 0) > 1 ? "these leads" : "this lead"}. Add funds first.
               </span>
             </div>
           )}
