@@ -119,6 +119,21 @@ describe.skipIf(!LIVE)("monthly spend caps (live DB)", () => {
     for (const id of ids) expect(await isSold(id)).toBe(true);
   });
 
+  it("get/set member cap round-trips; setting on a non-member reports false", async () => {
+    const org = await seedOrg();
+    const member = await seedCappedBuyer(org, null); // member, uncapped
+    const stranger = await seedUser(); // not a member of org
+
+    expect(await storage.getMemberSpendCap(org, member)).toBeNull();
+    expect(await storage.setMemberSpendCap(org, member, 5000)).toBe(true);
+    expect(await storage.getMemberSpendCap(org, member)).toBe(5000);
+    expect(await storage.setMemberSpendCap(org, member, null)).toBe(true);
+    expect(await storage.getMemberSpendCap(org, member)).toBeNull();
+
+    // No membership row → no update happened.
+    expect(await storage.setMemberSpendCap(org, stranger, 5000)).toBe(false);
+  });
+
   it("race-safe: two concurrent purchases can't jointly exceed the cap", async () => {
     const org = await seedOrg();
     const buyer = await seedCappedBuyer(org, 1500); // $15 cap — fits ONE $10, not two

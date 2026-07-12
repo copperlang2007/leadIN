@@ -2441,12 +2441,20 @@ export async function registerRoutes(
         capCents = null;
       } else {
         const n = Number(raw);
-        if (!Number.isInteger(n) || n < 0) {
-          return res.status(400).json({ message: "capCents must be a non-negative integer or null" });
+        // Bound by the PG `integer` range so a huge value can't overflow the
+        // column (max int4 = 2,147,483,647 cents ≈ $21.4M/month).
+        if (!Number.isInteger(n) || n < 0 || n > 2_147_483_647) {
+          return res
+            .status(400)
+            .json({ message: "capCents must be an integer between 0 and 2147483647, or null" });
         }
         capCents = n;
       }
-      await storage.setMemberSpendCap(orgId, userId, capCents);
+      const updated = await storage.setMemberSpendCap(orgId, userId, capCents);
+      if (!updated) {
+        // Membership vanished between the check above and the write.
+        return res.status(404).json({ message: "Member not found in this org" });
+      }
       res.json({ capCents });
     } catch (err) {
       logError("Error updating spend cap:", err);

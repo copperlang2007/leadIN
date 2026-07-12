@@ -236,7 +236,9 @@ export interface IStorage {
   // A2 — Spend Caps: read/set a member's monthly lead-spend ceiling (cents;
   // null = uncapped). Returns null if the (orgId, userId) pair isn't a member.
   getMemberSpendCap(orgId: string, userId: string): Promise<number | null>;
-  setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<void>;
+  // Returns false when no membership row matched (e.g. the member was removed
+  // between the caller's membership check and this write).
+  setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<boolean>;
   updateOrgSubscription(orgId: string, fields: Partial<InsertOrganization>): Promise<Organization>;
   getOrgByStripeSubscription(subscriptionId: string): Promise<Organization | undefined>;
 
@@ -840,11 +842,13 @@ export class DatabaseStorage implements IStorage {
     return member?.cap ?? null;
   }
 
-  async setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<void> {
-    await db
+  async setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<boolean> {
+    const updated = await db
       .update(orgMembers)
       .set({ monthlySpendCapCents: capCents })
-      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)));
+      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
+      .returning({ id: orgMembers.id });
+    return updated.length > 0;
   }
 
   /**
@@ -869,10 +873,22 @@ export class DatabaseStorage implements IStorage {
     const capCents: number | null = member?.cap ?? null;
     if (capCents === null) return;
 
+    // Count only chargeable orders. Purchases write status "completed"; a
+    // future refund/cancel flow that sets a different status would then be
+    // excluded automatically so returned money doesn't count against the cap.
+    // Scope is the member's TOTAL monthly lead spend (across their scoped
+    // inventory, incl. global leads), keyed off their active org — not just
+    // this org's owned leads — so the cap can't be evaded via global leads.
     const [row] = await tx
       .select({ spent: sql<string>`coalesce(sum(${orders.price}), 0)` })
       .from(orders)
-      .where(and(eq(orders.userId, buyer.id), gte(orders.createdAt, startOfMonthUtc(now))));
+      .where(
+        and(
+          eq(orders.userId, buyer.id),
+          eq(orders.status, "completed"),
+          gte(orders.createdAt, startOfMonthUtc(now)),
+        ),
+      );
     const existingCents = new Decimal(row?.spent ?? "0")
       .mul(100)
       .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
