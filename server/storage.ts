@@ -17,6 +17,7 @@ import {
   behavioralEvents,
   savedLists,
   savedListItems,
+  savedSearches,
   vendorBalances,
   vendorPayouts,
   mediscoreWeights,
@@ -79,7 +80,11 @@ import {
   type AgentReputationEvent,
   type UserNotification,
   type InsertUserNotification,
+  type SavedSearch,
+  type InsertSavedSearch,
 } from "@shared/schema";
+import { leadMatchesCriteria, ERR_SAVED_SEARCH_CAP, SAVED_SEARCH_FANOUT_CAP } from "./savedSearch";
+import { savedSearchMatchNotification } from "./userNotificationMessages";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
@@ -188,6 +193,13 @@ export interface IStorage {
   createUserNotification(notification: InsertUserNotification): Promise<UserNotification>;
   markUserNotificationRead(id: number, userId: string): Promise<void>;
   markAllUserNotificationsRead(userId: string): Promise<void>;
+
+  // Saved-search alerts (wishlist)
+  createSavedSearch(search: InsertSavedSearch, opts?: { maxActive?: number }): Promise<SavedSearch>;
+  listSavedSearches(userId: string): Promise<SavedSearch[]>;
+  // Returns the number of rows deleted (0 when the id isn't the caller's).
+  deleteSavedSearch(id: number, userId: string): Promise<number>;
+  notifyMatchingSavedSearches(lead: Lead): Promise<void>;
 
   // Admin operations
   countAdminUsers(): Promise<number>;
@@ -1290,6 +1302,110 @@ export class DatabaseStorage implements IStorage {
           eq(userNotifications.isRead, false),
         ),
       );
+  }
+
+  // ──── Saved-search alerts (wishlist) ────
+  async createSavedSearch(
+    search: InsertSavedSearch,
+    opts?: { maxActive?: number },
+  ): Promise<SavedSearch> {
+    if (opts?.maxActive == null) {
+      const [row] = await db.insert(savedSearches).values(search).returning();
+      return row;
+    }
+    // Enforce the per-user active-search cap atomically: a per-user advisory
+    // lock serializes concurrent creates so a check-then-insert burst can't
+    // overshoot the cap. Throws ERR_SAVED_SEARCH_CAP (→ 409) when at the limit.
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${search.userId}))`);
+      const [{ n }] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(savedSearches)
+        .where(and(eq(savedSearches.userId, search.userId), eq(savedSearches.active, true)));
+      if (n >= opts.maxActive!) throw new Error(ERR_SAVED_SEARCH_CAP);
+      const [row] = await tx.insert(savedSearches).values(search).returning();
+      return row;
+    });
+  }
+
+  async listSavedSearches(userId: string): Promise<SavedSearch[]> {
+    return db
+      .select()
+      .from(savedSearches)
+      .where(eq(savedSearches.userId, userId))
+      .orderBy(desc(savedSearches.createdAt));
+  }
+
+  // Scoped by userId so a user can only delete their own saved search. Returns
+  // the number of rows removed so the route can 404 on a no-op delete (unknown
+  // id, or someone else's).
+  async deleteSavedSearch(id: number, userId: string): Promise<number> {
+    const rows = await db
+      .delete(savedSearches)
+      .where(and(eq(savedSearches.id, id), eq(savedSearches.userId, userId)))
+      .returning({ id: savedSearches.id });
+    return rows.length;
+  }
+
+  // Best-effort: finds active saved searches in the lead's OWN tenant (exact
+  // org match — a null-org search matches only null-org leads, never another
+  // org's) whose owner still has notifications enabled and whose criteria match
+  // the lead, then creates ONE in-app notification per distinct owner. Never
+  // throws — a failure here must not break lead ingest.
+  async notifyMatchingSavedSearches(lead: Lead): Promise<void> {
+    try {
+      const rows = await db
+        .select({ savedSearch: savedSearches })
+        .from(savedSearches)
+        .innerJoin(users, eq(users.id, savedSearches.userId))
+        .where(
+          and(
+            eq(savedSearches.active, true),
+            // Honor the platform notification-preference contract.
+            eq(users.notificationsEnabled, true),
+            // Exact tenant match — no null-org-as-global, so an org-deleted
+            // (orphaned) search can never leak across tenants.
+            lead.orgId == null
+              ? isNull(savedSearches.orgId)
+              : eq(savedSearches.orgId, lead.orgId),
+          ),
+        )
+        // Deterministic order so the skipped subset (if the cap is hit) is
+        // stable across ingests. Hard fan-out ceiling keeps one lead from
+        // scanning/notifying unboundedly on the event loop; a durable off-loop
+        // worker with SQL-side criteria pruning is the follow-up (see PR notes).
+        .orderBy(desc(savedSearches.createdAt))
+        .limit(SAVED_SEARCH_FANOUT_CAP);
+      const candidates = rows.map((r) => r.savedSearch);
+      if (candidates.length === SAVED_SEARCH_FANOUT_CAP) {
+        logError(
+          `[saved-search] fan-out cap (${SAVED_SEARCH_FANOUT_CAP}) hit for lead ${lead.id} — some matches skipped`,
+          new Error("saved-search fan-out cap hit"),
+        );
+      }
+
+      // Dedupe by owner: one notification per user even if several of their
+      // searches match this lead. Keep the first matching search's name.
+      const notifyByUser = new Map<string, SavedSearch>();
+      for (const search of candidates) {
+        if (!leadMatchesCriteria(lead, search.criteria)) continue;
+        if (!notifyByUser.has(search.userId)) {
+          notifyByUser.set(search.userId, search);
+        }
+      }
+
+      for (const search of Array.from(notifyByUser.values())) {
+        try {
+          await this.createUserNotification(
+            savedSearchMatchNotification(search.userId, search.name, lead.id),
+          );
+        } catch (err) {
+          logError("Error creating saved-search match notification:", err);
+        }
+      }
+    } catch (err) {
+      logError("Error notifying matching saved searches:", err);
+    }
   }
 
   // Admin operations
