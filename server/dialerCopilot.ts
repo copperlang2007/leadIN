@@ -228,21 +228,27 @@ export function stubSuggestions(lead: CopilotSuggestionLeadInput): string[] {
  */
 export function parseSuggestions(raw: string): string[] | null {
   if (!raw || typeof raw !== "string") return null;
+  const body = raw.trim();
 
-  let body = raw.trim();
-  // Only unwrap a fence when EXACTLY one exists. With multiple fences (e.g. a
-  // preamble/schema fence then the real answer fence — a common Haiku framing),
-  // the lazy first-match would discard the real JSON, so instead leave the body
-  // intact and let the balanced-brace scan below find the suggestions object.
-  const fences = Array.from(body.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi));
-  if (fences.length === 1) body = fences[0][1].trim();
+  // Try the WHOLE body first — this handles bare JSON and JSON that sits
+  // outside a preceding fenced schema/example (a common Haiku framing where a
+  // fence isn't the real answer). Only if that finds nothing do we fall back to
+  // scanning each fenced block individually.
+  const fromBody = scanForSuggestions(body);
+  if (fromBody) return fromBody;
+  for (const m of Array.from(body.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi))) {
+    const fromFence = scanForSuggestions(m[1].trim());
+    if (fromFence) return fromFence;
+  }
+  return null;
+}
 
-  // Scan for the FIRST balanced {...} object that parses as
-  // { suggestions: string[] }. Taking the outermost brace span
-  // (indexOf('{')..lastIndexOf('}')) breaks whenever the model emits a second
-  // JSON fragment — common on the Anthropic path, which frames JSON in prose
-  // ("Sure! {...} Another shape could be {...}."). Brace counting is
-  // string-aware so braces inside string values don't unbalance the scan.
+// Scan a string for the FIRST balanced {...} object that parses as
+// { suggestions: string[] }. Taking the outermost brace span
+// (indexOf('{')..lastIndexOf('}')) breaks whenever the model emits a second
+// JSON fragment. Brace counting is string-aware so braces inside string values
+// don't unbalance the scan.
+function scanForSuggestions(body: string): string[] | null {
   for (let i = 0; i < body.length; i++) {
     if (body[i] !== "{") continue;
     let depth = 0;

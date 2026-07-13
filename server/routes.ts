@@ -70,6 +70,7 @@ import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { getComplianceServiceStatus, pingComplianceService } from "./complianceService";
 import { logError } from "./lib/safeError";
+import { log } from "./logger";
 import { captureException } from "./lib/sentry";
 import { buildBlogSitemap } from "./lib/blogSitemap";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
@@ -1000,7 +1001,16 @@ export async function registerRoutes(
       }
 
       const compliance = buildCompliance(lead, new Date());
-      const { suggestions } = await generateSuggestions(lead, transcript);
+      const { suggestions, modelUsed } = await generateSuggestions(lead, transcript);
+      // Observability: a "<model>+fallback" means the LLM responded but its
+      // output was unparseable and we served the stub — a silent provider
+      // regression operators otherwise couldn't distinguish from real answers.
+      if (modelUsed.endsWith("+fallback")) {
+        log.warn("[dialer-copilot] LLM output unparseable — served stub suggestions", {
+          leadId,
+          modelUsed,
+        });
+      }
 
       res.json({ compliance, suggestions });
     } catch (error) {

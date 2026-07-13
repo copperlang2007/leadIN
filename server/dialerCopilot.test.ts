@@ -275,6 +275,16 @@ describe("parseSuggestions", () => {
     expect(parseSuggestions('{"suggestions":["use {this} phrasing"]}')).toEqual(["use {this} phrasing"]);
   });
 
+  it("recovers a trailing bare-JSON answer after a schema fence with no suggestions", () => {
+    const input = '```json\n{"schema":true}\n```\n{"suggestions":["real"]}';
+    expect(parseSuggestions(input)).toEqual(["real"]);
+  });
+
+  it("recovers a trailing bare-JSON answer after a prose fence", () => {
+    const input = 'See below:\n```json\nExample text\n```\nAnswer: {"suggestions":["real"]}';
+    expect(parseSuggestions(input)).toEqual(["real"]);
+  });
+
   it("finds the real answer across MULTIPLE fenced blocks (preamble fence + answer fence)", () => {
     const raw =
       '```json\n{"schema":"suggestions[] of strings"}\n```\n' +
