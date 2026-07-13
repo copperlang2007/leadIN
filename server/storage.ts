@@ -92,6 +92,7 @@ import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
 import { computeReprice, freshHours, maxPerRun, tierPriceFraction } from "./secondLook";
 import { startOfMonthUtc, exceedsCap, ERR_SPEND_CAP } from "./spendCaps";
+import { computeStreak, type StreakResult } from "./streaks";
 import {
   openAuction as openAuctionFn,
   shouldOpenAuction,
@@ -296,6 +297,7 @@ export interface IStorage {
     totalSpent: string;
     activeAgents: number;
   }>;
+  getPurchaseStreak(userId: string): Promise<StreakResult>;
 
   // Phase 4 – signal enrichment
   setLeadDncStatus(leadId: number, flagged: boolean): Promise<void>;
@@ -2340,6 +2342,30 @@ export class DatabaseStorage implements IStorage {
       estimatedCommissions: estimatedUsd,
       conversionRate: (conv * 100).toFixed(1),
     };
+  }
+
+  // Purchase streak: consecutive UTC days on which the agent completed at least
+  // one lead purchase, for a lightweight retention nudge on the dashboard.
+  //
+  // Hardening notes:
+  //   - Bounded window: only the last STREAK_WINDOW_DAYS of completed orders are
+  //     scanned so a long-tenured buyer can't trigger an unbounded history scan.
+  //   - DISTINCT day: we collapse each buyer's many same-day orders to one row
+  //     via to_char(... AT TIME ZONE 'UTC'), so a heavy buyer returns at most one
+  //     row per day (<= window size), not thousands of order rows.
+  //   - UTC bucketing matches the pure helper's UTC "alive through yesterday"
+  //     boundary — both sides agree on what a "day" is.
+  async getPurchaseStreak(userId: string): Promise<StreakResult> {
+    const STREAK_WINDOW_DAYS = 400;
+    const rows = await db.execute<{ day: string }>(sql`
+      SELECT DISTINCT to_char(${orders.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day
+      FROM ${orders}
+      WHERE ${orders.userId} = ${userId}
+        AND ${orders.status} = 'completed'
+        AND ${orders.createdAt} >= now() - ${STREAK_WINDOW_DAYS} * interval '1 day'
+    `);
+    const days = (((rows as any).rows ?? rows) as Array<{ day: string }>).map((r) => r.day);
+    return computeStreak(days, new Date());
   }
 
   async getOrgDashboardStats(orgId: string): Promise<{

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Link, useLocation } from "wouter";
-import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award, Sparkles } from "lucide-react";
+import { Briefcase, DollarSign, Target, TrendingUp, Users, Building2, Inbox, Settings as SettingsIcon, Award, Sparkles, Flame } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -176,6 +176,12 @@ interface ReputationResponse {
   events: Array<{ id: number; eventType: string; weight: number; createdAt: string | null }>;
 }
 
+interface StreakResponse {
+  current: number;
+  best: number;
+  lastPurchaseDay: string | null;
+}
+
 export default function AgentDashboard() {
   useDocumentTitle("Agent Dashboard");
   const [, navigate] = useLocation();
@@ -189,6 +195,9 @@ export default function AgentDashboard() {
   // Reputation is loaded as a side-fetch so a slow aggregate doesn't block the
   // main dashboard render. If it fails or hasn't loaded yet we show "—".
   const { data: reputation } = useQuery<ReputationResponse>({ queryKey: ["/api/agent/me/reputation"] });
+  // Purchase streak is a side-fetch too — a retention nudge that shouldn't block
+  // the main dashboard render. Falls back to a graceful 0-streak empty state.
+  const { data: streak } = useQuery<StreakResponse>({ queryKey: ["/api/agent/streak"] });
 
   if (dashErrored) {
     return (
@@ -264,7 +273,7 @@ export default function AgentDashboard() {
           </Card>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <StatCard icon={Inbox} label="Open pipeline" value={data.stats.openLeads.toString()} sub={`Cap: ${data.profile?.capacityLimit ?? "—"}`} />
           <StatCard icon={Target} label="Purchased leads" value={data.stats.purchasedLeads.toString()} />
           <StatCard icon={DollarSign} label="Total spend" value={`$${data.stats.totalSpent}`} sub={`Avg CPL $${data.stats.averageCpl}`} />
@@ -274,6 +283,16 @@ export default function AgentDashboard() {
             label="Reputation"
             value={reputation ? reputation.score.toString() : "—"}
             sub={reputation ? `${reputation.events.length} events / ${reputation.windowDays}d` : "Trailing 90d"}
+          />
+          <StatCard
+            icon={Flame}
+            label="Buying streak"
+            value={streak && streak.current > 0 ? `🔥 ${streak.current}` : "—"}
+            sub={
+              streak && streak.best > 0
+                ? `Best: ${streak.best} day${streak.best === 1 ? "" : "s"}`
+                : "Buy a lead today to start"
+            }
           />
         </div>
 

@@ -2797,6 +2797,22 @@ export async function registerRoutes(
     }
   });
 
+  // Agent purchase streak (self-service retention nudge).
+  //
+  // Returns the CALLER's own streak only — there is no userId parameter, so one
+  // agent can never read another's buying cadence. Consecutive UTC days with at
+  // least one completed purchase; `current` stays alive through yesterday.
+  app.get("/api/agent/streak", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const streak = await storage.getPurchaseStreak(userId);
+      res.json(streak);
+    } catch (err) {
+      logError("Error fetching purchase streak:", err);
+      res.status(500).json({ message: "Failed to fetch streak" });
+    }
+  });
+
   // Top agents in an org by reputation (owner/admin only). Used by the
   // org-admin leaderboard view. Excludes unverified agents and agents with
   // fewer than 3 events in the trailing 90 days (see TOP_AGENT_MIN_EVENTS).
