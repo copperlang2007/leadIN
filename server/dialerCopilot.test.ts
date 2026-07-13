@@ -18,6 +18,7 @@ import {
   buildCompliance,
   buildSuggestionPrompt,
   parseSuggestions,
+  redactPII,
   stubSuggestions,
   generateSuggestions,
   TWO_PARTY_CONSENT_STATES,
@@ -256,6 +257,45 @@ describe("parseSuggestions", () => {
     expect(parseSuggestions('{"nope":1}')).toBeNull();
     expect(parseSuggestions("")).toBeNull();
     expect(parseSuggestions('{"suggestions":[]}')).toBeNull();
+  });
+
+  it("takes the FIRST valid object when the model emits a second JSON fragment", () => {
+    // Anthropic-style prose framing with a trailing unrelated object — the
+    // outermost-brace span would fail to parse; the balanced scan must not.
+    const raw = 'Sure! {"suggestions":["a","b"]} For example, another shape could be {"note":"be concise"}.';
+    expect(parseSuggestions(raw)).toEqual(["a", "b"]);
+  });
+
+  it("skips a leading non-suggestions object and finds the real one", () => {
+    const raw = '{"meta":{"x":1}} then {"suggestions":["real"]}';
+    expect(parseSuggestions(raw)).toEqual(["real"]);
+  });
+
+  it("is not confused by braces inside string values", () => {
+    expect(parseSuggestions('{"suggestions":["use {this} phrasing"]}')).toEqual(["use {this} phrasing"]);
+  });
+});
+
+describe("redactPII", () => {
+  it("redacts SSN, card, email, and phone from a transcript", () => {
+    const out = redactPII(
+      "SSN 123-45-6789, card 4111 1111 1111 1111, email jane@doe.com, call 415-555-0100.",
+    );
+    expect(out).not.toContain("123-45-6789");
+    expect(out).not.toContain("4111 1111 1111 1111");
+    expect(out).not.toContain("jane@doe.com");
+    expect(out).not.toContain("415-555-0100");
+    expect(out).toContain("[redacted-ssn]");
+    expect(out).toContain("[redacted-card]");
+    expect(out).toContain("[redacted-email]");
+    expect(out).toContain("[redacted-phone]");
+  });
+
+  it("leaves ordinary text untouched and handles empty input", () => {
+    expect(redactPII("Discuss the Medicare Advantage plan options.")).toBe(
+      "Discuss the Medicare Advantage plan options.",
+    );
+    expect(redactPII("")).toBe("");
   });
 });
 

@@ -139,6 +139,26 @@ export const SUGGESTION_MAX_CHARS = 200;
 /** Max chars of transcript we forward to the LLM (cost + prompt-injection surface). */
 export const TRANSCRIPT_MAX_CHARS = 2000;
 
+/**
+ * Scrub obvious consumer PII from a call transcript before it's forwarded to
+ * the external LLM provider. Structured lead fields already omit direct
+ * identifiers; this reduces the chance a consumer-uttered SSN / card number /
+ * email / phone is sent verbatim. Not exhaustive — a belt-and-braces measure
+ * alongside the provider DPA, not a substitute for it.
+ */
+export function redactPII(text: string): string {
+  if (!text) return text;
+  return text
+    // SSN (before card so 9-digit runs aren't mis-tagged)
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted-ssn]")
+    // 13–16 digit card-like runs (allowing spaces/dashes between digits)
+    .replace(/\b(?:\d[ -]?){13,16}\b/g, "[redacted-card]")
+    // email addresses
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
+    // US-style phone numbers
+    .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, "[redacted-phone]");
+}
+
 /** Small Lead subset used to contextualize the talking-point suggestions. */
 export interface CopilotSuggestionLeadInput {
   type?: string | null;
@@ -167,7 +187,7 @@ export function buildSuggestionPrompt(
   const state = lead.state ?? "their state";
   const age = lead.consumerAge ?? "unknown";
   const income = lead.income ?? "unspecified income";
-  const clipped = (transcript ?? "").slice(0, TRANSCRIPT_MAX_CHARS);
+  const clipped = redactPII((transcript ?? "").slice(0, TRANSCRIPT_MAX_CHARS));
 
   const user =
     `Lead context:\n` +
@@ -208,20 +228,49 @@ export function parseSuggestions(raw: string): string[] | null {
   const fenceMatch = body.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenceMatch) body = fenceMatch[1].trim();
 
-  const first = body.indexOf("{");
-  const last = body.lastIndexOf("}");
-  if (first === -1 || last === -1 || last <= first) return null;
+  // Scan for the FIRST balanced {...} object that parses as
+  // { suggestions: string[] }. Taking the outermost brace span
+  // (indexOf('{')..lastIndexOf('}')) breaks whenever the model emits a second
+  // JSON fragment — common on the Anthropic path, which frames JSON in prose
+  // ("Sure! {...} Another shape could be {...}."). Brace counting is
+  // string-aware so braces inside string values don't unbalance the scan.
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "{") continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let j = i; j < body.length; j++) {
+      const ch = body[j];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const cleaned = clampSuggestions(body.slice(i, j + 1));
+          if (cleaned) return cleaned;
+          break; // not a suggestions object — try the next opening brace
+        }
+      }
+    }
+  }
+  return null;
+}
 
+// Parse one JSON-object candidate into a clamped suggestions array, or null if
+// it isn't a well-formed { suggestions: string[] }.
+function clampSuggestions(candidate: string): string[] | null {
   let parsed: any;
   try {
-    parsed = JSON.parse(body.slice(first, last + 1));
+    parsed = JSON.parse(candidate);
   } catch {
     return null;
   }
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.suggestions)) {
     return null;
   }
-
   const suggestions = parsed.suggestions
     .filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0)
     .map((s: string) => {
@@ -231,7 +280,6 @@ export function parseSuggestions(raw: string): string[] | null {
         : t;
     })
     .slice(0, MAX_SUGGESTIONS);
-
   return suggestions.length > 0 ? suggestions : null;
 }
 

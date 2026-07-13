@@ -945,8 +945,10 @@ export async function registerRoutes(
     try {
       // Targeted kill switch: disable this route independently (e.g. a bad
       // AI-suggestion pattern post-launch) without downgrading every other AI
-      // feature by unsetting the shared LLM keys.
-      if (process.env.DIALER_COPILOT_ENABLED === "false") {
+      // feature by unsetting the shared LLM keys. Normalise the value so
+      // conventional off-strings all work under incident pressure.
+      const killVal = (process.env.DIALER_COPILOT_ENABLED ?? "").trim().toLowerCase();
+      if (["false", "0", "off", "no", "disabled"].includes(killVal)) {
         return res.status(503).json({ message: "Dialer copilot is temporarily disabled" });
       }
       const userId = req.user.claims.sub;
@@ -963,6 +965,16 @@ export async function registerRoutes(
         : body.transcript;
       if (typeof transcript !== "string") {
         return res.status(400).json({ message: "transcript must be a string" });
+      }
+
+      // Rate-limit BEFORE the DB lookups so a spammer can't drive DB load under
+      // the LLM ceiling. Per-user bucket (burst 20, ~12/min) + a coarse global
+      // bucket so aggregate LLM spend is bounded across all seats at peak.
+      if (!(await takeToken(`dialer-copilot:${userId}`, 20, 0.2))) {
+        return res.status(429).json({ message: "Too many copilot requests — try again in a moment" });
+      }
+      if (!(await takeToken("dialer-copilot:global", 300, 5))) {
+        return res.status(429).json({ message: "Dialer copilot is busy — try again in a moment" });
       }
 
       const user = await storage.getUser(userId);
@@ -985,12 +997,6 @@ export async function registerRoutes(
       // unlock a lead from org B, and admins don't get cross-org access here.
       if (lead.orgId && user?.activeOrgId !== lead.orgId) {
         return res.status(403).json({ message: "Lead not available to your organization" });
-      }
-
-      // Per-user token bucket in front of the LLM call — defense-in-depth
-      // against spend abuse, matching peer cost-sensitive routes.
-      if (!(await takeToken(`dialer-copilot:${userId}`, 20, 0.2))) {
-        return res.status(429).json({ message: "Too many copilot requests — try again in a moment" });
       }
 
       const compliance = buildCompliance(lead, new Date());
