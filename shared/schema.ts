@@ -227,6 +227,9 @@ export const leads = pgTable("leads", {
   index("idx_leads_sold").on(table.sold),
   index("idx_leads_org").on(table.orgId),
   index("idx_leads_assigned").on(table.assignedToUserId),
+  // Backs the vendor-scoped aggregation in getVendorTrustStats (leads filtered
+  // by vendor_id IN (...)); without it that query seq-scans leads.
+  index("idx_leads_vendor").on(table.vendorId),
 ]);
 
 export const orders = pgTable("orders", {
@@ -241,6 +244,10 @@ export const orders = pgTable("orders", {
   index("idx_orders_user").on(table.userId),
   index("idx_orders_org").on(table.orgId),
   index("idx_orders_created").on(table.createdAt),
+  // Backs the orders LEFT JOIN in getVendorTrustStats (ON orders.lead_id =
+  // leads.id) and any other lead-scoped order lookup; without it those joins
+  // nested-loop seq-scan orders.
+  index("idx_orders_lead").on(table.leadId),
 ]);
 
 // Routing audit log: every assignment decision, including reasons + score
@@ -715,6 +722,9 @@ export const leadDisputes = pgTable("lead_disputes", {
 }, (table) => [
   index("idx_disputes_status").on(table.status),
   index("idx_disputes_order").on(table.orderId),
+  // Backs the lead_disputes LEFT JOIN in getVendorTrustStats (ON
+  // lead_disputes.lead_id = leads.id); without it the join seq-scans disputes.
+  index("idx_disputes_lead").on(table.leadId),
   unique("uniq_dispute_per_order").on(table.orderId),
 ]);
 

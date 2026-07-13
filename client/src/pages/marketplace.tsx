@@ -208,6 +208,10 @@ export default function Marketplace() {
     queries: vendorIdChunks.map(chunk => ({
       queryKey: [`/api/vendors/trust-stats?vendorIds=${chunk.join(",")}`],
       enabled: chunk.length > 0,
+      // The badge is informational, so override the app-wide `retry: false` with
+      // a couple of retries: a transient blip on one chunk would otherwise drop
+      // that batch's badges for the whole SPA session (staleTime is Infinity).
+      retry: 2,
     })),
     // Merge the per-chunk maps into one lookup. `combine` memoizes on the query
     // results, so consumers get a stable object across renders.
