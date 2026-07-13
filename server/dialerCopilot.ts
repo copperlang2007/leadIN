@@ -155,8 +155,13 @@ export function redactPII(text: string): string {
     .replace(/\b(?:\d[ -]?){13,16}\b/g, "[redacted-card]")
     // email addresses
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
-    // US-style phone numbers
-    .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, "[redacted-phone]");
+    // US-style phone numbers — require a +1 prefix or an actual separator
+    // between the 3-3-4 groups, so bare digit runs (Medicare MBIs, order /
+    // confirmation numbers) aren't clobbered and stripped of context.
+    .replace(
+      /\b(?:\+?1[-.\s]|\(1\)\s?)?(?:\(\d{3}\)[-.\s]?|\d{3}[-.\s])\d{3}[-.\s]\d{4}\b/g,
+      "[redacted-phone]",
+    );
 }
 
 /** Small Lead subset used to contextualize the talking-point suggestions. */
@@ -225,8 +230,12 @@ export function parseSuggestions(raw: string): string[] | null {
   if (!raw || typeof raw !== "string") return null;
 
   let body = raw.trim();
-  const fenceMatch = body.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenceMatch) body = fenceMatch[1].trim();
+  // Only unwrap a fence when EXACTLY one exists. With multiple fences (e.g. a
+  // preamble/schema fence then the real answer fence — a common Haiku framing),
+  // the lazy first-match would discard the real JSON, so instead leave the body
+  // intact and let the balanced-brace scan below find the suggestions object.
+  const fences = Array.from(body.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi));
+  if (fences.length === 1) body = fences[0][1].trim();
 
   // Scan for the FIRST balanced {...} object that parses as
   // { suggestions: string[] }. Taking the outermost brace span
@@ -275,9 +284,16 @@ function clampSuggestions(candidate: string): string[] | null {
     .filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0)
     .map((s: string) => {
       const t = s.trim();
-      return t.length > SUGGESTION_MAX_CHARS
-        ? t.slice(0, SUGGESTION_MAX_CHARS - 1).trimEnd() + "…"
-        : t;
+      if (t.length <= SUGGESTION_MAX_CHARS) return t;
+      // Codepoint-safe truncation: Array.from splits surrogate pairs correctly,
+      // so an emoji straddling the limit never leaves a lone surrogate (which
+      // would be invalid JSON on the wire and rejected by strict clients).
+      let out = "";
+      for (const cp of Array.from(t)) {
+        if (out.length + cp.length > SUGGESTION_MAX_CHARS - 1) break;
+        out += cp;
+      }
+      return out.trimEnd() + "…";
     })
     .slice(0, MAX_SUGGESTIONS);
   return suggestions.length > 0 ? suggestions : null;

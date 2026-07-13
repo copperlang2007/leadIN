@@ -274,6 +274,28 @@ describe("parseSuggestions", () => {
   it("is not confused by braces inside string values", () => {
     expect(parseSuggestions('{"suggestions":["use {this} phrasing"]}')).toEqual(["use {this} phrasing"]);
   });
+
+  it("finds the real answer across MULTIPLE fenced blocks (preamble fence + answer fence)", () => {
+    const raw =
+      '```json\n{"schema":"suggestions[] of strings"}\n```\n' +
+      'Here you go:\n```json\n{"suggestions":["real one","real two"]}\n```';
+    expect(parseSuggestions(raw)).toEqual(["real one", "real two"]);
+  });
+
+  it("truncates on a codepoint boundary — never leaves a lone surrogate", () => {
+    const emoji = "😀"; // 😀 (a surrogate pair)
+    const long = "a".repeat(198) + emoji + "b".repeat(50);
+    const [out] = parseSuggestions(JSON.stringify({ suggestions: [long] }))!;
+    // No unpaired surrogate anywhere in the truncated output.
+    for (let i = 0; i < out.length; i++) {
+      const c = out.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const next = out.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+      }
+    }
+    expect(out.endsWith("…")).toBe(true);
+  });
 });
 
 describe("redactPII", () => {
@@ -296,6 +318,14 @@ describe("redactPII", () => {
       "Discuss the Medicare Advantage plan options.",
     );
     expect(redactPII("")).toBe("");
+  });
+
+  it("preserves bare numeric IDs (MBI / order numbers), only redacting phone-shaped numbers", () => {
+    expect(redactPII("My member ID is 1234567890, please look me up.")).toContain("1234567890");
+    expect(redactPII("Order number 12025550100 has shipped.")).toContain("12025550100");
+    // But a formatted phone with separators is still redacted.
+    expect(redactPII("call 415-555-0100")).toContain("[redacted-phone]");
+    expect(redactPII("call +1 415.555.0100")).toContain("[redacted-phone]");
   });
 });
 
