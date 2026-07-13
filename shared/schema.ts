@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { relations } from 'drizzle-orm';
 import {
   index,
+  uniqueIndex,
   jsonb,
   pgTable,
   timestamp,
@@ -1080,31 +1081,10 @@ export const agencyProfiles = pgTable("agency_profiles", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// N2 — Agent & vendor referral codes.
-// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
-export const referralCodes = pgTable("referral_codes", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  code: varchar("code", { length: 30 }).notNull().unique(),
-  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  ownerKind: varchar("owner_kind", { length: 10 }).notNull(), // 'agent' | 'vendor'
-  rewardPct: decimal("reward_pct", { precision: 4, scale: 3 }).notNull(), // e.g., 0.100
-  active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-// @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
-export const referrals = pgTable("referrals", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  codeId: integer("code_id").notNull().references(() => referralCodes.id),
-  refereeUserId: varchar("referee_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending|qualified|paid
-  qualifiedAt: timestamp("qualified_at"),
-  rewardCents: integer("reward_cents"),
-  paidAt: timestamp("paid_at"),
-  createdAt: timestamp("created_at").defaultNow(),
-}, (table) => [
-  unique("uniq_referral_per_referee").on(table.refereeUserId),
-]);
+// N2 — Agent Referrals live below (see `referrals` near the end of this file).
+// The original unwired scaffold (referral_codes + a codeId-based referrals
+// table) was superseded by the implemented single-table model in migration
+// 0013; both stub tables were dropped there.
 
 // N3 — Marketplace integrations directory.
 // @roadmap: not yet wired — no server references. See docs/SCHEMA-STATUS.md
@@ -1243,15 +1223,8 @@ export const agencyProfilesRelations = relations(agencyProfiles, ({ one }) => ({
   org: one(organizations, { fields: [agencyProfiles.orgId], references: [organizations.id] }),
 }));
 
-export const referralCodesRelations = relations(referralCodes, ({ one, many }) => ({
-  owner: one(users, { fields: [referralCodes.ownerUserId], references: [users.id] }),
-  referrals: many(referrals),
-}));
-
-export const referralsRelations = relations(referrals, ({ one }) => ({
-  code: one(referralCodes, { fields: [referrals.codeId], references: [referralCodes.id] }),
-  referee: one(users, { fields: [referrals.refereeUserId], references: [users.id] }),
-}));
+// referralsRelations is declared after the `referrals` table near the end of
+// this file (the table is defined there), to avoid a temporal-dead-zone ref.
 
 export const marketplaceIntegrationsRelations = relations(marketplaceIntegrations, ({ many }) => ({
   installs: many(marketplaceIntegrationInstalls),
@@ -1314,10 +1287,8 @@ export type InsertNewsEvent = typeof newsEvents.$inferInsert;
 export type NewsEvent = typeof newsEvents.$inferSelect;
 export type InsertAgencyProfile = typeof agencyProfiles.$inferInsert;
 export type AgencyProfile = typeof agencyProfiles.$inferSelect;
-export type InsertReferralCode = typeof referralCodes.$inferInsert;
-export type ReferralCode = typeof referralCodes.$inferSelect;
-export type InsertReferral = typeof referrals.$inferInsert;
-export type Referral = typeof referrals.$inferSelect;
+// Referral types (Referral / InsertReferral / insertReferralSchema) are declared
+// alongside the `referrals` table near the end of this file.
 export type InsertMarketplaceIntegration = typeof marketplaceIntegrations.$inferInsert;
 export type MarketplaceIntegration = typeof marketplaceIntegrations.$inferSelect;
 export type InsertMarketplaceIntegrationInstall = typeof marketplaceIntegrationInstalls.$inferInsert;
@@ -1346,8 +1317,6 @@ export const insertLeadPersonaSchema = createInsertSchema(leadPersonas);
 export const insertOutreachDraftSchema = createInsertSchema(outreachDrafts);
 export const insertNewsEventSchema = createInsertSchema(newsEvents);
 export const insertAgencyProfileSchema = createInsertSchema(agencyProfiles);
-export const insertReferralCodeSchema = createInsertSchema(referralCodes);
-export const insertReferralSchema = createInsertSchema(referrals);
 export const insertMarketplaceIntegrationSchema = createInsertSchema(marketplaceIntegrations);
 export const insertMarketplaceIntegrationInstallSchema = createInsertSchema(marketplaceIntegrationInstalls);
 
@@ -2552,3 +2521,49 @@ export const mediscoreWeights = pgTable("mediscore_weights", {
 export type MediscoreWeightsRow = typeof mediscoreWeights.$inferSelect;
 export type InsertMediscoreWeights = typeof mediscoreWeights.$inferInsert;
 export const insertMediscoreWeightsSchema = createInsertSchema(mediscoreWeights);
+
+// ──────────────────────────────────────────────────────
+// Agent Referrals (N2) — invite-and-earn growth loop
+//
+// Model (documented): ONE stable row per referrer. `getOrCreateReferralCode`
+// lazily creates exactly one row for a referrer (referrerUserId is UNIQUE), so
+// a referrer's `code` never changes. The row doubles as the redemption record:
+// when a new user redeems the code we stamp `referredUserId` + status
+// 'redeemed'; when that referred user completes their FIRST purchase we credit
+// both wallets and flip status to 'rewarded' (exactly once). This keeps the
+// whole feature in a single table with `code` globally unique — the simplest
+// correct shape for the required schema (one redemption per code, one
+// redemption per referred user). `rewardCents` snapshots the reward at code
+// creation so a later env change to REFERRAL_REWARD_CENTS never retro-changes
+// an outstanding referral's payout.
+export const referrals = pgTable("referrals", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  referrerUserId: varchar("referrer_user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  code: varchar("code", { length: 32 }).notNull(),
+  referredUserId: varchar("referred_user_id").references(() => users.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // 'pending' | 'redeemed' | 'rewarded'
+  rewardCents: integer("reward_cents").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  redeemedAt: timestamp("redeemed_at"),
+  rewardedAt: timestamp("rewarded_at"),
+}, (table) => [
+  uniqueIndex("uniq_referrals_code").on(table.code),
+  index("idx_referrals_referred_user").on(table.referredUserId),
+]);
+
+export type Referral = typeof referrals.$inferSelect;
+export type InsertReferral = typeof referrals.$inferInsert;
+export const insertReferralSchema = createInsertSchema(referrals);
+
+export const referralsRelations = relations(referrals, ({ one }) => ({
+  referrer: one(users, {
+    fields: [referrals.referrerUserId],
+    references: [users.id],
+    relationName: "referralReferrer",
+  }),
+  referred: one(users, {
+    fields: [referrals.referredUserId],
+    references: [users.id],
+    relationName: "referralReferred",
+  }),
+}));

@@ -57,6 +57,7 @@ import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { MAX_BULK_PURCHASE } from "@shared/constants";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
+import { isValidReferralCode } from "./referrals";
 import { ERR_SAVED_SEARCH_CAP } from "./savedSearch";
 import { recordAudit, listAudit, recordLeadRevealAudit } from "./audit";
 import { deleteAccount } from "./gdprDelete";
@@ -1430,6 +1431,55 @@ export async function registerRoutes(
     } catch (err: any) {
       logError("Error fetching dispute:", err);
       res.status(500).json({ message: err?.message || "Failed to fetch dispute" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Agent Referral Routes (N2) — invite-and-earn
+  //
+  // GET  /api/referrals/me     → my stable code + redeemed/rewarded counts
+  // POST /api/referrals/redeem → redeem someone's code as the current user
+  // ──────────────────────────────────────────────────────
+  app.get("/api/referrals/me", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const summary = await storage.getReferralSummary(userId);
+      res.json(summary);
+    } catch (err: any) {
+      logError("Error fetching referral summary:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch referral summary" });
+    }
+  });
+
+  app.post("/api/referrals/redeem", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+
+      // Validate the body shape — never trust the client. `code` must be a
+      // non-empty string matching the referral-code alphabet/length.
+      const code = req.body?.code;
+      if (!isValidReferralCode(code)) {
+        return res.status(400).json({ message: "Invalid referral code" });
+      }
+
+      // Per-user rate limit on the redeem path (retry/abuse storms).
+      if (!(await takeToken(`referral-redeem:${userId}`, 10, 5 / 60))) {
+        return res.status(429).json({ message: "Too many redeem attempts" });
+      }
+
+      const referral = await storage.redeemReferralCode(code, userId);
+      res.status(200).json({ status: referral.status, redeemedAt: referral.redeemedAt });
+    } catch (err: any) {
+      const msg = err?.message ?? "";
+      // Map known validation failures to 400/409; everything else is a 500.
+      if (/invalid referral code/i.test(msg)) {
+        return res.status(400).json({ message: msg });
+      }
+      if (/already (been )?redeemed|your own referral code/i.test(msg)) {
+        return res.status(409).json({ message: msg });
+      }
+      logError("Error redeeming referral code:", err);
+      res.status(500).json({ message: msg || "Failed to redeem referral code" });
     }
   });
 

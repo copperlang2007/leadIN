@@ -37,6 +37,8 @@ import {
   smartMatchSubscriptions,
   type SmartMatchSubscription,
   leadPersonas,
+  referrals,
+  type Referral,
   type LeadPersona,
   type InsertLeadPersona,
   type CallLog,
@@ -124,6 +126,11 @@ import {
   type DisputeReason,
 } from "./disputes";
 import { computeAggregatePaidCents, validateApprovedPayout } from "./tcpa";
+import {
+  generateReferralCode,
+  isValidReferralCode,
+  REFERRAL_REWARD_CENTS,
+} from "./referrals";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -176,6 +183,18 @@ export interface IStorage {
 
   // Balance operations
   updateUserBalance(userId: string, amount: number): Promise<User>;
+
+  // Agent referrals (N2)
+  getOrCreateReferralCode(userId: string): Promise<Referral>;
+  getReferralSummary(userId: string): Promise<{
+    code: string;
+    status: string;
+    rewardCents: number;
+    redeemedCount: number;
+    rewardedCount: number;
+  }>;
+  redeemReferralCode(code: string, newUserId: string): Promise<Referral>;
+  rewardReferralOnFirstPurchase(userId: string): Promise<void>;
 
   // Stripe operations
   createStripeSession(data: InsertStripeCheckoutSession): Promise<StripeCheckoutSession>;
@@ -1001,6 +1020,13 @@ export class DatabaseStorage implements IStorage {
       relatedLeadId: leadId,
     });
 
+    // Referral reward (N2): if this buyer was referred, their first purchase
+    // credits both wallets exactly once. Post-commit + best-effort for the same
+    // reasons as reputation above: it must never roll back a paid order, and it
+    // is idempotent so re-firing on a later purchase is a harmless no-op.
+    await this.rewardReferralOnFirstPurchase(userId).catch(err =>
+      logError("[referrals] reward on first purchase failed", err));
+
     // Fire-and-forget CRM sync after the purchase commits. Importing here
     // (and not at top-level) breaks the storage<->crmSync circular dep —
     // crmSync's typed deps only need a narrow slice of `storage`.
@@ -1100,7 +1126,171 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    // Referral reward (N2): fire once for the buyer, not per order — the reward
+    // is a one-time first-purchase event. Idempotent + best-effort; see
+    // rewardReferralOnFirstPurchase and the purchaseLead call site.
+    await this.rewardReferralOnFirstPurchase(userId).catch(err =>
+      logError("[referrals] reward on first purchase failed", err));
+
     return createdOrders;
+  }
+
+  // ──────────────────────────────────────────────────────
+  // Agent Referrals (N2)
+  //
+  // Model: one stable row per referrer (referrerUserId UNIQUE); the same row
+  // records the single redemption + reward. See shared/schema.ts for the full
+  // rationale. Reward is granted EXACTLY ONCE via a transaction + status guard.
+  // ──────────────────────────────────────────────────────
+
+  /**
+   * Return the referrer's stable referral code row, creating it lazily on first
+   * call. Race-safe: two concurrent creates collapse to one via the UNIQUE
+   * constraint on referrerUserId (onConflictDoNothing → re-select). Code
+   * collisions (astronomically rare) are retried with a fresh code.
+   */
+  async getOrCreateReferralCode(userId: string): Promise<Referral> {
+    const [existing] = await db
+      .select()
+      .from(referrals)
+      .where(eq(referrals.referrerUserId, userId))
+      .limit(1);
+    if (existing) return existing;
+
+    // Bounded retry loop: at most a handful of attempts, only to dodge a code
+    // collision. The referrerUserId conflict path returns the winning row.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = generateReferralCode(userId);
+      const [created] = await db
+        .insert(referrals)
+        .values({ referrerUserId: userId, code, rewardCents: REFERRAL_REWARD_CENTS })
+        .onConflictDoNothing()
+        .returning();
+      if (created) return created;
+
+      // Nothing inserted → a conflict fired. If it was the referrerUserId
+      // constraint, a concurrent create won; return that row. If it was the
+      // code constraint, loop and mint a new code.
+      const [row] = await db
+        .select()
+        .from(referrals)
+        .where(eq(referrals.referrerUserId, userId))
+        .limit(1);
+      if (row) return row;
+    }
+    throw new Error("Failed to allocate a referral code");
+  }
+
+  /**
+   * Summary for the referrer's own dashboard: their code + whether it has been
+   * redeemed/rewarded. With the one-row-per-referrer model the counts are 0/1,
+   * exposed as counts so the API shape is stable if the model ever grows.
+   */
+  async getReferralSummary(userId: string): Promise<{
+    code: string;
+    status: string;
+    rewardCents: number;
+    redeemedCount: number;
+    rewardedCount: number;
+  }> {
+    const row = await this.getOrCreateReferralCode(userId);
+    const redeemedCount = row.referredUserId ? 1 : 0;
+    const rewardedCount = row.status === "rewarded" ? 1 : 0;
+    return {
+      code: row.code,
+      status: row.status,
+      rewardCents: row.rewardCents,
+      redeemedCount,
+      rewardedCount,
+    };
+  }
+
+  /**
+   * Redeem a referrer's code as `newUserId`. Atomic and guarded:
+   *   - unknown / malformed code → throws (never partially applies);
+   *   - self-referral (code belongs to newUserId) → throws;
+   *   - newUserId already redeemed ANY code → throws (one per user);
+   *   - the code was already redeemed by someone else → throws.
+   * On success stamps referredUserId + status='redeemed' + redeemedAt.
+   */
+  async redeemReferralCode(code: string, newUserId: string): Promise<Referral> {
+    if (!isValidReferralCode(code)) throw new Error("Invalid referral code");
+
+    return await db.transaction(async (tx) => {
+      // One redemption per user: bail if this user already redeemed anything.
+      const [alreadyRedeemed] = await tx
+        .select({ id: referrals.id })
+        .from(referrals)
+        .where(eq(referrals.referredUserId, newUserId))
+        .limit(1);
+      if (alreadyRedeemed) throw new Error("You have already redeemed a referral code");
+
+      // Lock the code's row so a concurrent redeem of the same code serialises.
+      const [row] = await tx
+        .select()
+        .from(referrals)
+        .where(eq(referrals.code, code))
+        .for("update")
+        .limit(1);
+      if (!row) throw new Error("Invalid referral code");
+      if (row.referrerUserId === newUserId) throw new Error("You cannot redeem your own referral code");
+      if (row.referredUserId) throw new Error("This referral code has already been redeemed");
+
+      const [updated] = await tx
+        .update(referrals)
+        .set({ referredUserId: newUserId, status: "redeemed", redeemedAt: new Date() })
+        .where(eq(referrals.id, row.id))
+        .returning();
+      return updated;
+    });
+  }
+
+  /**
+   * Grant the referral reward when the referred user completes their FIRST
+   * purchase. Called post-commit from purchaseLead/purchaseLeads (best-effort).
+   *
+   * Exactly-once, concurrency-safe: we lock the referral row FOR UPDATE and
+   * only act while status === 'redeemed'. Two concurrent first-purchases both
+   * enter here; the first flips status to 'rewarded' and commits, the second
+   * re-reads the locked row, sees 'rewarded', and no-ops. Both wallets are
+   * credited by the row's snapshotted rewardCents; users are locked in a
+   * deterministic id order so concurrent reward txs can't deadlock.
+   */
+  async rewardReferralOnFirstPurchase(userId: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(referrals)
+        .where(eq(referrals.referredUserId, userId))
+        .for("update")
+        .limit(1);
+
+      // No referral for this buyer, or already rewarded → nothing to do.
+      if (!row || row.status !== "redeemed") return;
+
+      const rewardCents = row.rewardCents;
+      // Lock both wallets in a stable order (sorted by id) to avoid deadlocks
+      // between concurrent reward transactions touching the same pair.
+      const targets = [row.referrerUserId, userId].sort();
+      for (const targetId of targets) {
+        const [u] = await tx
+          .select({ id: users.id, balance: users.balance })
+          .from(users)
+          .where(eq(users.id, targetId))
+          .for("update");
+        if (!u) continue; // referrer deleted (set-null) — skip that leg gracefully.
+        const newBalance = new Decimal(u.balance).plus(new Decimal(rewardCents).div(100)).toFixed(2);
+        await tx
+          .update(users)
+          .set({ balance: newBalance, updatedAt: new Date() })
+          .where(eq(users.id, targetId));
+      }
+
+      await tx
+        .update(referrals)
+        .set({ status: "rewarded", rewardedAt: new Date() })
+        .where(eq(referrals.id, row.id));
+    });
   }
 
   async checkDuplicateLead(phone: string | undefined, type: string): Promise<boolean> {
