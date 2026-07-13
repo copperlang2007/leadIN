@@ -132,10 +132,17 @@ export default function OrgAdmin() {
       enabled: !!orgs?.activeOrgId,
     })),
   });
-  const capsByUserId = new Map<string, { capCents: number | null; isLoading: boolean }>();
+  const capsByUserId = new Map<string, { capCents: number | null; isLoading: boolean; isError: boolean }>();
   agents.forEach((a, i) => {
     const q = capQueries[i];
-    capsByUserId.set(a.userId, { capCents: q?.data?.capCents ?? null, isLoading: q?.isLoading ?? false });
+    // Keep isError distinct: a failed GET must NOT look like a legitimately
+    // uncapped agent (capCents null), or an admin could type into it and
+    // silently overwrite the real server-side cap.
+    capsByUserId.set(a.userId, {
+      capCents: q?.data?.capCents ?? null,
+      isLoading: q?.isLoading ?? false,
+      isError: !!q?.error,
+    });
   });
 
   const spendCapMutation = useMutation({
@@ -406,6 +413,7 @@ export default function OrgAdmin() {
                   const cap = capsByUserId.get(a.userId);
                   const capCents = cap?.capCents ?? null;
                   const capLoading = cap?.isLoading ?? false;
+                  const capError = cap?.isError ?? false;
                   return (
                   <div key={a.userId} className="border rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
@@ -440,6 +448,13 @@ export default function OrgAdmin() {
                         <span className="text-muted-foreground">Cap $/mo</span>
                         {capLoading ? (
                           <Skeleton className="w-24 h-7" />
+                        ) : capError ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-destructive"
+                            title="Couldn't load this agent's cap — refresh to retry"
+                          >
+                            <AlertTriangle className="h-3.5 w-3.5" /> Load failed
+                          </span>
                         ) : (
                           <input
                             type="number"
@@ -467,7 +482,10 @@ export default function OrgAdmin() {
                                 spendCapMutation.mutate({ userId: a.userId, capCents: nextCapCents });
                               }
                             }}
-                            disabled={spendCapMutation.isPending}
+                            // Scope the disabled flag to the row whose PATCH is
+                            // actually in flight, so one save doesn't freeze
+                            // every agent's cap input.
+                            disabled={spendCapMutation.isPending && spendCapMutation.variables?.userId === a.userId}
                             className="w-24 h-7 rounded border bg-background px-1 text-right"
                             aria-label="Monthly spend cap in dollars"
                           />
