@@ -8,7 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2, AlertTriangle, Users, Store } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { PermissionRequired } from "@/components/permission-required";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -102,6 +102,109 @@ function capCentsToDollarInput(capCents: number | null): string {
   return (capCents / 100).toString();
 }
 
+// One agent's spend-cap editor. Extracted into its own component so each row
+// owns its OWN useMutation: a single shared mutation only tracks the latest
+// call's variables/isPending, so concurrent per-row edits would race (wrong
+// row disabled, last-writer-wins cache invalidation). The input is controlled
+// so a failed PATCH can reset the field back to the true server value (an
+// uncontrolled input keyed on the cap wouldn't remount when the value is
+// unchanged).
+function AgentCapCell({
+  orgId,
+  userId,
+  capCents,
+  capLoading,
+  capError,
+}: {
+  orgId: string;
+  userId: string;
+  capCents: number | null;
+  capLoading: boolean;
+  capError: boolean;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState<string>(() => capCentsToDollarInput(capCents));
+  // Re-sync when the fetched/updated server value changes.
+  useEffect(() => {
+    setValue(capCentsToDollarInput(capCents));
+  }, [capCents]);
+
+  const mutation = useMutation({
+    mutationFn: async (nextCapCents: number | null) => {
+      const res = await apiRequest("PATCH", spendCapKey(orgId, userId), { capCents: nextCapCents });
+      return (await res.json()) as SpendCapResponse;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [spendCapKey(orgId, userId)] });
+      toast({ title: "Spend cap updated" });
+    },
+    onError: (e: Error) => {
+      // apiRequest throws "<status>: <body>". Strip the status prefix, then
+      // unwrap the server's JSON `{ message }` so 400s read cleanly.
+      const body = e.message.replace(/^\d+:\s*/, "");
+      let msg = body;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed.message === "string") msg = parsed.message;
+      } catch {
+        // body wasn't JSON — fall back to the raw text.
+      }
+      toast({ title: "Update failed", description: msg || e.message, variant: "destructive" });
+      // Reset to the true server value so a failed save doesn't leave the field
+      // showing an unsaved edit the admin might mistake for persisted.
+      setValue(capCentsToDollarInput(capCents));
+    },
+  });
+
+  const commit = () => {
+    const raw = value.trim();
+    // Empty clears the cap (null = unlimited).
+    const nextCapCents = raw === "" ? null : Math.round(Number(raw) * 100);
+    if (nextCapCents !== null && (!Number.isFinite(nextCapCents) || nextCapCents < 0 || nextCapCents > MAX_CAP_CENTS)) {
+      toast({
+        title: "Invalid cap",
+        description: `Enter a dollar amount between $0 and ${formatCents(MAX_CAP_CENTS)}, or leave blank for no cap.`,
+        variant: "destructive",
+      });
+      setValue(capCentsToDollarInput(capCents));
+      return;
+    }
+    if (nextCapCents !== capCents) {
+      mutation.mutate(nextCapCents);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1 text-xs" data-testid={`spend-cap-${userId}`}>
+      <span className="text-muted-foreground">Cap $/mo</span>
+      {capLoading ? (
+        <Skeleton className="w-24 h-7" />
+      ) : capError ? (
+        <span
+          className="inline-flex items-center gap-1 text-destructive"
+          title="Couldn't load this agent's cap — refresh to retry"
+        >
+          <AlertTriangle className="h-3.5 w-3.5" /> Load failed
+        </span>
+      ) : (
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          placeholder="No cap"
+          disabled={mutation.isPending}
+          className="w-24 h-7 rounded border bg-background px-1 text-right"
+          aria-label="Monthly spend cap in dollars"
+        />
+      )}
+    </div>
+  );
+}
+
 export default function OrgAdmin() {
   useDocumentTitle("Org Admin");
   const { toast } = useToast();
@@ -143,35 +246,6 @@ export default function OrgAdmin() {
       isLoading: q?.isLoading ?? false,
       isError: !!q?.error,
     });
-  });
-
-  const spendCapMutation = useMutation({
-    mutationFn: async ({ userId, capCents }: { userId: string; capCents: number | null }) => {
-      const res = await apiRequest(
-        "PATCH",
-        `/api/orgs/${orgs!.activeOrgId}/members/${userId}/spend-cap`,
-        { capCents },
-      );
-      return (await res.json()) as SpendCapResponse;
-    },
-    onSuccess: (_data, { userId }) => {
-      queryClient.invalidateQueries({ queryKey: [spendCapKey(orgs!.activeOrgId!, userId)] });
-      toast({ title: "Spend cap updated" });
-    },
-    onError: (e: Error) => {
-      // apiRequest throws "<status>: <body>". Strip the status prefix, then
-      // unwrap the server's JSON `{ message }` payload so 400s like
-      // "agent members only" / validation errors read cleanly in the toast.
-      const body = e.message.replace(/^\d+:\s*/, "");
-      let msg = body;
-      try {
-        const parsed = JSON.parse(body);
-        if (parsed && typeof parsed.message === "string") msg = parsed.message;
-      } catch {
-        // body wasn't JSON — fall back to the raw text.
-      }
-      toast({ title: "Update failed", description: msg || e.message, variant: "destructive" });
-    },
   });
 
   const { data: vendors = [] } = useQuery<Vendor[]>({
@@ -444,53 +518,13 @@ export default function OrgAdmin() {
                           className="w-14 h-7 rounded border bg-background px-1 text-right"
                         />
                       </div>
-                      <div className="flex items-center gap-1 text-xs" data-testid={`spend-cap-${a.userId}`}>
-                        <span className="text-muted-foreground">Cap $/mo</span>
-                        {capLoading ? (
-                          <Skeleton className="w-24 h-7" />
-                        ) : capError ? (
-                          <span
-                            className="inline-flex items-center gap-1 text-destructive"
-                            title="Couldn't load this agent's cap — refresh to retry"
-                          >
-                            <AlertTriangle className="h-3.5 w-3.5" /> Load failed
-                          </span>
-                        ) : (
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            // Remount when the fetched cap arrives/changes so the
-                            // uncontrolled input picks up the latest value.
-                            key={`cap-${a.userId}-${capCents ?? "none"}`}
-                            defaultValue={capCentsToDollarInput(capCents)}
-                            placeholder="No cap"
-                            onBlur={(e) => {
-                              const raw = e.target.value.trim();
-                              // Empty clears the cap (null = unlimited).
-                              const nextCapCents = raw === "" ? null : Math.round(Number(raw) * 100);
-                              if (nextCapCents !== null && (!Number.isFinite(nextCapCents) || nextCapCents < 0 || nextCapCents > MAX_CAP_CENTS)) {
-                                toast({
-                                  title: "Invalid cap",
-                                  description: `Enter a dollar amount between $0 and ${formatCents(MAX_CAP_CENTS)}, or leave blank for no cap.`,
-                                  variant: "destructive",
-                                });
-                                e.target.value = capCentsToDollarInput(capCents);
-                                return;
-                              }
-                              if (nextCapCents !== capCents) {
-                                spendCapMutation.mutate({ userId: a.userId, capCents: nextCapCents });
-                              }
-                            }}
-                            // Scope the disabled flag to the row whose PATCH is
-                            // actually in flight, so one save doesn't freeze
-                            // every agent's cap input.
-                            disabled={spendCapMutation.isPending && spendCapMutation.variables?.userId === a.userId}
-                            className="w-24 h-7 rounded border bg-background px-1 text-right"
-                            aria-label="Monthly spend cap in dollars"
-                          />
-                        )}
-                      </div>
+                      <AgentCapCell
+                        orgId={a.orgId}
+                        userId={a.userId}
+                        capCents={capCents}
+                        capLoading={capLoading}
+                        capError={capError}
+                      />
                       <Badge
                         variant={a.verificationStatus === "verified" ? "default" : "outline"}
                         className={
