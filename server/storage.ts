@@ -843,13 +843,16 @@ export class DatabaseStorage implements IStorage {
     return member?.cap ?? null;
   }
 
-  // All members' caps in one query (userId -> capCents | null) so the admin UI
-  // can load every agent's cap without an N+1 per-agent fan-out.
+  // All AGENT members' caps in one query (userId -> capCents | null) so the
+  // admin UI can load them without an N+1 per-agent fan-out. Scoped to the
+  // agent role so it agrees with PATCH (which only sets caps on agents) — an
+  // owner/admin row with a stray cap wouldn't be clearable through the API, so
+  // it must not surface here either.
   async getOrgMemberSpendCaps(orgId: string): Promise<Record<string, number | null>> {
     const rows = await db
       .select({ userId: orgMembers.userId, cap: orgMembers.monthlySpendCapCents })
       .from(orgMembers)
-      .where(eq(orgMembers.orgId, orgId));
+      .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.role, "agent")));
     const map: Record<string, number | null> = {};
     for (const r of rows) map[r.userId] = r.cap ?? null;
     return map;

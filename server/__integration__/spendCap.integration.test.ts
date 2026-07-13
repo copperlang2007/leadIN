@@ -134,14 +134,19 @@ describe.skipIf(!LIVE)("monthly spend caps (live DB)", () => {
     expect(await storage.setMemberSpendCap(org, stranger, 5000)).toBe(false);
   });
 
-  it("getOrgMemberSpendCaps returns every member's cap in one map", async () => {
+  it("getOrgMemberSpendCaps returns every AGENT member's cap in one map", async () => {
     const org = await seedOrg();
     const capped = await seedCappedBuyer(org, 3000);
     const uncapped = await seedCappedBuyer(org, null);
+    // An owner/admin with a stray cap must NOT appear — PATCH can't clear it,
+    // so the bulk read is scoped to agents to keep the two endpoints in sync.
+    const ownerWithStrayCap = await seedUser({ orgId: org });
+    await db.insert(orgMembers).values({ orgId: org, userId: ownerWithStrayCap, role: "owner", monthlySpendCapCents: 4000 });
 
     const map = await storage.getOrgMemberSpendCaps(org);
     expect(map[capped]).toBe(3000);
     expect(map[uncapped]).toBeNull();
+    expect(map[ownerWithStrayCap]).toBeUndefined();
     // A member of a different org isn't included.
     const otherOrg = await seedOrg();
     const otherMember = await seedCappedBuyer(otherOrg, 9000);
