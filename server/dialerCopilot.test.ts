@@ -34,10 +34,14 @@ const CA_OUTSIDE = new Date("2026-07-13T06:00:00Z"); // 23:00 PDT prev day — o
 const TX_WITHIN = new Date("2026-07-13T18:00:00Z");
 
 describe("isTwoPartyConsentState", () => {
-  it("returns true for two-party-consent states (positive cases)", () => {
-    for (const s of ["CA", "FL", "IL", "MD", "MA", "MI", "MT", "NH", "PA", "WA"]) {
+  it("returns true for EVERY state in the source list (kept in sync automatically)", () => {
+    // Iterate the constant itself so a future edit to the list can't silently
+    // drop a state (e.g. DE, NV) without a test failure.
+    for (const s of TWO_PARTY_CONSENT_STATES) {
       expect(isTwoPartyConsentState(s)).toBe(true);
     }
+    // Guard against the list being accidentally emptied.
+    expect(TWO_PARTY_CONSENT_STATES.length).toBeGreaterThanOrEqual(11);
   });
 
   it("returns false for one-party-consent states (negative cases)", () => {

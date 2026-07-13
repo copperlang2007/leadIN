@@ -943,6 +943,12 @@ export async function registerRoutes(
   // lead (or an admin), matching the /api/leads/:id/persona pattern.
   app.post("/api/dialer/copilot", isAuthenticated, async (req: any, res) => {
     try {
+      // Targeted kill switch: disable this route independently (e.g. a bad
+      // AI-suggestion pattern post-launch) without downgrading every other AI
+      // feature by unsetting the shared LLM keys.
+      if (process.env.DIALER_COPILOT_ENABLED === "false") {
+        return res.status(503).json({ message: "Dialer copilot is temporarily disabled" });
+      }
       const userId = req.user.claims.sub;
       const body = req.body ?? {};
 
@@ -979,6 +985,12 @@ export async function registerRoutes(
       // unlock a lead from org B, and admins don't get cross-org access here.
       if (lead.orgId && user?.activeOrgId !== lead.orgId) {
         return res.status(403).json({ message: "Lead not available to your organization" });
+      }
+
+      // Per-user token bucket in front of the LLM call — defense-in-depth
+      // against spend abuse, matching peer cost-sensitive routes.
+      if (!(await takeToken(`dialer-copilot:${userId}`, 20, 0.2))) {
+        return res.status(429).json({ message: "Too many copilot requests — try again in a moment" });
       }
 
       const compliance = buildCompliance(lead, new Date());
