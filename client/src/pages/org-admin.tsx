@@ -1,10 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { Building2, ShieldCheck, Loader2, Key, Copy, Banknote, Trash2, AlertTriangle, Users, Store } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { useState } from "react";
@@ -69,6 +70,12 @@ interface OrgAgent {
   user: { id: string; email: string | null; firstName: string | null; lastName: string | null };
 }
 
+// Per-agent monthly spend cap. `capCents` is whole cents, or null when the
+// agent has no cap (unlimited spend).
+interface SpendCapResponse {
+  capCents: number | null;
+}
+
 // Agents whose license expires within this many days are surfaced in the
 // org-admin renewal banner. Keep in sync with RENEWAL_WINDOW_DAYS in
 // server/niprSync.ts.
@@ -77,6 +84,22 @@ const RENEWAL_WINDOW_DAYS = 30;
 function formatCents(cents: number): string {
   const dollars = (cents || 0) / 100;
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+// Postgres int4 upper bound; the spend-cap API rejects anything larger.
+const MAX_CAP_CENTS = 2147483647;
+
+// Query key for a single agent's spend cap. Kept as a helper so the fetch and
+// the post-mutation invalidation always agree.
+function spendCapKey(orgId: string, userId: string): string {
+  return `/api/orgs/${orgId}/members/${userId}/spend-cap`;
+}
+
+// Whole dollars for display in the inline editor (null cap → empty string so
+// the input shows its "No cap" placeholder).
+function capCentsToDollarInput(capCents: number | null): string {
+  if (capCents == null) return "";
+  return (capCents / 100).toString();
 }
 
 export default function OrgAdmin() {
@@ -94,6 +117,54 @@ export default function OrgAdmin() {
     enabled: !!orgs?.activeOrgId,
   });
   const agentsForbidden = agentsError?.message?.startsWith("403:");
+
+  // Fetch each agent's monthly spend cap in parallel. useQueries keeps the N
+  // per-agent GETs tidy; we index results back onto agents by array position.
+  const capQueries = useQueries({
+    queries: agents.map(a => ({
+      queryKey: [spendCapKey(a.orgId, a.userId)],
+      queryFn: async () => {
+        const res = await fetch(spendCapKey(a.orgId, a.userId), { credentials: "include" });
+        if (!res.ok) throw new Error("Failed to load spend cap");
+        return (await res.json()) as SpendCapResponse;
+      },
+      enabled: !!orgs?.activeOrgId,
+    })),
+  });
+  const capsByUserId = new Map<string, { capCents: number | null; isLoading: boolean }>();
+  agents.forEach((a, i) => {
+    const q = capQueries[i];
+    capsByUserId.set(a.userId, { capCents: q?.data?.capCents ?? null, isLoading: q?.isLoading ?? false });
+  });
+
+  const spendCapMutation = useMutation({
+    mutationFn: async ({ userId, capCents }: { userId: string; capCents: number | null }) => {
+      const res = await apiRequest(
+        "PATCH",
+        `/api/orgs/${orgs!.activeOrgId}/members/${userId}/spend-cap`,
+        { capCents },
+      );
+      return (await res.json()) as SpendCapResponse;
+    },
+    onSuccess: (_data, { userId }) => {
+      queryClient.invalidateQueries({ queryKey: [spendCapKey(orgs!.activeOrgId!, userId)] });
+      toast({ title: "Spend cap updated" });
+    },
+    onError: (e: Error) => {
+      // apiRequest throws "<status>: <body>". Strip the status prefix, then
+      // unwrap the server's JSON `{ message }` payload so 400s like
+      // "agent members only" / validation errors read cleanly in the toast.
+      const body = e.message.replace(/^\d+:\s*/, "");
+      let msg = body;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed.message === "string") msg = parsed.message;
+      } catch {
+        // body wasn't JSON — fall back to the raw text.
+      }
+      toast({ title: "Update failed", description: msg || e.message, variant: "destructive" });
+    },
+  });
 
   const { data: vendors = [] } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
@@ -309,7 +380,7 @@ export default function OrgAdmin() {
           <CardHeader>
             <CardTitle>Agents</CardTitle>
             <CardDescription>
-              Verify license documents and toggle agent status. Only verified, accepting agents are eligible for routing.
+              Verify license documents, toggle agent status, and set each agent's monthly spend cap. Only verified, accepting agents are eligible for routing.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -331,6 +402,9 @@ export default function OrgAdmin() {
               <div className="space-y-2">
                 {agents.map(a => {
                   const convPct = Math.round(parseFloat(a.conversionRate ?? "0") * 100);
+                  const cap = capsByUserId.get(a.userId);
+                  const capCents = cap?.capCents ?? null;
+                  const capLoading = cap?.isLoading ?? false;
                   return (
                   <div key={a.userId} className="border rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
@@ -360,6 +434,43 @@ export default function OrgAdmin() {
                           }}
                           className="w-14 h-7 rounded border bg-background px-1 text-right"
                         />
+                      </div>
+                      <div className="flex items-center gap-1 text-xs" data-testid={`spend-cap-${a.userId}`}>
+                        <span className="text-muted-foreground">Cap $/mo</span>
+                        {capLoading ? (
+                          <Skeleton className="w-24 h-7" />
+                        ) : (
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            // Remount when the fetched cap arrives/changes so the
+                            // uncontrolled input picks up the latest value.
+                            key={`cap-${a.userId}-${capCents ?? "none"}`}
+                            defaultValue={capCentsToDollarInput(capCents)}
+                            placeholder="No cap"
+                            onBlur={(e) => {
+                              const raw = e.target.value.trim();
+                              // Empty clears the cap (null = unlimited).
+                              const nextCapCents = raw === "" ? null : Math.round(Number(raw) * 100);
+                              if (nextCapCents !== null && (!Number.isFinite(nextCapCents) || nextCapCents < 0 || nextCapCents > MAX_CAP_CENTS)) {
+                                toast({
+                                  title: "Invalid cap",
+                                  description: `Enter a dollar amount between $0 and ${formatCents(MAX_CAP_CENTS)}, or leave blank for no cap.`,
+                                  variant: "destructive",
+                                });
+                                e.target.value = capCentsToDollarInput(capCents);
+                                return;
+                              }
+                              if (nextCapCents !== capCents) {
+                                spendCapMutation.mutate({ userId: a.userId, capCents: nextCapCents });
+                              }
+                            }}
+                            disabled={spendCapMutation.isPending}
+                            className="w-24 h-7 rounded border bg-background px-1 text-right"
+                            aria-label="Monthly spend cap in dollars"
+                          />
+                        )}
                       </div>
                       <Badge
                         variant={a.verificationStatus === "verified" ? "default" : "outline"}
