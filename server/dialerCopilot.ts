@@ -88,6 +88,13 @@ export interface CopilotCompliance {
  *   - two-party-consent state         → "{STATE} is a two-party-consent state — announce recording ..."
  *   - TCPA not verified               → "TCPA consent not verified"
  */
+/** Coerce a date-ish value to a valid Date, or null if absent/unparseable. */
+function toValidDate(v: Date | string | null | undefined): Date | null {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function buildCompliance(
   lead: CopilotLeadInput,
   now: Date = new Date(),
@@ -98,7 +105,9 @@ export function buildCompliance(
   const withinCallingHours = isWithinCallingHours(state, now).allowed;
   const dnc = lead.dncFlagged === true;
   const twoPartyConsent = isTwoPartyConsentState(state);
-  const tcpaVerified = lead.tcpaVerifiedAt != null;
+  // Only a VALID timestamp counts as verified — a malformed/unexpected value
+  // (e.g. an unparseable string) must not read as "TCPA verified".
+  const tcpaVerified = toValidDate(lead.tcpaVerifiedAt) !== null;
 
   const warnings: string[] = [];
   if (!withinCallingHours) {
@@ -154,7 +163,8 @@ export function buildSuggestionPrompt(
     "actionable, and never promises specific plan approval or pricing.";
 
   const type = lead.type ?? "insurance";
-  const state = lead.state ?? "unknown";
+  // Same fallback as stubSuggestions so LLM- and stub-mode copy stay consistent.
+  const state = lead.state ?? "their state";
   const age = lead.consumerAge ?? "unknown";
   const income = lead.income ?? "unspecified income";
   const clipped = (transcript ?? "").slice(0, TRANSCRIPT_MAX_CHARS);

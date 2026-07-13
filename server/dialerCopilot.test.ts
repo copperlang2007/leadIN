@@ -139,6 +139,21 @@ describe("buildCompliance — individual warnings", () => {
     expect(c.tcpaVerified).toBe(true);
     expect(c.warnings).not.toContain("TCPA consent not verified");
   });
+
+  it("treats a valid ISO-string tcpaVerifiedAt as verified, a malformed one as NOT", () => {
+    const ok = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: "2026-01-01T00:00:00Z" },
+      TX_WITHIN,
+    );
+    expect(ok.tcpaVerified).toBe(true);
+
+    const bad = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: "not-a-date" },
+      TX_WITHIN,
+    );
+    expect(bad.tcpaVerified).toBe(false);
+    expect(bad.warnings).toContain("TCPA consent not verified");
+  });
 });
 
 describe("buildCompliance — assembled result", () => {
