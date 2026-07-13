@@ -197,7 +197,8 @@ export interface IStorage {
   // Saved-search alerts (wishlist)
   createSavedSearch(search: InsertSavedSearch): Promise<SavedSearch>;
   listSavedSearches(userId: string): Promise<SavedSearch[]>;
-  deleteSavedSearch(id: number, userId: string): Promise<void>;
+  // Returns the number of rows deleted (0 when the id isn't the caller's).
+  deleteSavedSearch(id: number, userId: string): Promise<number>;
   notifyMatchingSavedSearches(lead: Lead): Promise<void>;
 
   // Admin operations
@@ -1317,11 +1318,15 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(savedSearches.createdAt));
   }
 
-  // Scoped by userId so a user can only delete their own saved search.
-  async deleteSavedSearch(id: number, userId: string): Promise<void> {
-    await db
+  // Scoped by userId so a user can only delete their own saved search. Returns
+  // the number of rows removed so the route can 404 on a no-op delete (unknown
+  // id, or someone else's).
+  async deleteSavedSearch(id: number, userId: string): Promise<number> {
+    const rows = await db
       .delete(savedSearches)
-      .where(and(eq(savedSearches.id, id), eq(savedSearches.userId, userId)));
+      .where(and(eq(savedSearches.id, id), eq(savedSearches.userId, userId)))
+      .returning({ id: savedSearches.id });
+    return rows.length;
   }
 
   // Best-effort: finds active saved searches visible to the lead's tenant

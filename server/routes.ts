@@ -277,9 +277,13 @@ async function ingestLeadForVendor(
     vendorName: vendor.name,
   }).catch(err => logError("Notification error:", err));
 
-  // Saved-search alerts — fire-and-forget, never block or break ingest.
+  // Saved-search alerts — fire-and-forget, never block or break ingest. Re-fetch
+  // the lead first so the matcher sees the FINALIZED mediscore: the recompute
+  // above persists it to the DB row but doesn't mutate the in-memory `lead`, so
+  // a `minMediscore` search would otherwise miss every freshly-ingested lead.
   storage
-    .notifyMatchingSavedSearches(lead)
+    .getLead(lead.id)
+    .then(finalized => finalized && storage.notifyMatchingSavedSearches(finalized))
     .catch(err => logError("Saved-search notify error:", err));
 
   storage.routeLeadToBestAgent(lead.id)
@@ -342,8 +346,14 @@ async function authVendorForPingPost(
   return { vendor: { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null }, secret };
 }
 
-// Validation for saved-search criteria (wishlist). Every field optional; an
-// empty object is valid (matches all leads visible to the tenant scope).
+// Max active saved searches per user — bounds notification fan-out per ingest.
+const MAX_SAVED_SEARCHES = 25;
+
+// Validation for saved-search criteria (wishlist). Every field is optional, but
+// the criteria must (a) constrain on at least one non-empty filter — an empty
+// or all-empty object would match every lead and spam the owner on each ingest
+// — and (b) not invert the price band (minPrice <= maxPrice), which would be a
+// permanently dead search.
 const savedSearchCriteriaSchema = z.object({
   types: z.array(z.string().min(1)).optional(),
   states: z.array(z.string().min(1)).optional(),
@@ -351,7 +361,21 @@ const savedSearchCriteriaSchema = z.object({
   maxPrice: z.number().finite().nonnegative().optional(),
   minMediscore: z.number().finite().min(0).max(100).optional(),
   verifiedOnly: z.boolean().optional(),
-}).strict();
+}).strict()
+  .refine(
+    (c) => c.minPrice == null || c.maxPrice == null || c.minPrice <= c.maxPrice,
+    { message: "minPrice must be <= maxPrice", path: ["minPrice"] },
+  )
+  .refine(
+    (c) =>
+      (c.types?.length ?? 0) > 0 ||
+      (c.states?.length ?? 0) > 0 ||
+      c.minPrice != null ||
+      c.maxPrice != null ||
+      c.minMediscore != null ||
+      c.verifiedOnly != null,
+    { message: "At least one non-empty filter is required" },
+  );
 
 export async function registerRoutes(
   httpServer: Server,
@@ -3027,6 +3051,10 @@ export async function registerRoutes(
   app.post("/api/saved-searches", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
+      // Token-bucket limit (≈10/min) so a script can't mass-create searches.
+      if (!(await takeToken(`saved-search-create:${userId}`, 10, 10 / 60))) {
+        return res.status(429).json({ message: "Too many requests — slow down" });
+      }
       const name = String(req.body?.name ?? "").trim();
       if (!name) return res.status(400).json({ message: "name required" });
       if (name.length > 200) return res.status(400).json({ message: "name too long" });
@@ -3037,11 +3065,24 @@ export async function registerRoutes(
       }
       const criteria: SavedSearchCriteria = parsed.data;
 
-      // Scope the alert to the buyer's active org so matches respect tenancy.
+      // Require an active org: a null-org saved search would act as a global,
+      // cross-tenant subscription (matching leads in every org).
       const me = await storage.getUser(userId);
+      if (!me?.activeOrgId) {
+        return res.status(400).json({ message: "An active organization is required to create a saved search" });
+      }
+
+      // Cap active saved searches per user to bound per-ingest notification fan-out.
+      const existing = await storage.listSavedSearches(userId);
+      if (existing.filter((s) => s.active).length >= MAX_SAVED_SEARCHES) {
+        return res
+          .status(409)
+          .json({ message: `You can have at most ${MAX_SAVED_SEARCHES} active saved searches` });
+      }
+
       const search = await storage.createSavedSearch({
         userId,
-        orgId: me?.activeOrgId ?? null,
+        orgId: me.activeOrgId,
         name,
         criteria,
       });
@@ -3058,7 +3099,10 @@ export async function registerRoutes(
       if (Number.isNaN(id)) {
         return res.status(400).json({ message: "Invalid saved search id" });
       }
-      await storage.deleteSavedSearch(id, req.user.claims.sub);
+      const deleted = await storage.deleteSavedSearch(id, req.user.claims.sub);
+      if (deleted === 0) {
+        return res.status(404).json({ message: "Saved search not found" });
+      }
       res.json({ ok: true });
     } catch (err) {
       logError("Error deleting saved search:", err);

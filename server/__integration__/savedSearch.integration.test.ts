@@ -93,6 +93,20 @@ describe.skipIf(!LIVE)("saved-search alerts (live DB)", () => {
     expect(await notifCountForLead(userId, lead.id)).toBe(1);
   });
 
+  it("deleteSavedSearch returns the row count: 1 for the owner, 0 otherwise", async () => {
+    const owner = await seedUser();
+    const stranger = await seedUser();
+    const search = await createSearch({ userId: owner, criteria: { states: ["CA"] } });
+
+    // A stranger can't delete it (0 rows), the owner can (1 row), and a second
+    // delete of the same id is a no-op (0 rows).
+    expect(await storage.deleteSavedSearch(search.id, stranger)).toBe(0);
+    expect(await storage.deleteSavedSearch(search.id, owner)).toBe(1);
+    expect(await storage.deleteSavedSearch(search.id, owner)).toBe(0);
+    // A wholly-unknown id also returns 0.
+    expect(await storage.deleteSavedSearch(999_999_999, owner)).toBe(0);
+  });
+
   it("does not notify when the lead does not match", async () => {
     const userId = await seedUser();
     await createSearch({ userId, criteria: { states: ["TX"] } });
