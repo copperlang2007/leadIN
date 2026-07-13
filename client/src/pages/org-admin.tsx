@@ -124,8 +124,9 @@ export default function OrgAdmin() {
     queries: agents.map(a => ({
       queryKey: [spendCapKey(a.orgId, a.userId)],
       queryFn: async () => {
-        const res = await fetch(spendCapKey(a.orgId, a.userId), { credentials: "include" });
-        if (!res.ok) throw new Error("Failed to load spend cap");
+        // Use the shared CSRF/auth-aware helper for read/write consistency;
+        // apiRequest throws on non-2xx, so no manual res.ok check is needed.
+        const res = await apiRequest("GET", spendCapKey(a.orgId, a.userId));
         return (await res.json()) as SpendCapResponse;
       },
       enabled: !!orgs?.activeOrgId,
