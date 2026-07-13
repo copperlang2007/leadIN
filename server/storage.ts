@@ -1236,12 +1236,21 @@ export class DatabaseStorage implements IStorage {
       if (row.referrerUserId === newUserId) throw new Error("You cannot redeem your own referral code");
       if (row.referredUserId) throw new Error("This referral code has already been redeemed");
 
-      const [updated] = await tx
-        .update(referrals)
-        .set({ referredUserId: newUserId, status: "redeemed", redeemedAt: new Date() })
-        .where(eq(referrals.id, row.id))
-        .returning();
-      return updated;
+      try {
+        const [updated] = await tx
+          .update(referrals)
+          .set({ referredUserId: newUserId, status: "redeemed", redeemedAt: new Date() })
+          .where(eq(referrals.id, row.id))
+          .returning();
+        return updated;
+      } catch (e: any) {
+        // The uniq_referrals_referred_user constraint is the real guard against
+        // a concurrent redeem of a DIFFERENT code by the same user (both pass
+        // the app-level check above, but the second UPDATE violates the unique
+        // index). Translate that to the same friendly business error.
+        if (e?.code === "23505") throw new Error("You have already redeemed a referral code");
+        throw e;
+      }
     });
   }
 
@@ -1278,7 +1287,15 @@ export class DatabaseStorage implements IStorage {
           .from(users)
           .where(eq(users.id, targetId))
           .for("update");
-        if (!u) continue; // referrer deleted (set-null) — skip that leg gracefully.
+        if (!u) {
+          // A referrer/referred user unexpectedly missing at payout time is a
+          // data inconsistency worth surfacing (e.g. GDPR-deleted mid-flight).
+          logError(
+            `[referrals] reward target user ${targetId} missing for referral ${row.id} — skipping that leg`,
+            new Error("referral reward target missing"),
+          );
+          continue;
+        }
         const newBalance = new Decimal(u.balance).plus(new Decimal(rewardCents).div(100)).toFixed(2);
         await tx
           .update(users)

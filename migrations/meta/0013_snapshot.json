@@ -8934,8 +8934,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_referrals_referred_user": {
-          "name": "idx_referrals_referred_user",
+        "uniq_referrals_referred_user": {
+          "name": "uniq_referrals_referred_user",
           "columns": [
             {
               "expression": "referred_user_id",
@@ -8944,7 +8944,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}

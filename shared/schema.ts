@@ -2548,7 +2548,11 @@ export const referrals = pgTable("referrals", {
   rewardedAt: timestamp("rewarded_at"),
 }, (table) => [
   uniqueIndex("uniq_referrals_code").on(table.code),
-  index("idx_referrals_referred_user").on(table.referredUserId),
+  // UNIQUE (not plain index): enforces "one redemption per user" at the DB
+  // level so two concurrent redeems of different codes by the same user can't
+  // both win. referredUserId is nullable and Postgres treats NULLs as distinct,
+  // so unredeemed codes (null referredUserId) coexist freely.
+  uniqueIndex("uniq_referrals_referred_user").on(table.referredUserId),
 ]);
 
 export type Referral = typeof referrals.$inferSelect;

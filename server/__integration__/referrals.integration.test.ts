@@ -87,6 +87,24 @@ describe.skipIf(!LIVE)("agent referrals (live DB)", () => {
     await expect(storage.redeemReferralCode(codeB, referred)).rejects.toThrow(/already redeemed/i);
   });
 
+  it("CONCURRENT redeems of two different codes by one user — exactly one wins", async () => {
+    // The app-level "already redeemed" check can't catch this race (both see no
+    // prior row); the uniq_referrals_referred_user DB constraint must reject the
+    // loser so a user can never end up linked to two referrals.
+    const referrerA = await seedUser();
+    const referrerB = await seedUser();
+    const referred = await seedUser();
+    const codeA = (await storage.getOrCreateReferralCode(referrerA)).code;
+    const codeB = (await storage.getOrCreateReferralCode(referrerB)).code;
+
+    const results = await Promise.allSettled([
+      storage.redeemReferralCode(codeA, referred),
+      storage.redeemReferralCode(codeB, referred),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+  });
+
   it("rejects redeeming a code that someone else already claimed", async () => {
     const referrer = await seedUser();
     const first = await seedUser();
