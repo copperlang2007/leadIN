@@ -236,6 +236,7 @@ export interface IStorage {
   // A2 — Spend Caps: read/set a member's monthly lead-spend ceiling (cents;
   // null = uncapped). Returns null if the (orgId, userId) pair isn't a member.
   getMemberSpendCap(orgId: string, userId: string): Promise<number | null>;
+  getOrgMemberSpendCaps(orgId: string): Promise<Record<string, number | null>>;
   // Returns false when no membership row matched (e.g. the member was removed
   // between the caller's membership check and this write).
   setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<boolean>;
@@ -840,6 +841,18 @@ export class DatabaseStorage implements IStorage {
       .from(orgMembers)
       .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)));
     return member?.cap ?? null;
+  }
+
+  // All members' caps in one query (userId -> capCents | null) so the admin UI
+  // can load every agent's cap without an N+1 per-agent fan-out.
+  async getOrgMemberSpendCaps(orgId: string): Promise<Record<string, number | null>> {
+    const rows = await db
+      .select({ userId: orgMembers.userId, cap: orgMembers.monthlySpendCapCents })
+      .from(orgMembers)
+      .where(eq(orgMembers.orgId, orgId));
+    const map: Record<string, number | null> = {};
+    for (const r of rows) map[r.userId] = r.cap ?? null;
+    return map;
   }
 
   async setMemberSpendCap(orgId: string, userId: string, capCents: number | null): Promise<boolean> {

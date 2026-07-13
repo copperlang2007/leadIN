@@ -134,6 +134,20 @@ describe.skipIf(!LIVE)("monthly spend caps (live DB)", () => {
     expect(await storage.setMemberSpendCap(org, stranger, 5000)).toBe(false);
   });
 
+  it("getOrgMemberSpendCaps returns every member's cap in one map", async () => {
+    const org = await seedOrg();
+    const capped = await seedCappedBuyer(org, 3000);
+    const uncapped = await seedCappedBuyer(org, null);
+
+    const map = await storage.getOrgMemberSpendCaps(org);
+    expect(map[capped]).toBe(3000);
+    expect(map[uncapped]).toBeNull();
+    // A member of a different org isn't included.
+    const otherOrg = await seedOrg();
+    const otherMember = await seedCappedBuyer(otherOrg, 9000);
+    expect(map[otherMember]).toBeUndefined();
+  });
+
   it("hard ceiling: a cap can't be evaded by switching to an uncapped active org", async () => {
     // Buyer is a capped member of orgA ($15) AND an uncapped member of orgB,
     // with orgB active. The tightest cap across ALL memberships still applies,

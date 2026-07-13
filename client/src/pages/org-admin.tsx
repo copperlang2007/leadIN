@@ -1,4 +1,4 @@
-import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Layout } from "@/components/layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -89,11 +89,17 @@ function formatCents(cents: number): string {
 // Postgres int4 upper bound; the spend-cap API rejects anything larger.
 const MAX_CAP_CENTS = 2147483647;
 
-// Query key for a single agent's spend cap. Kept as a helper so the fetch and
-// the post-mutation invalidation always agree.
+// PATCH endpoint for a single agent's spend cap.
 function spendCapKey(orgId: string, userId: string): string {
   return `/api/orgs/${orgId}/members/${userId}/spend-cap`;
 }
+
+// Bulk GET of every member's cap ({ [userId]: capCents | null }) — one request
+// for the whole roster instead of an N+1 per-agent fan-out.
+function spendCapsKey(orgId: string): string {
+  return `/api/orgs/${orgId}/spend-caps`;
+}
+type CapsMap = Record<string, number | null>;
 
 // Whole dollars for display in the inline editor (null cap → empty string so
 // the input shows its "No cap" placeholder).
@@ -135,8 +141,14 @@ function AgentCapCell({
       const res = await apiRequest("PATCH", spendCapKey(orgId, userId), { capCents: nextCapCents });
       return (await res.json()) as SpendCapResponse;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [spendCapKey(orgId, userId)] });
+    onSuccess: (data) => {
+      // Seed the bulk cache from the authoritative PATCH response rather than
+      // invalidating — a refetch that transiently fails would flip this row to
+      // "Load failed" right next to the success toast.
+      queryClient.setQueryData<CapsMap>([spendCapsKey(orgId)], (prev) => ({
+        ...(prev ?? {}),
+        [userId]: data.capCents,
+      }));
       toast({ title: "Spend cap updated" });
     },
     onError: (e: Error) => {
@@ -169,6 +181,17 @@ function AgentCapCell({
       });
       setValue(capCentsToDollarInput(capCents));
       return;
+    }
+    // A $0 cap blocks EVERY purchase for this agent — likely a mix-up with
+    // "no cap" (which is the blank field). Confirm before applying.
+    if (nextCapCents === 0) {
+      const ok = window.confirm(
+        'A $0 cap blocks every lead purchase for this agent. Leave the field blank for "no cap" instead. Set the cap to $0 anyway?',
+      );
+      if (!ok) {
+        setValue(capCentsToDollarInput(capCents));
+        return;
+      }
     }
     if (nextCapCents !== capCents) {
       mutation.mutate(nextCapCents);
@@ -221,31 +244,20 @@ export default function OrgAdmin() {
   });
   const agentsForbidden = agentsError?.message?.startsWith("403:");
 
-  // Fetch each agent's monthly spend cap in parallel. useQueries keeps the N
-  // per-agent GETs tidy; we index results back onto agents by array position.
-  const capQueries = useQueries({
-    queries: agents.map(a => ({
-      queryKey: [spendCapKey(a.orgId, a.userId)],
-      queryFn: async () => {
-        // Use the shared CSRF/auth-aware helper for read/write consistency;
-        // apiRequest throws on non-2xx, so no manual res.ok check is needed.
-        const res = await apiRequest("GET", spendCapKey(a.orgId, a.userId));
-        return (await res.json()) as SpendCapResponse;
-      },
-      enabled: !!orgs?.activeOrgId,
-    })),
-  });
-  const capsByUserId = new Map<string, { capCents: number | null; isLoading: boolean; isError: boolean }>();
-  agents.forEach((a, i) => {
-    const q = capQueries[i];
-    // Keep isError distinct: a failed GET must NOT look like a legitimately
-    // uncapped agent (capCents null), or an admin could type into it and
-    // silently overwrite the real server-side cap.
-    capsByUserId.set(a.userId, {
-      capCents: q?.data?.capCents ?? null,
-      isLoading: q?.isLoading ?? false,
-      isError: !!q?.error,
-    });
+  // All agents' spend caps in ONE request (userId -> capCents | null) instead
+  // of an N+1 per-agent fan-out. isError is kept distinct so a failed load
+  // doesn't look like a legitimately-uncapped agent.
+  const {
+    data: capsMap = {},
+    isLoading: capsLoading,
+    isError: capsError,
+  } = useQuery<CapsMap>({
+    queryKey: [spendCapsKey(orgs?.activeOrgId ?? "")],
+    queryFn: async () => {
+      const res = await apiRequest("GET", spendCapsKey(orgs!.activeOrgId!));
+      return (await res.json()) as CapsMap;
+    },
+    enabled: !!orgs?.activeOrgId,
   });
 
   const { data: vendors = [] } = useQuery<Vendor[]>({
@@ -484,10 +496,9 @@ export default function OrgAdmin() {
               <div className="space-y-2">
                 {agents.map(a => {
                   const convPct = Math.round(parseFloat(a.conversionRate ?? "0") * 100);
-                  const cap = capsByUserId.get(a.userId);
-                  const capCents = cap?.capCents ?? null;
-                  const capLoading = cap?.isLoading ?? false;
-                  const capError = cap?.isError ?? false;
+                  const capCents = capsMap[a.userId] ?? null;
+                  const capLoading = capsLoading;
+                  const capError = capsError;
                   return (
                   <div key={a.userId} className="border rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
