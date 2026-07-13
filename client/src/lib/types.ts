@@ -19,6 +19,21 @@ export interface Vendor {
   createdAt: string | null;
 }
 
+// Vendor Trust Signals — surfaced on marketplace lead cards so buyers can
+// judge a vendor's reliability (dispute rate over completed-sale volume)
+// before purchase. Mirrors the server `VendorTrustStats` shape.
+export type VendorTrustTier = "new" | "excellent" | "good" | "watch";
+
+export interface VendorTrustStats {
+  soldCount: number;
+  disputeCount: number;
+  disputeRate: number | null; // null when soldCount === 0
+  tier: VendorTrustTier;
+}
+
+// GET /api/vendors/trust-stats returns a map keyed by vendorId.
+export type VendorTrustStatsMap = Record<number, VendorTrustStats>;
+
 export interface Lead {
   id: number;
   vendorId: number;
