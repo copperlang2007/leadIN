@@ -10,9 +10,10 @@
 // Skipped unless LIVE_DB_TESTS=1 and DATABASE_URL is set.
 
 import { describe, it, expect, beforeAll } from "vitest";
+import { eq } from "drizzle-orm";
 import { LIVE, seedOrg, seedUser, assertDbReachable } from "./setup.js";
 import { db } from "../db";
-import { leads, vendors, type Lead, type SavedSearchCriteria } from "@shared/schema";
+import { users, leads, vendors, type Lead, type SavedSearchCriteria } from "@shared/schema";
 import { storage } from "../storage";
 import { ERR_SAVED_SEARCH_CAP } from "../savedSearch";
 
@@ -163,7 +164,9 @@ describe.skipIf(!LIVE)("saved-search alerts (live DB)", () => {
     expect(await notifCountForLead(userB, leadA.id)).toBe(0);
   });
 
-  it("a global (orgId=null) search matches an org-scoped lead", async () => {
+  it("a null-org search does NOT match an org-scoped lead (no cross-tenant leak)", async () => {
+    // Exact tenant match: a null-org search (e.g. one orphaned by an org
+    // delete) must never fire on another org's leads.
     const orgA = await seedOrg();
     const userGlobal = await seedUser();
     await createSearch({ userId: userGlobal, orgId: null, criteria: { states: ["CA"] } });
@@ -171,7 +174,28 @@ describe.skipIf(!LIVE)("saved-search alerts (live DB)", () => {
     const leadA = await insertLead({ orgId: orgA, state: "CA" });
     await storage.notifyMatchingSavedSearches(leadA);
 
-    expect(await notifCountForLead(userGlobal, leadA.id)).toBe(1);
+    expect(await notifCountForLead(userGlobal, leadA.id)).toBe(0);
+  });
+
+  it("a null-org search matches a null-org (global) lead", async () => {
+    const userGlobal = await seedUser();
+    await createSearch({ userId: userGlobal, orgId: null, criteria: { states: ["CA"] } });
+
+    const globalLead = await insertLead({ orgId: null, state: "CA" });
+    await storage.notifyMatchingSavedSearches(globalLead);
+
+    expect(await notifCountForLead(userGlobal, globalLead.id)).toBe(1);
+  });
+
+  it("does not notify an owner who has notifications disabled", async () => {
+    const userId = await seedUser();
+    await db.update(users).set({ notificationsEnabled: false }).where(eq(users.id, userId));
+    await createSearch({ userId, criteria: { states: ["CA"] } });
+
+    const lead = await insertLead({ state: "CA" });
+    await storage.notifyMatchingSavedSearches(lead);
+
+    expect(await notifCountForLead(userId, lead.id)).toBe(0);
   });
 
   it("an org-scoped search matches a global (orgId=null) lead only when its own org is null", async () => {

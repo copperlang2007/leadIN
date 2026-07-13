@@ -1347,27 +1347,36 @@ export class DatabaseStorage implements IStorage {
     return rows.length;
   }
 
-  // Best-effort: finds active saved searches visible to the lead's tenant
-  // (orgId null = global, or matching the lead's orgId) whose criteria match
+  // Best-effort: finds active saved searches in the lead's OWN tenant (exact
+  // org match — a null-org search matches only null-org leads, never another
+  // org's) whose owner still has notifications enabled and whose criteria match
   // the lead, then creates ONE in-app notification per distinct owner. Never
   // throws — a failure here must not break lead ingest.
   async notifyMatchingSavedSearches(lead: Lead): Promise<void> {
     try {
-      const candidates = await db
-        .select()
+      const rows = await db
+        .select({ savedSearch: savedSearches })
         .from(savedSearches)
+        .innerJoin(users, eq(users.id, savedSearches.userId))
         .where(
           and(
             eq(savedSearches.active, true),
+            // Honor the platform notification-preference contract.
+            eq(users.notificationsEnabled, true),
+            // Exact tenant match — no null-org-as-global, so an org-deleted
+            // (orphaned) search can never leak across tenants.
             lead.orgId == null
               ? isNull(savedSearches.orgId)
-              : or(isNull(savedSearches.orgId), eq(savedSearches.orgId, lead.orgId)),
+              : eq(savedSearches.orgId, lead.orgId),
           ),
         )
-        // Hard fan-out ceiling so one ingested lead can't scan/notify an
-        // unbounded number of searches on the event loop. If we ever hit it,
-        // a durable off-loop worker is the follow-up (see PR notes).
+        // Deterministic order so the skipped subset (if the cap is hit) is
+        // stable across ingests. Hard fan-out ceiling keeps one lead from
+        // scanning/notifying unboundedly on the event loop; a durable off-loop
+        // worker with SQL-side criteria pruning is the follow-up (see PR notes).
+        .orderBy(desc(savedSearches.createdAt))
         .limit(SAVED_SEARCH_FANOUT_CAP);
+      const candidates = rows.map((r) => r.savedSearch);
       if (candidates.length === SAVED_SEARCH_FANOUT_CAP) {
         logError(
           `[saved-search] fan-out cap (${SAVED_SEARCH_FANOUT_CAP}) hit for lead ${lead.id} — some matches skipped`,
