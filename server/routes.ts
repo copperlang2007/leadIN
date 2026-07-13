@@ -2531,6 +2531,24 @@ export async function registerRoutes(
 
   // A2 — Spend Caps. Org owner/admin reads or sets a member's monthly lead-
   // spend ceiling (in cents; null = uncapped). Enforced in the purchase path.
+
+  // Bulk read of every member's cap ({ [userId]: capCents | null }) so the
+  // admin UI avoids an N+1 per-agent fan-out.
+  app.get("/api/orgs/:orgId/spend-caps", isAuthenticated, async (req: any, res) => {
+    try {
+      const requesterId = req.user.claims.sub;
+      const { orgId } = req.params;
+      const role = await storage.getUserOrgRole(requesterId, orgId);
+      if (role !== "owner" && role !== "admin") {
+        return res.status(403).json({ message: "Owner or admin role required" });
+      }
+      res.json(await storage.getOrgMemberSpendCaps(orgId));
+    } catch (err) {
+      logError("Error reading org spend caps:", err);
+      res.status(500).json({ message: "Failed to read spend caps" });
+    }
+  });
+
   app.get("/api/orgs/:orgId/members/:userId/spend-cap", isAuthenticated, async (req: any, res) => {
     try {
       const requesterId = req.user.claims.sub;
