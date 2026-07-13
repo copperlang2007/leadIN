@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { purchaseNotification, walletFundedNotification } from "./userNotificationMessages";
+import {
+  purchaseNotification,
+  savedSearchMatchNotification,
+  walletFundedNotification,
+} from "./userNotificationMessages";
 
 describe("purchaseNotification", () => {
   it("addresses the user and references the lead id", () => {
@@ -26,5 +30,16 @@ describe("walletFundedNotification", () => {
     expect(walletFundedNotification("user-1", 12.5).message).toBe(
       "$12.50 has been added to your balance.",
     );
+  });
+});
+
+describe("savedSearchMatchNotification", () => {
+  it("names the search and references the lead id", () => {
+    expect(savedSearchMatchNotification("user-1", "Cheap CA Medicare", 42)).toEqual({
+      userId: "user-1",
+      title: "New lead matches your saved search",
+      message: 'A new lead matches your saved search "Cheap CA Medicare" (lead #42).',
+      type: "info",
+    });
   });
 });

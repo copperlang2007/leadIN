@@ -435,6 +435,38 @@ export type SavedList = typeof savedLists.$inferSelect;
 export type SavedListItem = typeof savedListItems.$inferSelect;
 
 // ──────────────────────────────────────────────────────
+// Saved-Search Alerts (wishlist)
+// Buyers persist marketplace search criteria; when a newly-ingested lead
+// matches, they get an in-app notification (see server/savedSearch.ts).
+// ──────────────────────────────────────────────────────
+export type SavedSearchCriteria = {
+  types?: string[];
+  states?: string[];
+  minPrice?: number;
+  maxPrice?: number;
+  minMediscore?: number;
+  verifiedOnly?: boolean;
+};
+
+export const savedSearches = pgTable("saved_searches", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Tenant scope. Null = matches leads in any org (global). Set-null on org delete.
+  orgId: varchar("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  criteria: jsonb("criteria").$type<SavedSearchCriteria>().notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_saved_searches_user").on(table.userId),
+  index("idx_saved_searches_org").on(table.orgId),
+  index("idx_saved_searches_active").on(table.active),
+]);
+
+export type InsertSavedSearch = typeof savedSearches.$inferInsert;
+export type SavedSearch = typeof savedSearches.$inferSelect;
+
+// ──────────────────────────────────────────────────────
 // Phase 4 – Signal enrichment
 // ──────────────────────────────────────────────────────
 

@@ -23,3 +23,16 @@ export function walletFundedNotification(userId: string, amount: number): Insert
     type: "success",
   };
 }
+
+export function savedSearchMatchNotification(
+  userId: string,
+  searchName: string,
+  leadId: number,
+): InsertUserNotification {
+  return {
+    userId,
+    title: "New lead matches your saved search",
+    message: `A new lead matches your saved search "${searchName}" (lead #${leadId}).`,
+    type: "info",
+  };
+}

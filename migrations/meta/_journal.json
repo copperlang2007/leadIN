@@ -78,6 +78,13 @@
       "when": 1783896182046,
       "tag": "0010_spend_caps",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783924998162,
+      "tag": "0011_equal_pandemic",
+      "breakpoints": true
     }
   ]
 }

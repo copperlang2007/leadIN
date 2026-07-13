@@ -17,6 +17,7 @@ import {
   behavioralEvents,
   savedLists,
   savedListItems,
+  savedSearches,
   vendorBalances,
   vendorPayouts,
   mediscoreWeights,
@@ -79,7 +80,11 @@ import {
   type AgentReputationEvent,
   type UserNotification,
   type InsertUserNotification,
+  type SavedSearch,
+  type InsertSavedSearch,
 } from "@shared/schema";
+import { leadMatchesCriteria } from "./savedSearch";
+import { savedSearchMatchNotification } from "./userNotificationMessages";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
 import crypto from "crypto";
@@ -188,6 +193,12 @@ export interface IStorage {
   createUserNotification(notification: InsertUserNotification): Promise<UserNotification>;
   markUserNotificationRead(id: number, userId: string): Promise<void>;
   markAllUserNotificationsRead(userId: string): Promise<void>;
+
+  // Saved-search alerts (wishlist)
+  createSavedSearch(search: InsertSavedSearch): Promise<SavedSearch>;
+  listSavedSearches(userId: string): Promise<SavedSearch[]>;
+  deleteSavedSearch(id: number, userId: string): Promise<void>;
+  notifyMatchingSavedSearches(lead: Lead): Promise<void>;
 
   // Admin operations
   countAdminUsers(): Promise<number>;
@@ -1290,6 +1301,69 @@ export class DatabaseStorage implements IStorage {
           eq(userNotifications.isRead, false),
         ),
       );
+  }
+
+  // ──── Saved-search alerts (wishlist) ────
+  async createSavedSearch(search: InsertSavedSearch): Promise<SavedSearch> {
+    const [row] = await db.insert(savedSearches).values(search).returning();
+    return row;
+  }
+
+  async listSavedSearches(userId: string): Promise<SavedSearch[]> {
+    return db
+      .select()
+      .from(savedSearches)
+      .where(eq(savedSearches.userId, userId))
+      .orderBy(desc(savedSearches.createdAt));
+  }
+
+  // Scoped by userId so a user can only delete their own saved search.
+  async deleteSavedSearch(id: number, userId: string): Promise<void> {
+    await db
+      .delete(savedSearches)
+      .where(and(eq(savedSearches.id, id), eq(savedSearches.userId, userId)));
+  }
+
+  // Best-effort: finds active saved searches visible to the lead's tenant
+  // (orgId null = global, or matching the lead's orgId) whose criteria match
+  // the lead, then creates ONE in-app notification per distinct owner. Never
+  // throws — a failure here must not break lead ingest.
+  async notifyMatchingSavedSearches(lead: Lead): Promise<void> {
+    try {
+      const candidates = await db
+        .select()
+        .from(savedSearches)
+        .where(
+          and(
+            eq(savedSearches.active, true),
+            lead.orgId == null
+              ? isNull(savedSearches.orgId)
+              : or(isNull(savedSearches.orgId), eq(savedSearches.orgId, lead.orgId)),
+          ),
+        );
+
+      // Dedupe by owner: one notification per user even if several of their
+      // searches match this lead. Keep the first matching search's name.
+      const notifyByUser = new Map<string, SavedSearch>();
+      for (const search of candidates) {
+        if (!leadMatchesCriteria(lead, search.criteria)) continue;
+        if (!notifyByUser.has(search.userId)) {
+          notifyByUser.set(search.userId, search);
+        }
+      }
+
+      for (const search of Array.from(notifyByUser.values())) {
+        try {
+          await this.createUserNotification(
+            savedSearchMatchNotification(search.userId, search.name, lead.id),
+          );
+        } catch (err) {
+          logError("Error creating saved-search match notification:", err);
+        }
+      }
+    } catch (err) {
+      logError("Error notifying matching saved searches:", err);
+    }
   }
 
   // Admin operations

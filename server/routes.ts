@@ -64,6 +64,7 @@ import { handleInboundWebhook } from "./crmSync";
 import { listProviders, getAdapter as getCrmAdapter } from "./lib/crm";
 import { validateRoleChange } from "./adminUsers";
 import { purchaseNotification, walletFundedNotification } from "./userNotificationMessages";
+import type { SavedSearchCriteria } from "@shared/schema";
 import { stripeWebhookIdempotency, markSeenOnceDb, startIdempotencyPruneCron } from "./lib/eventIdempotency";
 import { verifyCrmWebhook } from "./lib/crmWebhookAuth";
 import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
@@ -276,6 +277,11 @@ async function ingestLeadForVendor(
     vendorName: vendor.name,
   }).catch(err => logError("Notification error:", err));
 
+  // Saved-search alerts — fire-and-forget, never block or break ingest.
+  storage
+    .notifyMatchingSavedSearches(lead)
+    .catch(err => logError("Saved-search notify error:", err));
+
   storage.routeLeadToBestAgent(lead.id)
     .then(assignment => {
       if (assignment && assignment.agentUserId) {
@@ -335,6 +341,17 @@ async function authVendorForPingPost(
   }
   return { vendor: { id: vendor.id, name: vendor.name, orgId: vendor.orgId ?? null }, secret };
 }
+
+// Validation for saved-search criteria (wishlist). Every field optional; an
+// empty object is valid (matches all leads visible to the tenant scope).
+const savedSearchCriteriaSchema = z.object({
+  types: z.array(z.string().min(1)).optional(),
+  states: z.array(z.string().min(1)).optional(),
+  minPrice: z.number().finite().nonnegative().optional(),
+  maxPrice: z.number().finite().nonnegative().optional(),
+  minMediscore: z.number().finite().min(0).max(100).optional(),
+  verifiedOnly: z.boolean().optional(),
+}).strict();
 
 export async function registerRoutes(
   httpServer: Server,
@@ -2991,6 +3008,61 @@ export async function registerRoutes(
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Saved-Search Alerts (wishlist)
+  // ──────────────────────────────────────────────────────
+  app.get("/api/saved-searches", isAuthenticated, async (req: any, res) => {
+    try {
+      const searches = await storage.listSavedSearches(req.user.claims.sub);
+      res.json(searches);
+    } catch (err) {
+      logError("Error listing saved searches:", err);
+      res.status(500).json({ message: "Failed to list saved searches" });
+    }
+  });
+
+  app.post("/api/saved-searches", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const name = String(req.body?.name ?? "").trim();
+      if (!name) return res.status(400).json({ message: "name required" });
+      if (name.length > 200) return res.status(400).json({ message: "name too long" });
+
+      const parsed = savedSearchCriteriaSchema.safeParse(req.body?.criteria ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromError(parsed.error).toString() });
+      }
+      const criteria: SavedSearchCriteria = parsed.data;
+
+      // Scope the alert to the buyer's active org so matches respect tenancy.
+      const me = await storage.getUser(userId);
+      const search = await storage.createSavedSearch({
+        userId,
+        orgId: me?.activeOrgId ?? null,
+        name,
+        criteria,
+      });
+      res.status(201).json(search);
+    } catch (err) {
+      logError("Error creating saved search:", err);
+      res.status(500).json({ message: "Failed to create saved search" });
+    }
+  });
+
+  app.delete("/api/saved-searches/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) {
+        return res.status(400).json({ message: "Invalid saved search id" });
+      }
+      await storage.deleteSavedSearch(id, req.user.claims.sub);
+      res.json({ ok: true });
+    } catch (err) {
+      logError("Error deleting saved search:", err);
+      res.status(500).json({ message: "Failed to delete saved search" });
     }
   });
 
