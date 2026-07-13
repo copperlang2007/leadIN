@@ -72,6 +72,7 @@ import { verifyByProvider as verifyCrmByProvider } from "./lib/crmNativeAuth";
 import { getMetricsSnapshot } from "./lib/metrics";
 import { getComplianceServiceStatus, pingComplianceService } from "./complianceService";
 import { logError } from "./lib/safeError";
+import { log } from "./logger";
 import { captureException } from "./lib/sentry";
 import { buildBlogSitemap } from "./lib/blogSitemap";
 import { getTopAgentsForOrg, REPUTATION_WEIGHTS, REPUTATION_WINDOW_DAYS } from "./reputation";
@@ -81,6 +82,7 @@ import {
   type ReplacementDeps,
 } from "./leadReplacement";
 import { getPersonaForLead } from "./leadPersona";
+import { buildCompliance, generateSuggestions } from "./dialerCopilot";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -979,6 +981,87 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error generating lead persona:", error);
       res.status(500).json({ message: "Failed to generate persona" });
+    }
+  });
+
+  // AI Dialer Copilot (scoped slice — request/response, no real-time audio).
+  // For a purchased lead + a transcript snippet, returns compliance guardrails
+  // and up to 3 AI-suggested talking points. Gated to the purchaser of the
+  // lead (or an admin), matching the /api/leads/:id/persona pattern.
+  app.post("/api/dialer/copilot", isAuthenticated, async (req: any, res) => {
+    try {
+      // Targeted kill switch: disable this route independently (e.g. a bad
+      // AI-suggestion pattern post-launch) without downgrading every other AI
+      // feature by unsetting the shared LLM keys. Normalise the value so
+      // conventional off-strings all work under incident pressure.
+      const killVal = (process.env.DIALER_COPILOT_ENABLED ?? "").trim().toLowerCase();
+      if (["false", "0", "off", "no", "disabled"].includes(killVal)) {
+        return res.status(503).json({ message: "Dialer copilot is temporarily disabled" });
+      }
+      const userId = req.user.claims.sub;
+      const body = req.body ?? {};
+
+      const leadId = Number(body.leadId);
+      if (!Number.isInteger(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "Invalid leadId" });
+      }
+      // Transcript is optional but, when present, must be a string. Clamp is
+      // applied downstream in the copilot module.
+      const transcript = body.transcript === undefined || body.transcript === null
+        ? ""
+        : body.transcript;
+      if (typeof transcript !== "string") {
+        return res.status(400).json({ message: "transcript must be a string" });
+      }
+
+      // Rate-limit BEFORE the DB lookups so a spammer can't drive DB load under
+      // the LLM ceiling. Per-user bucket (burst 20, ~12/min) + a coarse global
+      // bucket so aggregate LLM spend is bounded across all seats at peak.
+      if (!(await takeToken(`dialer-copilot:${userId}`, 20, 0.2))) {
+        return res.status(429).json({ message: "Too many copilot requests — try again in a moment" });
+      }
+      if (!(await takeToken("dialer-copilot:global", 300, 5))) {
+        return res.status(429).json({ message: "Dialer copilot is busy — try again in a moment" });
+      }
+
+      const user = await storage.getUser(userId);
+      const isAdminUser = user?.role === "admin";
+
+      if (!isAdminUser) {
+        // Must own a completed order for this lead.
+        const order = await storage.getOrderForLead(userId, leadId);
+        if (!order) {
+          return res
+            .status(403)
+            .json({ message: "Purchase this lead to use the dialer copilot" });
+        }
+      }
+
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org-scope guard: mirror /reveal + /persona — an order in org A must not
+      // unlock a lead from org B, and admins don't get cross-org access here.
+      if (lead.orgId && user?.activeOrgId !== lead.orgId) {
+        return res.status(403).json({ message: "Lead not available to your organization" });
+      }
+
+      const compliance = buildCompliance(lead, new Date());
+      const { suggestions, modelUsed } = await generateSuggestions(lead, transcript);
+      // Observability: a "<model>+fallback" means the LLM responded but its
+      // output was unparseable and we served the stub — a silent provider
+      // regression operators otherwise couldn't distinguish from real answers.
+      if (modelUsed.endsWith("+fallback")) {
+        log.warn("[dialer-copilot] LLM output unparseable — served stub suggestions", {
+          leadId,
+          modelUsed,
+        });
+      }
+
+      res.json({ compliance, suggestions });
+    } catch (error) {
+      logError("Error running dialer copilot:", error);
+      res.status(500).json({ message: "Failed to run dialer copilot" });
     }
   });
 
