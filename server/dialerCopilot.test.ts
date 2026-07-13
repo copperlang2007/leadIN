@@ -1,0 +1,272 @@
+// Unit tests for the pure helpers in ./dialerCopilot.ts.
+//
+// We exercise:
+//   - isTwoPartyConsentState: positive + negative states, case-insensitivity
+//   - buildCompliance: each warning firing / not firing, and the assembled
+//     result (all-clear and all-warnings)
+//   - buildSuggestionPrompt: contract / context inclusion + transcript clamp
+//   - parseSuggestions: tolerant JSON parsing, fence stripping, clamping
+//   - stubSuggestions: deterministic output for the no-LLM-key path
+//   - generateSuggestions: returns the deterministic stub with no LLM key
+//
+// Everything here is pure or offline (no LLM key configured in CI), so the
+// suite runs without network or a database.
+
+import { describe, it, expect } from "vitest";
+import {
+  isTwoPartyConsentState,
+  buildCompliance,
+  buildSuggestionPrompt,
+  parseSuggestions,
+  stubSuggestions,
+  generateSuggestions,
+  TWO_PARTY_CONSENT_STATES,
+  MAX_SUGGESTIONS,
+  SUGGESTION_MAX_CHARS,
+  TRANSCRIPT_MAX_CHARS,
+} from "./dialerCopilot";
+
+// Fixed instants (July → US DST in effect for all continental zones).
+// CA is single-zone Pacific (PDT = UTC-7).
+const CA_WITHIN = new Date("2026-07-13T20:00:00Z"); // 13:00 PDT — inside 8–21
+const CA_OUTSIDE = new Date("2026-07-13T06:00:00Z"); // 23:00 PDT prev day — outside
+// TX spans Central + Mountain; 18:00Z → 13:00 CDT / 12:00 MDT — inside both.
+const TX_WITHIN = new Date("2026-07-13T18:00:00Z");
+
+describe("isTwoPartyConsentState", () => {
+  it("returns true for two-party-consent states (positive cases)", () => {
+    for (const s of ["CA", "FL", "IL", "MD", "MA", "MI", "MT", "NH", "PA", "WA"]) {
+      expect(isTwoPartyConsentState(s)).toBe(true);
+    }
+  });
+
+  it("returns false for one-party-consent states (negative cases)", () => {
+    for (const s of ["TX", "NY", "GA", "OH", "AZ", "CO"]) {
+      expect(isTwoPartyConsentState(s)).toBe(false);
+    }
+  });
+
+  it("is case-insensitive and trims whitespace", () => {
+    expect(isTwoPartyConsentState("ca")).toBe(true);
+    expect(isTwoPartyConsentState(" wa ")).toBe(true);
+    expect(isTwoPartyConsentState("tx")).toBe(false);
+  });
+
+  it("handles null / undefined / empty safely", () => {
+    expect(isTwoPartyConsentState(null)).toBe(false);
+    expect(isTwoPartyConsentState(undefined)).toBe(false);
+    expect(isTwoPartyConsentState("")).toBe(false);
+  });
+
+  it("named states from the requirement are all present in the list", () => {
+    for (const s of ["CA", "FL", "IL", "MD", "MA", "MI", "MT", "NH", "PA", "WA"]) {
+      expect(TWO_PARTY_CONSENT_STATES).toContain(s);
+    }
+  });
+});
+
+describe("buildCompliance — individual warnings", () => {
+  it("fires 'Outside permitted calling hours' when outside the window", () => {
+    const c = buildCompliance(
+      { state: "CA", dncFlagged: false, tcpaVerifiedAt: new Date() },
+      CA_OUTSIDE,
+    );
+    expect(c.withinCallingHours).toBe(false);
+    expect(c.warnings).toContain("Outside permitted calling hours");
+  });
+
+  it("does NOT fire the calling-hours warning when inside the window", () => {
+    const c = buildCompliance(
+      { state: "CA", dncFlagged: false, tcpaVerifiedAt: new Date() },
+      CA_WITHIN,
+    );
+    expect(c.withinCallingHours).toBe(true);
+    expect(c.warnings).not.toContain("Outside permitted calling hours");
+  });
+
+  it("fires the DNC warning when dncFlagged is true", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: true, tcpaVerifiedAt: new Date() },
+      TX_WITHIN,
+    );
+    expect(c.dnc).toBe(true);
+    expect(c.warnings).toContain("Lead is on the DNC registry");
+  });
+
+  it("does NOT fire the DNC warning when dncFlagged is false/null", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: null, tcpaVerifiedAt: new Date() },
+      TX_WITHIN,
+    );
+    expect(c.dnc).toBe(false);
+    expect(c.warnings).not.toContain("Lead is on the DNC registry");
+  });
+
+  it("fires the two-party-consent warning naming the state", () => {
+    const c = buildCompliance(
+      { state: "CA", dncFlagged: false, tcpaVerifiedAt: new Date() },
+      CA_WITHIN,
+    );
+    expect(c.twoPartyConsent).toBe(true);
+    expect(
+      c.warnings.some((w) => w.startsWith("CA is a two-party-consent state")),
+    ).toBe(true);
+  });
+
+  it("does NOT fire the two-party warning for one-party states", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: new Date() },
+      TX_WITHIN,
+    );
+    expect(c.twoPartyConsent).toBe(false);
+    expect(c.warnings.some((w) => w.includes("two-party-consent state"))).toBe(false);
+  });
+
+  it("fires the TCPA warning when tcpaVerifiedAt is null", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: null },
+      TX_WITHIN,
+    );
+    expect(c.tcpaVerified).toBe(false);
+    expect(c.warnings).toContain("TCPA consent not verified");
+  });
+
+  it("does NOT fire the TCPA warning when tcpaVerifiedAt is set", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: new Date("2026-01-01T00:00:00Z") },
+      TX_WITHIN,
+    );
+    expect(c.tcpaVerified).toBe(true);
+    expect(c.warnings).not.toContain("TCPA consent not verified");
+  });
+});
+
+describe("buildCompliance — assembled result", () => {
+  it("returns an all-clear compliance object with no warnings", () => {
+    const c = buildCompliance(
+      { state: "TX", dncFlagged: false, tcpaVerifiedAt: new Date("2026-01-01T00:00:00Z") },
+      TX_WITHIN,
+    );
+    expect(c).toMatchObject({
+      withinCallingHours: true,
+      dnc: false,
+      twoPartyConsent: false,
+      tcpaVerified: true,
+      state: "TX",
+    });
+    expect(c.warnings).toEqual([]);
+  });
+
+  it("fires all four warnings for a worst-case lead", () => {
+    const c = buildCompliance(
+      { state: "CA", dncFlagged: true, tcpaVerifiedAt: null },
+      CA_OUTSIDE,
+    );
+    expect(c.withinCallingHours).toBe(false);
+    expect(c.dnc).toBe(true);
+    expect(c.twoPartyConsent).toBe(true);
+    expect(c.tcpaVerified).toBe(false);
+    expect(c.warnings).toHaveLength(4);
+    expect(c.warnings).toContain("Outside permitted calling hours");
+    expect(c.warnings).toContain("Lead is on the DNC registry");
+    expect(c.warnings).toContain("TCPA consent not verified");
+    expect(c.warnings.some((w) => w.startsWith("CA is a two-party-consent state"))).toBe(true);
+  });
+
+  it("normalizes and fails closed for an unknown state", () => {
+    const c = buildCompliance(
+      { state: "zz", dncFlagged: false, tcpaVerifiedAt: new Date() },
+      CA_WITHIN,
+    );
+    // Unknown state → calling-hours helper fails closed → warning fires.
+    expect(c.state).toBe("ZZ");
+    expect(c.withinCallingHours).toBe(false);
+    expect(c.warnings).toContain("Outside permitted calling hours");
+  });
+});
+
+describe("buildSuggestionPrompt", () => {
+  it("includes lead context and clamps the transcript", () => {
+    const longTranscript = "~".repeat(TRANSCRIPT_MAX_CHARS + 500);
+    const { system, user } = buildSuggestionPrompt(
+      { type: "Medicare Advantage", state: "FL", consumerAge: 67, income: "50-75k" },
+      longTranscript,
+    );
+    expect(system).toContain("sales copilot");
+    expect(user).toContain("Medicare Advantage");
+    expect(user).toContain("FL");
+    expect(user).toContain("67");
+    expect(user).toContain("50-75k");
+    // The transcript must be clamped to exactly TRANSCRIPT_MAX_CHARS chars.
+    expect((user.match(/~/g) ?? []).length).toBe(TRANSCRIPT_MAX_CHARS);
+  });
+});
+
+describe("parseSuggestions", () => {
+  it("parses a plain JSON object", () => {
+    expect(parseSuggestions('{"suggestions":["a","b"]}')).toEqual(["a", "b"]);
+  });
+
+  it("strips markdown fences", () => {
+    expect(parseSuggestions('```json\n{"suggestions":["x"]}\n```')).toEqual(["x"]);
+  });
+
+  it("tolerates prose around the JSON", () => {
+    expect(parseSuggestions('Sure! {"suggestions":["y"]} hope that helps'))
+      .toEqual(["y"]);
+  });
+
+  it("drops empty entries, clamps count and length", () => {
+    const raw = JSON.stringify({
+      suggestions: ["one", "  ", "two", "three", "four", "z".repeat(SUGGESTION_MAX_CHARS + 50)],
+    });
+    const parsed = parseSuggestions(raw)!;
+    expect(parsed).toHaveLength(MAX_SUGGESTIONS);
+    expect(parsed).toEqual(["one", "two", "three"]);
+  });
+
+  it("clamps an over-long suggestion to SUGGESTION_MAX_CHARS", () => {
+    const raw = JSON.stringify({ suggestions: ["z".repeat(SUGGESTION_MAX_CHARS + 50)] });
+    const parsed = parseSuggestions(raw)!;
+    expect(parsed[0].length).toBe(SUGGESTION_MAX_CHARS);
+    expect(parsed[0].endsWith("…")).toBe(true);
+  });
+
+  it("returns null for malformed / non-suggestion input", () => {
+    expect(parseSuggestions("not json")).toBeNull();
+    expect(parseSuggestions('{"nope":1}')).toBeNull();
+    expect(parseSuggestions("")).toBeNull();
+    expect(parseSuggestions('{"suggestions":[]}')).toBeNull();
+  });
+});
+
+describe("stubSuggestions", () => {
+  it("is deterministic and context-aware", () => {
+    const a = stubSuggestions({ type: "Medicare Advantage", state: "FL" });
+    const b = stubSuggestions({ type: "Medicare Advantage", state: "FL" });
+    expect(a).toEqual(b);
+    expect(a).toHaveLength(3);
+    expect(a[0]).toContain("Medicare Advantage");
+    expect(a[1]).toContain("FL");
+  });
+
+  it("falls back to sane defaults when fields are missing", () => {
+    const s = stubSuggestions({});
+    expect(s).toHaveLength(3);
+    expect(s[0]).toContain("insurance");
+  });
+});
+
+describe("generateSuggestions (no LLM key → deterministic stub)", () => {
+  it("returns the deterministic stub with modelUsed 'stub' when no key is set", async () => {
+    // CI/test env has neither OPENAI_API_KEY nor ANTHROPIC_API_KEY.
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    const lead = { type: "Medicare Advantage", state: "FL", consumerAge: 67 };
+    const result = await generateSuggestions(lead, "Consumer asked about dental coverage.");
+    expect(result.modelUsed).toBe("stub");
+    expect(result.suggestions).toEqual(stubSuggestions(lead));
+    expect(result.suggestions).toHaveLength(3);
+  });
+});

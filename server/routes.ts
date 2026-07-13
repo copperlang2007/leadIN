@@ -79,6 +79,7 @@ import {
   type ReplacementDeps,
 } from "./leadReplacement";
 import { getPersonaForLead } from "./leadPersona";
+import { buildCompliance, generateSuggestions } from "./dialerCopilot";
 import { z } from "zod";
 
 function computeCompatibilityScore(
@@ -933,6 +934,60 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error generating lead persona:", error);
       res.status(500).json({ message: "Failed to generate persona" });
+    }
+  });
+
+  // AI Dialer Copilot (scoped slice — request/response, no real-time audio).
+  // For a purchased lead + a transcript snippet, returns compliance guardrails
+  // and up to 3 AI-suggested talking points. Gated to the purchaser of the
+  // lead (or an admin), matching the /api/leads/:id/persona pattern.
+  app.post("/api/dialer/copilot", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const body = req.body ?? {};
+
+      const leadId = Number(body.leadId);
+      if (!Number.isInteger(leadId) || leadId <= 0) {
+        return res.status(400).json({ message: "Invalid leadId" });
+      }
+      // Transcript is optional but, when present, must be a string. Clamp is
+      // applied downstream in the copilot module.
+      const transcript = body.transcript === undefined || body.transcript === null
+        ? ""
+        : body.transcript;
+      if (typeof transcript !== "string") {
+        return res.status(400).json({ message: "transcript must be a string" });
+      }
+
+      const user = await storage.getUser(userId);
+      const isAdminUser = user?.role === "admin";
+
+      if (!isAdminUser) {
+        // Must own a completed order for this lead.
+        const order = await storage.getOrderForLead(userId, leadId);
+        if (!order) {
+          return res
+            .status(403)
+            .json({ message: "Purchase this lead to use the dialer copilot" });
+        }
+      }
+
+      const lead = await storage.getLead(leadId);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+
+      // Org-scope guard: mirror /reveal + /persona — an order in org A must not
+      // unlock a lead from org B, and admins don't get cross-org access here.
+      if (lead.orgId && user?.activeOrgId !== lead.orgId) {
+        return res.status(403).json({ message: "Lead not available to your organization" });
+      }
+
+      const compliance = buildCompliance(lead, new Date());
+      const { suggestions } = await generateSuggestions(lead, transcript);
+
+      res.json({ compliance, suggestions });
+    } catch (error) {
+      logError("Error running dialer copilot:", error);
+      res.status(500).json({ message: "Failed to run dialer copilot" });
     }
   });
 
