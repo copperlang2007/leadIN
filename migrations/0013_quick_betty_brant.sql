@@ -1,3 +1,12 @@
+-- Clear the unwired N2 scaffold rows first. The reshape below adds NOT NULL
+-- columns (referrer_user_id, code) and does reward_cents SET NOT NULL with no
+-- default/backfill; Postgres rejects those on any non-empty table. Production is
+-- asserted empty (the scaffold was never wired on main, so nothing ever wrote a
+-- row), but a dev/staging DB seeded via db:push, a smoke test, or an old branch
+-- could hold rows and block the deploy with SQLSTATE 23502. Deleting them is
+-- safe given the no-data-dependency assertion and makes the migration idempotent
+-- across every environment.
+DELETE FROM "referrals";--> statement-breakpoint
 ALTER TABLE "referral_codes" DISABLE ROW LEVEL SECURITY;--> statement-breakpoint
 DROP TABLE "referral_codes" CASCADE;--> statement-breakpoint
 ALTER TABLE "referrals" DROP CONSTRAINT IF EXISTS "uniq_referral_per_referee";--> statement-breakpoint
