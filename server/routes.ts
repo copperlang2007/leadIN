@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { type Server } from "http";
-import { storage, MAX_TRUST_VENDOR_IDS } from "./storage";
+import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import { addToComparison, removeFromComparison } from "./leadComparison";
 import {
@@ -55,7 +55,7 @@ import {
 } from "./smartMatch";
 import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
-import { MAX_BULK_PURCHASE } from "@shared/constants";
+import { MAX_BULK_PURCHASE, MAX_TRUST_VENDOR_IDS } from "@shared/constants";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
 import { isValidReferralCode } from "./referrals";
 import { ERR_SAVED_SEARCH_CAP } from "./savedSearch";
@@ -1209,7 +1209,10 @@ export async function registerRoutes(
         const s = t.trim();
         if (!/^\d+$/.test(s)) continue; // reject non-numeric / signs / decimals
         const n = Number.parseInt(s, 10);
-        if (Number.isSafeInteger(n) && n > 0) seen.add(n);
+        // Upper-bound at int4 max: vendor ids are serial (int4) columns, so a
+        // value above 2147483647 can never match a row and would only widen the
+        // IN list / risk an out-of-range cast in the query.
+        if (Number.isSafeInteger(n) && n > 0 && n <= 2147483647) seen.add(n);
       }
       const vendorIds = Array.from(seen).slice(0, MAX_TRUST_VENDOR_IDS);
       if (vendorIds.length === 0) {

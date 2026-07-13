@@ -94,6 +94,38 @@ describe.skipIf(!LIVE)("vendor trust stats (live DB)", () => {
     expect(s.tier).toBe("watch");
   });
 
+  it("keeps a fully-refunded order in the sold denominator", async () => {
+    // A full refund flips the order to "refunded", but the sale still happened
+    // and drew a dispute. It MUST stay in soldCount — otherwise a vendor whose
+    // bad lead got fully refunded would read as a clean 1-sale/0-dispute vendor
+    // (or a 0-sale "new" one) instead of surfacing the dispute.
+    const org = await seedOrg();
+    const buyer = await seedUser({ orgId: org });
+    const resolver = await seedUser({ orgId: org });
+    await setBalance(buyer, "1000.00");
+
+    const vendor = await createVendor();
+    const goodLead = await createLeadForVendor(vendor);
+    const badLead = await createLeadForVendor(vendor);
+    await storage.purchaseLead(goodLead, buyer);
+    const badOrder = await storage.purchaseLead(badLead, buyer);
+
+    // Full $10 refund on the bad order → status flips to "refunded".
+    const dispute = await storage.createDispute({
+      orderId: badOrder.id,
+      buyerUserId: buyer,
+      reason: "not_as_described",
+    });
+    await storage.approveDispute(dispute.id, resolver, 1000); // full $10 of $10
+
+    const stats = await storage.getVendorTrustStats([vendor]);
+    const s = stats[vendor];
+    expect(s.soldCount).toBe(2); // both sales counted, refund included
+    expect(s.disputeCount).toBe(1);
+    expect(s.disputeRate).toBeCloseTo(0.5, 10);
+    expect(s.tier).toBe("watch");
+  });
+
   it("rates a vendor with sales and no disputes as excellent", async () => {
     const org = await seedOrg();
     const buyer = await seedUser({ orgId: org });

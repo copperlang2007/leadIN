@@ -133,11 +133,7 @@ import {
   REFERRAL_REWARD_CENTS,
 } from "./referrals";
 import { computeTrustSignal, type VendorTrustStats } from "./vendorTrust";
-
-// Cap on how many vendorIds a single trust-stats lookup will aggregate over.
-// Marketplace pages show far fewer vendors than this; the bound keeps the
-// GROUP BY query (and the IN list) from being driven unboundedly large.
-export const MAX_TRUST_VENDOR_IDS = 200;
+import { MAX_TRUST_VENDOR_IDS } from "@shared/constants";
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -3069,10 +3065,14 @@ export class DatabaseStorage implements IStorage {
    * safe to expose to any authenticated buyer.
    */
   async getVendorTrustStats(vendorIds: number[]): Promise<Record<number, VendorTrustStats>> {
-    // Dedupe, keep positive integers only, cap the count. Extras are ignored.
+    // Dedupe, keep positive int4-range integers only, cap the count. Extras are
+    // ignored. Vendor ids are serial (int4) columns, so anything above int4 max
+    // can never match a row and would only risk an out-of-range cast.
     const ids = Array.from(
       new Set(
-        (vendorIds ?? []).filter((v) => Number.isInteger(v) && v > 0),
+        (vendorIds ?? []).filter(
+          (v) => Number.isInteger(v) && v > 0 && v <= 2147483647,
+        ),
       ),
     ).slice(0, MAX_TRUST_VENDOR_IDS);
 
@@ -3091,9 +3091,17 @@ export class DatabaseStorage implements IStorage {
         disputeCount: sql<number>`count(distinct ${leadDisputes.id})`,
       })
       .from(leads)
+      // Denominator = every sale that actually happened. A full refund flips an
+      // order to "refunded" but the sale (and any dispute it drew) still
+      // occurred, so refunded orders MUST stay in the sold count — otherwise a
+      // vendor whose bad leads all got refunded would show a 0-sale "new" tier
+      // and hide its dispute history. Count completed + refunded.
       .leftJoin(
         orders,
-        and(eq(orders.leadId, leads.id), eq(orders.status, "completed")),
+        and(
+          eq(orders.leadId, leads.id),
+          inArray(orders.status, ["completed", "refunded"]),
+        ),
       )
       .leftJoin(
         leadDisputes,

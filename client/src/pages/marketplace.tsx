@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { MAX_COMPARE } from "@shared/constants";
+import { MAX_COMPARE, MAX_TRUST_VENDOR_IDS } from "@shared/constants";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
@@ -187,18 +187,37 @@ export default function Marketplace() {
     [orders]
   );
 
-  // Vendor trust signals: dedupe the vendorIds across every visible lead and
-  // fetch them in ONE bounded request (not one per card). The sorted, comma-
-  // joined id list is the query key so it only refetches when the set changes.
-  const vendorIdsParam = useMemo(() => {
+  // Vendor trust signals: dedupe the vendorIds across every visible lead, then
+  // fetch them in bounded chunks (≤ MAX_TRUST_VENDOR_IDS per request, matching
+  // the server cap) instead of one request per card. Chunking means every
+  // visible vendor still gets a badge when a page shows more distinct vendors
+  // than one request will aggregate — the old single-request path silently
+  // dropped the highest ids past the cap. Each chunk is its own cached query
+  // keyed by its sorted id list, so it only refetches when that set changes.
+  const vendorIdChunks = useMemo(() => {
     const ids = Array.from(new Set(rawLeads.map(l => l.vendorId).filter(id => Number.isInteger(id) && id > 0)));
     ids.sort((a, b) => a - b);
-    return ids.join(",");
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += MAX_TRUST_VENDOR_IDS) {
+      chunks.push(ids.slice(i, i + MAX_TRUST_VENDOR_IDS));
+    }
+    return chunks;
   }, [rawLeads]);
 
-  const { data: trustStats = {} } = useQuery<VendorTrustStatsMap>({
-    queryKey: [`/api/vendors/trust-stats?vendorIds=${vendorIdsParam}`],
-    enabled: vendorIdsParam.length > 0,
+  const trustStats = useQueries({
+    queries: vendorIdChunks.map(chunk => ({
+      queryKey: [`/api/vendors/trust-stats?vendorIds=${chunk.join(",")}`],
+      enabled: chunk.length > 0,
+    })),
+    // Merge the per-chunk maps into one lookup. `combine` memoizes on the query
+    // results, so consumers get a stable object across renders.
+    combine: (results): VendorTrustStatsMap => {
+      const merged: VendorTrustStatsMap = {};
+      for (const r of results) {
+        if (r.data) Object.assign(merged, r.data as VendorTrustStatsMap);
+      }
+      return merged;
+    },
   });
 
   const licensedStates = user?.profile?.licensedStates || [];
@@ -235,6 +254,8 @@ export default function Marketplace() {
       queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
       queryClient.invalidateQueries({ queryKey: ['/api/auth/user'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      // A purchase bumps the vendor's sold count, so refresh the trust badges.
+      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/vendors/trust-stats") });
       setIsCompareOpen(false);
       setSelectedLeads([]);
       apiRequest("DELETE", "/api/leads/compare").catch(() => {});
@@ -292,6 +313,8 @@ export default function Marketplace() {
       queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      // Refresh the vendor trust badges — a bulk buy bumps their sold counts.
+      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/vendors/trust-stats") });
       setBatchConfirmOpen(false);
       setIsCompareOpen(false);
       setSelectedLeads([]);
