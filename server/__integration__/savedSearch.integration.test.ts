@@ -14,6 +14,7 @@ import { LIVE, seedOrg, seedUser, assertDbReachable } from "./setup.js";
 import { db } from "../db";
 import { leads, vendors, type Lead, type SavedSearchCriteria } from "@shared/schema";
 import { storage } from "../storage";
+import { ERR_SAVED_SEARCH_CAP } from "../savedSearch";
 
 // Insert a lead with explicit matchable attributes. seedLead only lets us
 // vary orgId/createdAt, but matching needs type/state/price/mediscore/verified,
@@ -105,6 +106,28 @@ describe.skipIf(!LIVE)("saved-search alerts (live DB)", () => {
     expect(await storage.deleteSavedSearch(search.id, owner)).toBe(0);
     // A wholly-unknown id also returns 0.
     expect(await storage.deleteSavedSearch(999_999_999, owner)).toBe(0);
+  });
+
+  it("enforces the active-search cap atomically under a concurrent burst", async () => {
+    const userId = await seedUser();
+    const cap = 5;
+    // Fire 12 creates at once; the per-user advisory lock must serialize them
+    // so exactly `cap` land, the rest reject with ERR_SAVED_SEARCH_CAP.
+    const outcomes = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        storage
+          .createSavedSearch(
+            { userId, orgId: null, name: `s${i}`, criteria: { states: ["CA"] } },
+            { maxActive: cap },
+          )
+          .then(() => "ok")
+          .catch((e: Error) => (e.message === ERR_SAVED_SEARCH_CAP ? "capped" : `err:${e.message}`)),
+      ),
+    );
+    expect(outcomes.filter((o) => o === "ok").length).toBe(cap);
+    expect(outcomes.filter((o) => o === "capped").length).toBe(12 - cap);
+    const active = (await storage.listSavedSearches(userId)).filter((s) => s.active);
+    expect(active.length).toBe(cap);
   });
 
   it("does not notify when the lead does not match", async () => {

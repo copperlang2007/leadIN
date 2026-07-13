@@ -57,6 +57,7 @@ import { getFunnelSnapshot, getLeadAnalytics } from "./analytics";
 import { trackEventSchema } from "@shared/schema";
 import { MAX_BULK_PURCHASE } from "@shared/constants";
 import { takeToken, seenRecently, throttleFire } from "./rateLimit";
+import { ERR_SAVED_SEARCH_CAP } from "./savedSearch";
 import { recordAudit, listAudit, recordLeadRevealAudit } from "./audit";
 import { deleteAccount } from "./gdprDelete";
 import { listVendorKeysHandler, revokeVendorKeyHandler } from "./vendorKeyRoutes";
@@ -367,14 +368,18 @@ const savedSearchCriteriaSchema = z.object({
     { message: "minPrice must be <= maxPrice", path: ["minPrice"] },
   )
   .refine(
+    // Require at least one EFFECTIVE filter. Mirrors leadMatchesCriteria: a
+    // minPrice/minMediscore of 0 and verifiedOnly:false are no-ops there, so
+    // accepting them would install a match-all search that notifies the owner
+    // on every ingest. (maxPrice is always a real upper bound, even at 0.)
     (c) =>
       (c.types?.length ?? 0) > 0 ||
       (c.states?.length ?? 0) > 0 ||
-      c.minPrice != null ||
+      (c.minPrice != null && c.minPrice > 0) ||
       c.maxPrice != null ||
-      c.minMediscore != null ||
-      c.verifiedOnly != null,
-    { message: "At least one non-empty filter is required" },
+      (c.minMediscore != null && c.minMediscore > 0) ||
+      c.verifiedOnly === true,
+    { message: "At least one effective filter is required" },
   );
 
 export async function registerRoutes(
@@ -3072,20 +3077,23 @@ export async function registerRoutes(
         return res.status(400).json({ message: "An active organization is required to create a saved search" });
       }
 
-      // Cap active saved searches per user to bound per-ingest notification fan-out.
-      const existing = await storage.listSavedSearches(userId);
-      if (existing.filter((s) => s.active).length >= MAX_SAVED_SEARCHES) {
-        return res
-          .status(409)
-          .json({ message: `You can have at most ${MAX_SAVED_SEARCHES} active saved searches` });
+      // Cap active saved searches per user to bound per-ingest notification
+      // fan-out. Enforced transactionally inside createSavedSearch (advisory
+      // lock) so a concurrent burst can't race past the cap.
+      let search;
+      try {
+        search = await storage.createSavedSearch(
+          { userId, orgId: me.activeOrgId, name, criteria },
+          { maxActive: MAX_SAVED_SEARCHES },
+        );
+      } catch (e: any) {
+        if (e?.message === ERR_SAVED_SEARCH_CAP) {
+          return res
+            .status(409)
+            .json({ message: `You can have at most ${MAX_SAVED_SEARCHES} active saved searches` });
+        }
+        throw e;
       }
-
-      const search = await storage.createSavedSearch({
-        userId,
-        orgId: me.activeOrgId,
-        name,
-        criteria,
-      });
       res.status(201).json(search);
     } catch (err) {
       logError("Error creating saved search:", err);

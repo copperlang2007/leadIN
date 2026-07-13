@@ -83,7 +83,7 @@ import {
   type SavedSearch,
   type InsertSavedSearch,
 } from "@shared/schema";
-import { leadMatchesCriteria } from "./savedSearch";
+import { leadMatchesCriteria, ERR_SAVED_SEARCH_CAP, SAVED_SEARCH_FANOUT_CAP } from "./savedSearch";
 import { savedSearchMatchNotification } from "./userNotificationMessages";
 import { db } from "./db";
 import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
@@ -195,7 +195,7 @@ export interface IStorage {
   markAllUserNotificationsRead(userId: string): Promise<void>;
 
   // Saved-search alerts (wishlist)
-  createSavedSearch(search: InsertSavedSearch): Promise<SavedSearch>;
+  createSavedSearch(search: InsertSavedSearch, opts?: { maxActive?: number }): Promise<SavedSearch>;
   listSavedSearches(userId: string): Promise<SavedSearch[]>;
   // Returns the number of rows deleted (0 when the id isn't the caller's).
   deleteSavedSearch(id: number, userId: string): Promise<number>;
@@ -1305,9 +1305,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ──── Saved-search alerts (wishlist) ────
-  async createSavedSearch(search: InsertSavedSearch): Promise<SavedSearch> {
-    const [row] = await db.insert(savedSearches).values(search).returning();
-    return row;
+  async createSavedSearch(
+    search: InsertSavedSearch,
+    opts?: { maxActive?: number },
+  ): Promise<SavedSearch> {
+    if (opts?.maxActive == null) {
+      const [row] = await db.insert(savedSearches).values(search).returning();
+      return row;
+    }
+    // Enforce the per-user active-search cap atomically: a per-user advisory
+    // lock serializes concurrent creates so a check-then-insert burst can't
+    // overshoot the cap. Throws ERR_SAVED_SEARCH_CAP (→ 409) when at the limit.
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${search.userId}))`);
+      const [{ n }] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(savedSearches)
+        .where(and(eq(savedSearches.userId, search.userId), eq(savedSearches.active, true)));
+      if (n >= opts.maxActive!) throw new Error(ERR_SAVED_SEARCH_CAP);
+      const [row] = await tx.insert(savedSearches).values(search).returning();
+      return row;
+    });
   }
 
   async listSavedSearches(userId: string): Promise<SavedSearch[]> {
@@ -1345,7 +1363,17 @@ export class DatabaseStorage implements IStorage {
               ? isNull(savedSearches.orgId)
               : or(isNull(savedSearches.orgId), eq(savedSearches.orgId, lead.orgId)),
           ),
+        )
+        // Hard fan-out ceiling so one ingested lead can't scan/notify an
+        // unbounded number of searches on the event loop. If we ever hit it,
+        // a durable off-loop worker is the follow-up (see PR notes).
+        .limit(SAVED_SEARCH_FANOUT_CAP);
+      if (candidates.length === SAVED_SEARCH_FANOUT_CAP) {
+        logError(
+          `[saved-search] fan-out cap (${SAVED_SEARCH_FANOUT_CAP}) hit for lead ${lead.id} — some matches skipped`,
+          new Error("saved-search fan-out cap hit"),
         );
+      }
 
       // Dedupe by owner: one notification per user even if several of their
       // searches match this lead. Keep the first matching search's name.

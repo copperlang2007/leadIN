@@ -58,3 +58,12 @@ export function leadMatchesCriteria(
 
   return true;
 }
+
+// Thrown by storage.createSavedSearch when the caller is already at their
+// active-search cap; the route maps it to a 409.
+export const ERR_SAVED_SEARCH_CAP = "SAVED_SEARCH_CAP";
+
+// Hard fan-out ceiling: notifyMatchingSavedSearches never scans/notifies more
+// than this many saved searches per ingested lead, so one lead can't block the
+// event loop or flood notifications at scale. When hit, it's logged.
+export const SAVED_SEARCH_FANOUT_CAP = 500;
