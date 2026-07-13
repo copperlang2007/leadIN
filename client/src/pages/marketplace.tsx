@@ -6,7 +6,7 @@ import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
 import { LeadDetailsDialog } from "@/components/lead-details-dialog";
 import { LiveAuctionBanner } from "@/components/live-auction-banner";
-import type { Lead, Order } from "@/lib/types";
+import type { Lead, Order, VendorTrustStatsMap } from "@/lib/types";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useWebSocketContext } from "@/hooks/useWebSocketContext";
@@ -186,6 +186,20 @@ export default function Marketplace() {
     () => new Set(orders.map(o => o.leadId)),
     [orders]
   );
+
+  // Vendor trust signals: dedupe the vendorIds across every visible lead and
+  // fetch them in ONE bounded request (not one per card). The sorted, comma-
+  // joined id list is the query key so it only refetches when the set changes.
+  const vendorIdsParam = useMemo(() => {
+    const ids = Array.from(new Set(rawLeads.map(l => l.vendorId).filter(id => Number.isInteger(id) && id > 0)));
+    ids.sort((a, b) => a - b);
+    return ids.join(",");
+  }, [rawLeads]);
+
+  const { data: trustStats = {} } = useQuery<VendorTrustStatsMap>({
+    queryKey: [`/api/vendors/trust-stats?vendorIds=${vendorIdsParam}`],
+    enabled: vendorIdsParam.length > 0,
+  });
 
   const licensedStates = user?.profile?.licensedStates || [];
 
@@ -724,6 +738,7 @@ export default function Marketplace() {
                       isSelectedForCompare={!!selectedLeads.find(l => l.id === lead.id)}
                       isPurchased={purchasedLeadIds.has(lead.id)}
                       isNew={newLeadIds.has(lead.id)}
+                      trust={trustStats[lead.vendorId]}
                     />
                   ))}
                 </div>

@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { type Server } from "http";
-import { storage } from "./storage";
+import { storage, MAX_TRUST_VENDOR_IDS } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import { addToComparison, removeFromComparison } from "./leadComparison";
 import {
@@ -1189,6 +1189,37 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error computing demand index:", error);
       res.status(500).json({ message: "Failed to compute demand index" });
+    }
+  });
+
+  // Vendor Trust Signals: aggregate dispute-rate + volume for the vendors on
+  // the buyer's current marketplace view. One request per page (client dedupes
+  // the visible vendorIds), returns a { [vendorId]: {soldCount, disputeCount,
+  // disputeRate, tier} } map. Authenticated: these are business metrics, not
+  // public, but they're aggregate counts (no PII / per-lead detail) so any
+  // authed buyer may see any vendor's signal.
+  app.get("/api/vendors/trust-stats", isAuthenticated, async (req: any, res) => {
+    try {
+      // Parse `vendorIds=1,2,3`. Accept ONLY real positive-integer strings —
+      // no Number() coercion (which would swallow "", "true", "1e3", arrays).
+      const raw = req.query.vendorIds;
+      const tokens = (Array.isArray(raw) ? raw.join(",") : String(raw ?? "")).split(",");
+      const seen = new Set<number>();
+      for (const t of tokens) {
+        const s = t.trim();
+        if (!/^\d+$/.test(s)) continue; // reject non-numeric / signs / decimals
+        const n = Number.parseInt(s, 10);
+        if (Number.isSafeInteger(n) && n > 0) seen.add(n);
+      }
+      const vendorIds = Array.from(seen).slice(0, MAX_TRUST_VENDOR_IDS);
+      if (vendorIds.length === 0) {
+        return res.status(400).json({ message: "vendorIds must contain at least one positive integer" });
+      }
+      const stats = await storage.getVendorTrustStats(vendorIds);
+      res.json(stats);
+    } catch (error) {
+      logError("Error computing vendor trust stats:", error);
+      res.status(500).json({ message: "Failed to compute vendor trust stats" });
     }
   });
 

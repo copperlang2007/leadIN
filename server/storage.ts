@@ -132,6 +132,12 @@ import {
   isValidReferralCode,
   REFERRAL_REWARD_CENTS,
 } from "./referrals";
+import { computeTrustSignal, type VendorTrustStats } from "./vendorTrust";
+
+// Cap on how many vendorIds a single trust-stats lookup will aggregate over.
+// Marketplace pages show far fewer vendors than this; the bound keeps the
+// GROUP BY query (and the IN list) from being driven unboundedly large.
+export const MAX_TRUST_VENDOR_IDS = 200;
 
 export interface IStorage {
   // User operations (mandatory for Replit Auth)
@@ -369,6 +375,11 @@ export interface IStorage {
   ): Promise<LeadDispute>;
   denyDispute(disputeId: number, resolverUserId: string): Promise<LeadDispute>;
   updateDisputeAi(disputeId: number, fields: { aiClassification?: string | null; aiConfidence?: number | null }): Promise<void>;
+
+  // Vendor Trust Signals: aggregate dispute-rate + volume per vendor, for the
+  // marketplace lead cards. Bounded, single GROUP BY query; returns an entry
+  // for every requested vendorId (default zeros → tier "new").
+  getVendorTrustStats(vendorIds: number[]): Promise<Record<number, VendorTrustStats>>;
 
   // ──────────────────────────────────────────────────────
   // Wave 6b: TCPA defense insurance (policy + claims)
@@ -3038,6 +3049,72 @@ export class DatabaseStorage implements IStorage {
     const q = db.select().from(leadDisputes);
     const filtered = conditions.length === 0 ? q : q.where(and(...conditions));
     return await filtered.orderBy(desc(leadDisputes.createdAt)).limit(limit);
+  }
+
+  /**
+   * Vendor Trust Signals — aggregate per-vendor sale volume + approved-dispute
+   * count for the marketplace lead cards.
+   *
+   *   soldCount    = completed orders on the vendor's leads (orders → leads join)
+   *   disputeCount = approved lead disputes on the vendor's leads
+   *   disputeRate  = disputeCount / soldCount (null when soldCount === 0)
+   *   tier         = computeTrustSignal(...) bucket
+   *
+   * Bounded + O(1)-query: the vendorIds list is deduped and capped, then the
+   * whole thing runs as ONE GROUP BY over leads (LEFT JOINs to orders and
+   * disputes with the status filters folded into the join, COUNT(DISTINCT ...)
+   * so the two joins don't inflate each other). Never N+1 per vendor.
+   *
+   * Aggregate-only: returns counts + tier, never per-lead rows or PII, so it's
+   * safe to expose to any authenticated buyer.
+   */
+  async getVendorTrustStats(vendorIds: number[]): Promise<Record<number, VendorTrustStats>> {
+    // Dedupe, keep positive integers only, cap the count. Extras are ignored.
+    const ids = Array.from(
+      new Set(
+        (vendorIds ?? []).filter((v) => Number.isInteger(v) && v > 0),
+      ),
+    ).slice(0, MAX_TRUST_VENDOR_IDS);
+
+    // Default every requested vendor to zeros → tier "new". We seed from the
+    // capped `ids` so the response never grows past the bound.
+    const result: Record<number, VendorTrustStats> = {};
+    for (const id of ids) {
+      result[id] = { soldCount: 0, disputeCount: 0, disputeRate: null, tier: "new" };
+    }
+    if (ids.length === 0) return result;
+
+    const rows = await db
+      .select({
+        vendorId: leads.vendorId,
+        soldCount: sql<number>`count(distinct ${orders.id})`,
+        disputeCount: sql<number>`count(distinct ${leadDisputes.id})`,
+      })
+      .from(leads)
+      .leftJoin(
+        orders,
+        and(eq(orders.leadId, leads.id), eq(orders.status, "completed")),
+      )
+      .leftJoin(
+        leadDisputes,
+        and(eq(leadDisputes.leadId, leads.id), eq(leadDisputes.status, "approved")),
+      )
+      .where(inArray(leads.vendorId, ids))
+      .groupBy(leads.vendorId);
+
+    for (const row of rows) {
+      const soldCount = Number(row.soldCount) || 0;
+      const disputeCount = Number(row.disputeCount) || 0;
+      const signal = computeTrustSignal({ soldCount, disputeCount });
+      result[row.vendorId] = {
+        soldCount,
+        disputeCount,
+        disputeRate: signal.disputeRate,
+        tier: signal.tier,
+      };
+    }
+
+    return result;
   }
 
   /**

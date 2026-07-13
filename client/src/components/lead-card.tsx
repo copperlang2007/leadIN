@@ -1,4 +1,4 @@
-import type { Lead } from "@/lib/types";
+import type { Lead, VendorTrustStats, VendorTrustTier } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
@@ -19,9 +19,49 @@ interface LeadCardProps {
   isSelectedForCompare: boolean;
   isPurchased?: boolean;
   isNew?: boolean;
+  // Aggregate trust signal for this lead's vendor (dispute rate + volume).
+  // Undefined while the batch trust-stats request is in flight.
+  trust?: VendorTrustStats;
 }
 
-export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, onRequestPurchase, isSelectedForCompare, isPurchased, isNew }: LeadCardProps) {
+// Per-tier presentation for the vendor trust badge. Dot color + short label;
+// the numeric rate lives in the tooltip so the card stays uncluttered.
+const TRUST_TIER_UI: Record<VendorTrustTier, { label: string; dot: string; text: string }> = {
+  excellent: { label: "Excellent", dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" },
+  good: { label: "Good", dot: "bg-sky-500", text: "text-sky-600 dark:text-sky-400" },
+  watch: { label: "Watch", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
+  new: { label: "New vendor", dot: "bg-muted-foreground/50", text: "text-muted-foreground" },
+};
+
+function VendorTrustBadge({ trust }: { trust?: VendorTrustStats }) {
+  if (!trust) return null;
+  const ui = TRUST_TIER_UI[trust.tier];
+  const ratePct =
+    trust.disputeRate === null ? null : `${(trust.disputeRate * 100).toFixed(trust.disputeRate < 0.1 ? 1 : 0)}%`;
+  const title =
+    trust.tier === "new" || ratePct === null
+      ? "New vendor — not enough sales yet to rate"
+      : `Dispute rate ${ratePct} across ${trust.soldCount} sale${trust.soldCount === 1 ? "" : "s"}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`inline-flex items-center gap-1 text-[11px] font-medium ${ui.text}`}
+          data-testid={`vendor-trust-${trust.tier}`}
+          aria-label={title}
+        >
+          <span className={`h-2 w-2 rounded-full ${ui.dot}`} aria-hidden="true" />
+          {ui.label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        <p>{title}</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, onRequestPurchase, isSelectedForCompare, isPurchased, isNew, trust }: LeadCardProps) {
   const isStateMatch = licensedStates.includes(lead.state);
 
   const compatibilityColor = lead.compatibilityScore > 85 ? "border-l-success" : lead.compatibilityScore > 65 ? "border-l-warning" : "border-l-muted";
@@ -71,6 +111,13 @@ export function LeadCard({ lead, licensedStates, onCompare, onViewDetails, onReq
               <span className="font-medium text-foreground">{lead.state}</span>
               <span>•</span>
               <span>{lead.zipCode}</span>
+            </div>
+            {/* Vendor + trust signal: buyers judge reliability before purchase. */}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground truncate max-w-[120px]" data-testid={`vendor-name-${lead.id}`}>
+                {lead.vendor?.name ?? "Vendor"}
+              </span>
+              <VendorTrustBadge trust={trust} />
             </div>
           </div>
           <div className="text-right">
