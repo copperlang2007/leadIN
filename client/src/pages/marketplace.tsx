@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, invalidatePrefix } from "@/lib/queryClient";
 import { MAX_COMPARE, MAX_TRUST_VENDOR_IDS } from "@shared/constants";
 import { Layout } from "@/components/layout";
 import { LeadCard } from "@/components/lead-card";
@@ -42,6 +43,9 @@ import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 export default function Marketplace() {
   useDocumentTitle("Marketplace");
+  // Client-side navigate — window.location.href to an internal route would
+  // force a full document reload and re-boot the whole SPA.
+  const [, navigate] = useLocation();
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -92,9 +96,7 @@ export default function Marketplace() {
           delete next[msg.leadId];
           return next;
         });
-        queryClient.invalidateQueries({
-          predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads"),
-        });
+        invalidatePrefix("/api/leads");
       }
     });
     return unsubscribe;
@@ -123,7 +125,7 @@ export default function Marketplace() {
           return updated;
         });
       }, 10000);
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
+      invalidatePrefix("/api/leads");
     });
     return unsubscribe;
   }, [subscribeToNewLeads, queryClient]);
@@ -226,52 +228,73 @@ export default function Marketplace() {
 
   const licensedStates = user?.profile?.licensedStates || [];
 
-  // The wallet-debit POST. Splits two paths off the response shape so
-  // a known-good error like "Insufficient balance" doesn't fall into
-  // the same opaque toast as a 500. handlePurchase is the network call;
-  // requestPurchase is what the UI buttons call (it opens the confirm).
-  const handlePurchase = async (leadId: number, price: string) => {
+  // Shared purchase plumbing for the single-buy and Bulk Buy paths.
+  //
+  // postPurchase: the wallet-debit POST. Returns a discriminated result so a
+  // known-good error like "Insufficient balance" (server/storage.ts:709) gets
+  // a recoverable add-funds dead-end instead of the bare "Purchase failed"
+  // toast, which left agents stuck.
+  const postPurchase = async (
+    url: string,
+    body?: unknown,
+  ): Promise<{ ok: true; data: unknown } | { ok: false; insufficient: boolean; message: string }> => {
     try {
-      const response = await fetch(`/api/leads/${leadId}/purchase`, {
-        method: 'POST',
-        credentials: 'include',
+      const response = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        ...(body !== undefined
+          ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+          : {}),
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        const message = (error.message ?? '').toString();
-        // Server error string is `Insufficient balance` (server/storage.ts:709).
-        // Recognise it and surface a recoverable dead-end instead of the
-        // bare "Purchase failed" toast, which left agents stuck.
-        if (response.status === 400 && /insufficient balance/i.test(message)) {
-          setPendingPurchase(null);
-          setAddFundsOpen(true);
-          return;
-        }
-        throw new Error(message || 'Purchase failed');
+        const message = (error.message ?? "").toString();
+        return {
+          ok: false,
+          insufficient: response.status === 400 && /insufficient balance/i.test(message),
+          message: message || "Purchase failed",
+        };
       }
-
-      toast({
-        title: "Purchase successful!",
-        description: `You've purchased lead #${leadId} for $${price}`,
-      });
-
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
-      queryClient.invalidateQueries({ queryKey: ['/api/auth/user'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
-      // A purchase bumps the vendor's sold count, so refresh the trust badges.
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/vendors/trust-stats") });
-      setIsCompareOpen(false);
-      setSelectedLeads([]);
-      apiRequest("DELETE", "/api/leads/compare").catch(() => {});
-      setIsDetailsOpen(false);
-      setPendingPurchase(null);
+      return { ok: true, data: await response.json().catch(() => null) };
     } catch (error: any) {
-      toast({
-        title: "Purchase failed",
-        description: error.message,
-        variant: "destructive",
-      });
+      // Network-level failure (offline, DNS, aborted) — never throws to callers.
+      return { ok: false, insufficient: false, message: error?.message || "Purchase failed" };
     }
+  };
+
+  // Everything a successful purchase invalidates/resets, shared by both paths:
+  // the lead lists, the wallet balance, the order history, the vendor trust
+  // badges (a purchase bumps soldCount), and the compare selection.
+  const finishPurchaseSuccess = () => {
+    invalidatePrefix("/api/leads");
+    queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+    invalidatePrefix("/api/vendors/trust-stats");
+    setIsCompareOpen(false);
+    setSelectedLeads([]);
+    apiRequest("DELETE", "/api/leads/compare").catch(() => {});
+  };
+
+  // handlePurchase is the single-buy network call; requestPurchase is what the
+  // UI buttons call (it opens the confirm so a mis-click can't debit the wallet).
+  const handlePurchase = async (leadId: number, price: string) => {
+    const result = await postPurchase(`/api/leads/${leadId}/purchase`);
+    if (!result.ok) {
+      if (result.insufficient) {
+        setPendingPurchase(null);
+        setAddFundsOpen(true);
+        return;
+      }
+      toast({ title: "Purchase failed", description: result.message, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: "Purchase successful!",
+      description: `You've purchased lead #${leadId} for $${price}`,
+    });
+    finishPurchaseSuccess();
+    setIsDetailsOpen(false);
+    setPendingPurchase(null);
   };
 
   // Public entry point for any "Buy" CTA. Opens the confirm dialog so
@@ -291,40 +314,23 @@ export default function Marketplace() {
     if (ids.length === 0) return;
     setIsBatchPending(true);
     try {
-      const response = await fetch("/api/leads/purchase-batch", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadIds: ids }),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        const message = (error.message ?? "").toString();
-        // Same recoverable dead-end as the single-buy path.
-        if (response.status === 400 && /insufficient balance/i.test(message)) {
+      const result = await postPurchase("/api/leads/purchase-batch", { leadIds: ids });
+      if (!result.ok) {
+        if (result.insufficient) {
           setBatchConfirmOpen(false);
           setAddFundsOpen(true);
           return;
         }
-        throw new Error(message || "Purchase failed");
+        toast({ title: "Purchase failed", description: result.message, variant: "destructive" });
+        return;
       }
-      const purchased = await response.json().catch(() => []);
-      const count = Array.isArray(purchased) ? purchased.length : ids.length;
+      const count = Array.isArray(result.data) ? result.data.length : ids.length;
       toast({
         title: "Purchase successful!",
         description: `You've purchased ${count} lead${count === 1 ? "" : "s"} for $${selectedTotal.toFixed(2)}`,
       });
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      // Refresh the vendor trust badges — a bulk buy bumps their sold counts.
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/vendors/trust-stats") });
+      finishPurchaseSuccess();
       setBatchConfirmOpen(false);
-      setIsCompareOpen(false);
-      setSelectedLeads([]);
-      apiRequest("DELETE", "/api/leads/compare").catch(() => {});
-    } catch (error: any) {
-      toast({ title: "Purchase failed", description: error.message, variant: "destructive" });
     } finally {
       setIsBatchPending(false);
     }
@@ -796,13 +802,13 @@ export default function Marketplace() {
                       description="No leads match your licensed states or territory right now. Set up a smart-match subscription and we'll route fresh leads to you the moment they ingest."
                       action={{
                         label: "Set up smart-match",
-                        onClick: () => (window.location.href = "/smart-match"),
+                        onClick: () => navigate("/smart-match"),
                         testId: "empty-smart-match-cta",
                         trackCta: "marketplace-empty-smart-match",
                       }}
                       secondaryAction={{
                         label: "Update your territory",
-                        onClick: () => (window.location.href = "/agent-onboarding"),
+                        onClick: () => navigate("/agent-onboarding"),
                         testId: "empty-onboarding-cta",
                         trackCta: "marketplace-empty-onboarding",
                       }}

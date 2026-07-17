@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState, useEffect } from "react";
+import { invalidatePrefix } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { useWebSocketContext } from "@/hooks/useWebSocketContext";
 import { useQueryClient } from "@tanstack/react-query";
@@ -159,8 +160,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       setNewLeadFlash(true);
       setTimeout(() => setNewLeadFlash(false), 3000);
 
-      // Predicate-based invalidation to match parameterized lead queries
-      queryClient.invalidateQueries({ predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads") });
+      invalidatePrefix("/api/leads");
 
       toast({
         title: "New Lead Available",
