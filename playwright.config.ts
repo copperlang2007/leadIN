@@ -29,6 +29,13 @@ export default defineConfig({
     // Tighter than the 30s default — keeps a flake fast.
     actionTimeout: 8_000,
     navigationTimeout: 15_000,
+    // Sandboxed/remote environments (e.g. Claude Code on the web) pre-install
+    // a system Chromium instead of the exact revision this Playwright version
+    // pins. Point at it via env instead of downloading; CI and local runs are
+    // unaffected when the var is unset.
+    ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+      ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } }
+      : {}),
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },

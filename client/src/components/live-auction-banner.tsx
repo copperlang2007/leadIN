@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Zap, Loader2, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { invalidatePrefix } from "@/lib/queryClient";
 
 export interface LiveAuctionBannerProps {
   leadId: number;
@@ -21,7 +22,6 @@ export interface LiveAuctionBannerProps {
  */
 export function LiveAuctionBanner({ leadId, closesAt, onExpired }: LiveAuctionBannerProps) {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
   const closesAtMs = useMemo(() => new Date(closesAt).getTime(), [closesAt]);
   const [now, setNow] = useState(() => Date.now());
   const [claimed, setClaimed] = useState(false);
@@ -56,9 +56,7 @@ export function LiveAuctionBanner({ leadId, closesAt, onExpired }: LiveAuctionBa
         title: "Claim submitted",
         description: `You're in the running for lead #${leadId}. Winner will be announced in a moment.`,
       });
-      queryClient.invalidateQueries({
-        predicate: q => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/leads"),
-      });
+      invalidatePrefix("/api/leads");
     },
     onError: (err: Error) => {
       toast({

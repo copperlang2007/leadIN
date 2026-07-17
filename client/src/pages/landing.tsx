@@ -1,3 +1,4 @@
+import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -99,6 +100,9 @@ const FAQ = [
 ];
 
 export default function Landing() {
+  // wouter's client-side navigate — a plain window.location.href to an
+  // internal route forces a full document reload (re-boots the whole SPA).
+  const [, navigate] = useLocation();
   useDocumentTitle({
     part: "LeadMarket — Verified Insurance Lead Marketplace",
     full: true,
@@ -148,7 +152,7 @@ export default function Landing() {
                 size="lg"
                 variant="outline"
                 className="text-lg px-8 py-6 bg-white/10 backdrop-blur-sm border-white/20 text-white hover:bg-white/20"
-                onClick={() => (window.location.href = "/pricing")}
+                onClick={() => navigate("/pricing")}
                 data-track-cta="landing-see-pricing"
               >
                 See Pricing

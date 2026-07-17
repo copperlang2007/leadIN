@@ -71,3 +71,14 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+// Invalidate every cached query whose key starts with `prefix`. Query keys in
+// this app are URL strings (often with query params baked in, e.g.
+// `/api/leads?minPrice=0`), so exact-key invalidation misses them — this is
+// the one blessed way to say "refresh everything under /api/leads".
+export function invalidatePrefix(prefix: string): void {
+  queryClient.invalidateQueries({
+    predicate: (q) =>
+      typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith(prefix),
+  });
+}
