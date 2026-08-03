@@ -43,6 +43,10 @@ export const REPUTATION_WEIGHTS = {
   dispute_approved: -5,
   // Reserved for future fast-response bonus.
   response_time_under_5m: 1,
+  // Buyer reported a per-lead outcome (Wave 13). Small positive nudge — the
+  // outcome dataset is the marketplace's ground truth, so reporting is worth
+  // rewarding, but the credit is granted once per order (first report only).
+  outcome_reported: 2,
 } as const;
 
 export type ReputationEventType = keyof typeof REPUTATION_WEIGHTS;

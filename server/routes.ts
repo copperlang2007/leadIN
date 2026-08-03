@@ -10,7 +10,11 @@ import {
   agentOnboardingSchema,
   subscriptionCheckoutSchema,
   createDisputeSchema,
+  reportOutcomeSchema,
 } from "@shared/schema";
+import { QUOTE_TCPA_DISCLOSURE } from "@shared/consent";
+import { normalizePhone, assessEmail } from "./leadValidation";
+import { THROTTLED_DAILY_INGEST_CAP } from "./vendorEnforcement";
 import { fromError } from "zod-validation-error";
 import { setupWebSocket, broadcastNewLead, broadcastLeadAssignment, getActiveConnections, broadcastAssistSuggestion } from "./websocket";
 import { startCallForLead, processTranscriptChunk } from "./dialer";
@@ -175,13 +179,25 @@ export async function adminHealthHandler(req: any, res: any) {
 }
 
 function stripPII(lead: any) {
-  const { consumerName: _name, consumerPhone: _phone, consumerEmail: _email, consumerAddress: _addr, ...rest } = lead;
+  const {
+    consumerName: _name,
+    consumerPhone: _phone,
+    consumerEmail: _email,
+    consumerAddress: _addr,
+    // Consent capture details are consumer PII too (IP + browser identify the
+    // person); pre-purchase buyers only get the fact/time consent exists.
+    consentIp: _cip,
+    consentUserAgent: _cua,
+    ...rest
+  } = lead;
   return {
     ...rest,
     consumerName: null,
     consumerPhone: null,
     consumerEmail: null,
     consumerAddress: null,
+    consentIp: null,
+    consentUserAgent: null,
     piiGated: true,
   };
 }
@@ -192,11 +208,54 @@ function stripPII(lead: any) {
 async function ingestLeadForVendor(
   vendor: { id: number; name: string; orgId: string | null },
   data: z.infer<typeof vendorLeadIngestSchema>,
+  opts?: {
+    /** First-party consent evidence captured by the platform itself (quote funnel). */
+    consent?: { timestamp: Date; ip?: string; userAgent?: string; disclosureText?: string; sourceUrl?: string };
+    /** True when the platform originated the lead (not a vendor submission). */
+    firstParty?: boolean;
+  },
 ): Promise<{ status: number; body: any }> {
-  // Duplicate check: same phone + type already available
+  // Trust enforcement gate: suspended vendors can't ingest at all; throttled
+  // vendors are capped per UTC day. Status is maintained by
+  // applyVendorEnforcement on dispute resolution.
+  const vendorRow = await storage.getVendor(vendor.id);
+  if (vendorRow?.status === "suspended") {
+    return {
+      status: 403,
+      body: { message: `Vendor suspended: ${vendorRow.statusReason ?? "elevated dispute rate"}` },
+    };
+  }
+  if (vendorRow?.status === "throttled") {
+    const midnightUtc = new Date();
+    midnightUtc.setUTCHours(0, 0, 0, 0);
+    const todayCount = await storage.countVendorLeadsSince(vendor.id, midnightUtc);
+    if (todayCount >= THROTTLED_DAILY_INGEST_CAP) {
+      return {
+        status: 429,
+        body: {
+          message: `Vendor throttled (${vendorRow.statusReason ?? "elevated dispute rate"}): daily cap of ${THROTTLED_DAILY_INGEST_CAP} leads reached`,
+        },
+      };
+    }
+  }
+
+  // Contact-quality gate: a present-but-invalid phone or a disposable email is
+  // junk contact data — reject at the door instead of scoring and selling it.
+  if (data.consumerPhone && !normalizePhone(data.consumerPhone)) {
+    return { status: 422, body: { message: "Invalid consumer phone: not a valid US/CA (NANP) number" } };
+  }
+  if (data.consumerEmail) {
+    const emailQuality = assessEmail(data.consumerEmail);
+    if (emailQuality.disposable) {
+      return { status: 422, body: { message: "Disposable email domains are not accepted; omit the email or provide a real one" } };
+    }
+  }
+
+  // Duplicate check: same consumer (normalized phone) already listed, or sold
+  // in the last 30 days — across all lead types.
   const isDuplicate = await storage.checkDuplicateLead(data.consumerPhone, data.type);
   if (isDuplicate) {
-    return { status: 409, body: { message: "Duplicate lead: same phone and type already available" } };
+    return { status: 409, body: { message: "Duplicate lead: this phone number is already listed or was sold within the last 30 days" } };
   }
 
   const now = new Date();
@@ -205,6 +264,29 @@ async function ingestLeadForVendor(
     { date: new Date(now.getTime() + 1000).toISOString(), action: "Field Validation Passed", actor: "System", icon: "lock" },
     { date: new Date(now.getTime() + 2000).toISOString(), action: "Duplicate Check Cleared", actor: "System", icon: "eye" },
   ];
+
+  // Structured consent evidence: first-party capture (opts) wins; otherwise
+  // vendor-supplied evidence from the ingest payload. Recorded both in the
+  // dedicated columns (queryable, MediScore-visible) and the provenance
+  // timeline (buyer-visible).
+  const consentEvidence = opts?.consent
+    ?? (data.consent
+      ? {
+          timestamp: new Date(data.consent.timestamp),
+          ip: data.consent.ip,
+          userAgent: data.consent.userAgent,
+          disclosureText: data.consent.disclosureText,
+          sourceUrl: data.consent.sourceUrl,
+        }
+      : undefined);
+  if (consentEvidence) {
+    provenance.push({
+      date: consentEvidence.timestamp.toISOString(),
+      action: "TCPA Consent Captured",
+      actor: opts?.firstParty ? "Platform: Quote Funnel" : `Vendor: ${vendor.name}`,
+      icon: "lock",
+    });
+  }
 
   const dnc = await checkDnc(data.consumerPhone);
 
@@ -256,6 +338,12 @@ async function ingestLeadForVendor(
     dncFlagged: dnc.flagged,
     dncCheckedAt: new Date(),
     ...tcpa,
+    consentTimestamp: consentEvidence?.timestamp ?? null,
+    consentIp: consentEvidence?.ip ?? null,
+    consentUserAgent: consentEvidence?.userAgent ?? null,
+    consentDisclosureText: consentEvidence?.disclosureText ?? null,
+    consentSourceUrl: consentEvidence?.sourceUrl ?? null,
+    firstParty: opts?.firstParty ?? false,
   });
 
   await recomputeAndPersistMediScore(lead.id).catch(err => logError("[mediscore] init error:", err));
@@ -1152,7 +1240,7 @@ export async function registerRoutes(
   // quality, intent, exclusivity, and demand combine into a final price.
   app.post("/api/pricing/quote", isAuthenticated, async (req: any, res) => {
     try {
-      const { basePrice, mediscore, intentScore, exclusivity, demandIndex, floor, ceiling } = req.body ?? {};
+      const { basePrice, mediscore, intentScore, exclusivity, demandIndex, floor, ceiling, trustTier } = req.body ?? {};
       // When the caller doesn't pin a demandIndex, surge with the live market.
       let demand = demandIndex === undefined ? undefined : Number(demandIndex);
       if (demand === undefined) {
@@ -1168,6 +1256,7 @@ export async function registerRoutes(
           demandIndex: demand,
           floor: floor === undefined ? undefined : Number(floor),
           ceiling: ceiling === undefined ? undefined : Number(ceiling),
+          trustTier: trustTier === undefined ? undefined : String(trustTier),
         }),
       );
     } catch (error) {
@@ -1242,6 +1331,13 @@ export async function registerRoutes(
   // captures a consented, source-attributed lead via the shared pipeline.
   app.post("/api/quote", async (req: any, res) => {
     try {
+      // Public, unauthenticated endpoint that can mint leads — rate-limit per
+      // IP (burst 5, ~1 quote/12s sustained) to keep bot traffic from
+      // flooding the first-party funnel.
+      const quoteIp = req.ip ?? req.socket?.remoteAddress ?? "unknown";
+      if (!(await takeToken(`quote:${quoteIp}`, 5, 5 / 60))) {
+        return res.status(429).json({ message: "Too many quote requests; slow down" });
+      }
       const b = req.body ?? {};
       const result = evaluateQuote({
         age: b.age === undefined ? undefined : Number(b.age),
@@ -1290,7 +1386,25 @@ export async function registerRoutes(
           if (parsed.success) {
             // Only report capture when ingestion actually succeeds (201).
             try {
-              const ingest = await ingestLeadForVendor({ id: vendor.id, name: vendor.name, orgId: null }, parsed.data);
+              // First-party consent evidence: the consumer checked the TCPA
+              // box on OUR form, so snapshot the full event — when, from
+              // where, the exact disclosure rendered (shared constant, same
+              // text the form shows), and the page it happened on. This is
+              // what makes a first-party lead worth more than a vendor row.
+              const ingest = await ingestLeadForVendor(
+                { id: vendor.id, name: vendor.name, orgId: null },
+                parsed.data,
+                {
+                  firstParty: true,
+                  consent: {
+                    timestamp: new Date(),
+                    ip: quoteIp === "unknown" ? undefined : String(quoteIp).slice(0, 45),
+                    userAgent: req.headers["user-agent"] ? String(req.headers["user-agent"]).slice(0, 500) : undefined,
+                    disclosureText: QUOTE_TCPA_DISCLOSURE,
+                    sourceUrl: req.headers.referer ? String(req.headers.referer).slice(0, 500) : undefined,
+                  },
+                },
+              );
               captured = ingest.status === 201;
             } catch (err) {
               logError("[quote] capture error:", err);
@@ -1375,6 +1489,63 @@ export async function registerRoutes(
     } catch (error) {
       logError("Error exporting orders:", error);
       res.status(500).json({ message: "Failed to export orders" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Lead Outcome Routes (Wave 13)
+  //
+  // Buyers report what actually happened with a purchased lead. One row per
+  // order, upsert on re-report; "closed" flips the order to "converted" —
+  // the label buyer ROI and MediScore calibration train on.
+  // ──────────────────────────────────────────────────────
+  app.post("/api/orders/:orderId/outcome", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const orderId = parseInt(req.params.orderId, 10);
+      if (!Number.isFinite(orderId) || orderId <= 0) {
+        return res.status(400).json({ message: "Invalid order id" });
+      }
+
+      const parsed = reportOutcomeSchema.safeParse({
+        outcome: req.body?.outcome,
+        notes: req.body?.notes,
+      });
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromError(parsed.error).toString() });
+      }
+
+      if (!(await takeToken(`outcome:${userId}`, 30, 10 / 60))) {
+        return res.status(429).json({ message: "Too many outcome reports" });
+      }
+
+      const result = await storage.reportLeadOutcome(orderId, userId, parsed.data);
+      res.status(result.firstReport ? 201 : 200).json(result.outcome);
+    } catch (error: any) {
+      const msg = String(error?.message ?? "");
+      if (msg.includes("not found") || msg.includes("does not belong")) {
+        // 404 for both cases — don't leak other buyers' order ids.
+        return res.status(404).json({ message: "Order not found" });
+      }
+      if (msg.includes("refunded")) {
+        return res.status(409).json({ message: msg });
+      }
+      logError("Error reporting lead outcome:", error);
+      res.status(500).json({ message: "Failed to report outcome" });
+    }
+  });
+
+  // Outcomes for the buyer's own orders, keyed by orderId — one call per
+  // orders-page load, mirrors the trust-stats batching pattern.
+  app.get("/api/orders/outcomes", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const userOrders = await storage.getUserOrders(userId);
+      const map = await storage.getOutcomesByOrderIds(userOrders.map(o => o.id));
+      res.json(map);
+    } catch (error) {
+      logError("Error fetching order outcomes:", error);
+      res.status(500).json({ message: "Failed to fetch outcomes" });
     }
   });
 

@@ -128,6 +128,14 @@ export const vendors = pgTable("vendors", {
   // Wave 6: exclusive vendor partnership program (M5)
   isExclusive: boolean("is_exclusive").notNull().default(false),
   revShareOverride: decimal("rev_share_override", { precision: 4, scale: 3 }),
+  // ──── Wave 13: automatic trust enforcement ────
+  // 'active' | 'throttled' | 'suspended' — recomputed from the 90-day
+  // approved-dispute rate whenever a dispute resolves (see vendorEnforcement).
+  // Suspended vendors cannot ingest and their unsold leads are hidden from the
+  // marketplace; throttled vendors get a daily ingest cap.
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  statusReason: varchar("status_reason", { length: 200 }),
+  statusChangedAt: timestamp("status_changed_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -198,6 +206,20 @@ export const leads = pgTable("leads", {
   enrichmentJson: jsonb("enrichment_json"),
   mediscoreExplanation: text("mediscore_explanation"),
   bestCallWindowsJson: jsonb("best_call_windows_json"),
+
+  // ──── Wave 13: structured consent provenance ────
+  // The consumer's consent event, as evidence: when it happened, from where,
+  // the exact disclosure they saw, and the page it happened on. Populated by
+  // the first-party quote funnel and accepted from vendors at ingest. Distinct
+  // from tcpaVerifiedAt, which is OUR TrustedForm verification time.
+  consentTimestamp: timestamp("consent_timestamp"),
+  consentIp: varchar("consent_ip", { length: 45 }),
+  consentUserAgent: varchar("consent_user_agent", { length: 500 }),
+  consentDisclosureText: text("consent_disclosure_text"),
+  consentSourceUrl: varchar("consent_source_url", { length: 500 }),
+  // True when the platform itself originated the lead (quote funnel), as
+  // opposed to vendor ingest — first-party leads carry end-to-end provenance.
+  firstParty: boolean("first_party").notNull().default(false),
 
   // ──── Wave 12a: vertical expansion + pricing modes ────
   // 'medicare'|'aca'|'mortgage_protection'|'auto'|'home'|'commercial'|'annuity'|'pet'|'final_expense'
@@ -743,6 +765,37 @@ export const createDisputeSchema = z.object({
   notes: z.string().max(2000).optional(),
 });
 
+// ──── Wave 13: buyer-reported lead outcomes ────
+// One row per order (upsert on re-report). This is the ground-truth feedback
+// loop: `closed` flips orders.status to "converted", which is what buyer ROI
+// reports and the weekly MediScore calibration train on — without these rows
+// both run on an all-negative label set.
+export const leadOutcomes = pgTable("lead_outcomes", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  orderId: integer("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  leadId: integer("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  buyerUserId: varchar("buyer_user_id").references(() => users.id, { onDelete: "set null" }),
+  // 'contacted' | 'quoted' | 'closed' | 'unreachable' | 'bad_number'
+  outcome: varchar("outcome", { length: 20 }).notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  unique("uniq_outcome_per_order").on(table.orderId),
+  index("idx_outcomes_lead").on(table.leadId),
+  index("idx_outcomes_outcome").on(table.outcome),
+]);
+
+export type LeadOutcome = typeof leadOutcomes.$inferSelect;
+export type InsertLeadOutcome = typeof leadOutcomes.$inferInsert;
+
+export const leadOutcomeValueSchema = z.enum(["contacted", "quoted", "closed", "unreachable", "bad_number"]);
+export type LeadOutcomeValue = z.infer<typeof leadOutcomeValueSchema>;
+export const reportOutcomeSchema = z.object({
+  outcome: leadOutcomeValueSchema,
+  notes: z.string().max(2000).optional(),
+});
+
 // Vendor ingestion payload schema
 export const vendorLeadIngestSchema = z.object({
   type: z.enum(["Medicare Advantage", "Medicare Supplement", "Final Expense"]),
@@ -763,6 +816,16 @@ export const vendorLeadIngestSchema = z.object({
   smoker: z.boolean().optional(),
   verified: z.boolean().optional(),
   trustedFormCertUrl: z.string().url().optional(),
+  // Structured consent evidence for the consumer's TCPA opt-in. Optional today
+  // (existing vendor integrations keep working); leads without it — and
+  // without a TrustedForm cert — never earn the tcpa_consent MediScore signal.
+  consent: z.object({
+    timestamp: z.string().datetime(),
+    ip: z.string().max(45).optional(),
+    userAgent: z.string().max(500).optional(),
+    disclosureText: z.string().max(5000).optional(),
+    sourceUrl: z.string().url().max(500).optional(),
+  }).optional(),
 });
 
 export type VendorLeadIngest = z.infer<typeof vendorLeadIngestSchema>;

@@ -140,11 +140,20 @@ export function LeadDetailsDialog({ lead, open, onOpenChange, isPurchased, onPur
               <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 border-emerald-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> TrustedForm verified
               </Badge>
+            ) : lead.consentTimestamp ? (
+              <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 border-emerald-500/20">
+                <CheckCircle2 className="h-3 w-3 mr-1" /> Consent on file
+              </Badge>
             ) : lead.verified ? (
               <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/25 border-amber-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> Vendor-claimed (unverified)
               </Badge>
             ) : null}
+            {lead.firstParty && (
+              <Badge className="bg-primary/15 text-primary border-primary/30">
+                <CheckCircle2 className="h-3 w-3 mr-1" /> First-party
+              </Badge>
+            )}
             {isPurchased && (
               <Badge className="bg-blue-500/15 text-blue-700 border-blue-500/20">
                 <CheckCircle2 className="h-3 w-3 mr-1" /> Purchased

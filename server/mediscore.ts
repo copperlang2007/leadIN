@@ -146,8 +146,17 @@ export async function computeMediScore(leadId: number): Promise<MediScoreBreakdo
   const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
   if (!lead) throw new Error(`Lead ${leadId} not found`);
 
+  // TCPA consent: primary evidence is the structured columns ingest actually
+  // populates — a verified TrustedForm/Jornaya cert or a captured consent
+  // event. The provenance-text regex is kept only as a fallback for legacy
+  // leads that predate those columns; without the column check, a verified
+  // lead scored identically to an unverified one (the 7-point signal was dead).
   const provenance: any[] = Array.isArray(lead.provenance) ? (lead.provenance as any[]) : [];
-  const hasTcpa = provenance.some(p => /tcpa/i.test(p?.action ?? "") || /TrustedForm|Jornaya/i.test(p?.actor ?? ""));
+  const hasTcpa =
+    !!lead.tcpaVerifiedAt ||
+    !!lead.tcpaCertId ||
+    !!lead.consentTimestamp ||
+    provenance.some(p => /tcpa/i.test(p?.action ?? "") || /TrustedForm|Jornaya/i.test(p?.actor ?? ""));
 
   // Pull external signals in parallel
   const [cmsRows, eventRows, kwRows] = await Promise.all([

@@ -5,6 +5,7 @@ import {
   intentFactor,
   exclusivityFactor,
   demandFactor,
+  trustFactor,
   computeDemandIndex,
 } from "./intentPricing";
 
@@ -27,6 +28,25 @@ describe("factor mappings", () => {
     expect(exclusivityFactor("exclusive")).toBe(1.5);
     expect(exclusivityFactor("Shared")).toBe(1.0);
     expect(exclusivityFactor("")).toBe(1.0);
+  });
+
+  it("trustFactor: premium for excellent, discount for watch, neutral otherwise", () => {
+    expect(trustFactor("excellent")).toBe(1.1);
+    expect(trustFactor("Excellent")).toBe(1.1);
+    expect(trustFactor("good")).toBe(1.0);
+    expect(trustFactor("new")).toBe(0.95);
+    expect(trustFactor("watch")).toBe(0.8);
+    expect(trustFactor(undefined)).toBe(1.0);
+    expect(trustFactor("garbage")).toBe(1.0);
+  });
+
+  it("priceLead: trustTier multiplies in and lands in the breakdown", () => {
+    const base = { basePrice: 100, mediscore: 50, intentScore: 40, exclusivity: "Shared", demandIndex: 1 };
+    const neutral = priceLead(base);
+    const watch = priceLead({ ...base, trustTier: "watch" });
+    expect(neutral.trustFactor).toBe(1.0);
+    expect(watch.trustFactor).toBe(0.8);
+    expect(Number(watch.price)).toBeCloseTo(Number(neutral.price) * 0.8, 2);
   });
 
   it("demandFactor clamps to [0.5, 2.0] and defaults to 1", () => {
