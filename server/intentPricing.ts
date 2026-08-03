@@ -32,6 +32,12 @@ export interface PricingFactors {
   floor?: number | string;
   /** Optional hard price ceiling (USD). */
   ceiling?: number | string;
+  /**
+   * Vendor trust tier ("new" | "excellent" | "good" | "watch", from
+   * vendorTrust.computeTrustSignal). Optional: omitted = neutral 1.0x, so
+   * callers without vendor context are unaffected.
+   */
+  trustTier?: string;
 }
 
 export interface PriceBreakdown {
@@ -41,6 +47,7 @@ export interface PriceBreakdown {
   intentFactor: number;
   exclusivityFactor: number;
   demandFactor: number;
+  trustFactor: number;
   rawPrice: string; // before floor/ceiling clamp
   clamped: boolean;
   computedAt: string;
@@ -88,6 +95,22 @@ export function demandFactor(demandIndex: number | undefined): number {
 }
 
 /**
+ * Vendor trust tier -> price multiplier. A proven-clean vendor's leads carry
+ * a premium; an elevated-dispute vendor's carry a discount that prices the
+ * refund risk in. Unknown/absent tiers are neutral so the factor can never
+ * penalize a caller that simply lacks vendor context.
+ */
+export function trustFactor(trustTier: string | undefined): number {
+  switch ((trustTier ?? "").toLowerCase()) {
+    case "excellent": return 1.1;
+    case "good":      return 1.0;
+    case "new":       return 0.95;
+    case "watch":     return 0.8;
+    default:          return 1.0;
+  }
+}
+
+/**
  * Compute the dynamic price + full factor decomposition. Pure & deterministic.
  */
 export function priceLead(f: PricingFactors): PriceBreakdown {
@@ -98,8 +121,9 @@ export function priceLead(f: PricingFactors): PriceBreakdown {
   const intent = intentFactor(f.intentScore);
   const excl = exclusivityFactor(f.exclusivity);
   const demand = demandFactor(f.demandIndex);
+  const trust = trustFactor(f.trustTier);
 
-  const raw = base.times(q).times(intent).times(excl).times(demand);
+  const raw = base.times(q).times(intent).times(excl).times(demand).times(trust);
 
   let priced = raw;
   let clamped = false;
@@ -125,6 +149,7 @@ export function priceLead(f: PricingFactors): PriceBreakdown {
     intentFactor: intent,
     exclusivityFactor: excl,
     demandFactor: demand,
+    trustFactor: trust,
     rawPrice: raw.toFixed(2),
     clamped,
     computedAt: new Date().toISOString(),

@@ -102,6 +102,24 @@ const REASON_LABELS: Record<DisputeReason, string> = {
   other: "Other",
 };
 
+type OutcomeValue = "contacted" | "quoted" | "closed" | "unreachable" | "bad_number";
+
+interface LeadOutcomeRow {
+  id: number;
+  orderId: number;
+  leadId: number;
+  outcome: OutcomeValue;
+  notes: string | null;
+}
+
+const OUTCOME_LABELS: Record<OutcomeValue, string> = {
+  contacted: "Contacted",
+  quoted: "Quoted",
+  closed: "Closed (won)",
+  unreachable: "Unreachable",
+  bad_number: "Bad number",
+};
+
 const NOTES_MAX = 2000;
 
 export default function Orders() {
@@ -150,6 +168,38 @@ export default function Orders() {
   // per order so the agent can request the auto-issue flow.
   const { data: credits = [] } = useQuery<TradeInCredit[]>({
     queryKey: ["/api/tradein/credits"],
+  });
+
+  // Per-order outcomes (Wave 13), one batched call keyed by orderId.
+  const { data: outcomesByOrderId = {} } = useQuery<Record<number, LeadOutcomeRow>>({
+    queryKey: ["/api/orders/outcomes"],
+  });
+
+  const reportOutcome = useMutation({
+    mutationFn: async (input: { orderId: number; outcome: OutcomeValue }) => {
+      const res = await apiRequest("POST", `/api/orders/${input.orderId}/outcome`, {
+        outcome: input.outcome,
+      });
+      return (await res.json()) as LeadOutcomeRow;
+    },
+    onSuccess: (row) => {
+      toast({
+        title: row.outcome === "closed" ? "Congrats on the close!" : "Outcome recorded",
+        description:
+          row.outcome === "closed"
+            ? "This order now counts as a conversion in your ROI report."
+            : "Outcome feedback sharpens lead scoring for everyone.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/outcomes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Could not record outcome",
+        description: err.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const checkReplacement = useMutation({
@@ -456,6 +506,28 @@ export default function Orders() {
                           ${parseFloat(order.price).toFixed(2)}
                         </span>
                         <span className="text-xs text-muted-foreground">Lead #{order.leadId}</span>
+                        {/* Outcome reporting (Wave 13): what actually happened
+                            with this lead. "Closed (won)" marks the order
+                            converted and powers the buyer ROI report. */}
+                        <Select
+                          value={outcomesByOrderId[order.id]?.outcome ?? ""}
+                          onValueChange={(v) => reportOutcome.mutate({ orderId: order.id, outcome: v as OutcomeValue })}
+                          disabled={reportOutcome.isPending || order.status === "refunded"}
+                        >
+                          <SelectTrigger
+                            className="h-7 w-[170px] text-xs"
+                            data-testid={`select-outcome-${order.id}`}
+                          >
+                            <SelectValue placeholder="Report outcome…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(OUTCOME_LABELS) as OutcomeValue[]).map((v) => (
+                              <SelectItem key={v} value={v} className="text-xs">
+                                {OUTCOME_LABELS[v]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         {!dispute && (
                           <Button
                             variant="outline"

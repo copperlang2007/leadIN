@@ -24,6 +24,9 @@ import {
   type MediscoreWeightsRow,
   type InsertMediscoreWeights,
   leadDisputes,
+  leadOutcomes,
+  type LeadOutcome,
+  type LeadOutcomeValue,
   tcpaPolicies,
   tcpaClaims,
   callLogs,
@@ -88,7 +91,9 @@ import {
 import { leadMatchesCriteria, ERR_SAVED_SEARCH_CAP, SAVED_SEARCH_FANOUT_CAP } from "./savedSearch";
 import { savedSearchMatchNotification } from "./userNotificationMessages";
 import { db } from "./db";
-import { eq, and, or, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, or, ne, inArray, desc, sql, gte, gt, lt, lte, count, sum, isNull, isNotNull } from "drizzle-orm";
+import { normalizePhone } from "./leadValidation";
+import { computeVendorStatus, ENFORCE_WINDOW_DAYS, type EnforcementDecision } from "./vendorEnforcement";
 import crypto from "crypto";
 import Decimal from "decimal.js";
 import { rankCandidates, type AgentCandidate } from "./routing";
@@ -376,6 +381,21 @@ export interface IStorage {
   // marketplace lead cards. Bounded, single GROUP BY query; returns an entry
   // for every requested vendorId (default zeros → tier "new").
   getVendorTrustStats(vendorIds: number[]): Promise<Record<number, VendorTrustStats>>;
+
+  // ──── Wave 13: buyer-reported lead outcomes ────
+  reportLeadOutcome(
+    orderId: number,
+    buyerUserId: string,
+    input: { outcome: LeadOutcomeValue; notes?: string },
+  ): Promise<{ outcome: LeadOutcome; firstReport: boolean }>;
+  getOutcomesByOrderIds(orderIds: number[]): Promise<Record<number, LeadOutcome>>;
+
+  // ──── Wave 13: vendor trust enforcement ────
+  // Recompute a vendor's enforcement status from windowed dispute stats and
+  // persist it when it changed. Fired post-commit on dispute resolution.
+  applyVendorEnforcement(vendorId: number): Promise<EnforcementDecision>;
+  // Leads a vendor ingested since `since` — backs the throttled daily cap.
+  countVendorLeadsSince(vendorId: number, since: Date): Promise<number>;
 
   // ──────────────────────────────────────────────────────
   // Wave 6b: TCPA defense insurance (policy + claims)
@@ -719,6 +739,12 @@ export class DatabaseStorage implements IStorage {
 
     if (filters?.assignedToUserId) {
       conditions.push(eq(leads.assignedToUserId, filters.assignedToUserId));
+    }
+
+    // Enforcement: suspended vendors' unsold inventory is off the shelf. Sold
+    // views (order history) are unaffected — buyers keep what they bought.
+    if (!filters?.soldOnly) {
+      conditions.push(ne(vendors.status, "suspended"));
     }
 
     const results = await db
@@ -1319,19 +1345,151 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async checkDuplicateLead(phone: string | undefined, type: string): Promise<boolean> {
+  async checkDuplicateLead(phone: string | undefined, _type: string): Promise<boolean> {
     if (!phone) return false;
+    // Compare NORMALIZED phones so "(555) 234-5678" and "+15552345678" are the
+    // same consumer, and look across ALL lead types and recently-SOLD leads —
+    // the same phone re-listed days after a sale (under any product line) is
+    // the classic re-broker pattern and the #1 driver of duplicate disputes.
+    // Window: sold leads block a re-list for 30 days; unsold available leads
+    // block regardless of age (type is intentionally ignored for both).
+    const normalized = normalizePhone(phone);
+    if (!normalized) return false; // unparseable phones are rejected upstream at ingest
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const phoneMatches = sql`RIGHT(regexp_replace(${leads.consumerPhone}, '\\D', '', 'g'), 10) = ${normalized}`;
     const [existing] = await db
-      .select()
+      .select({ id: leads.id })
       .from(leads)
       .where(
         and(
-          eq(leads.consumerPhone, phone),
-          eq(leads.type, type),
-          eq(leads.sold, false)
+          isNotNull(leads.consumerPhone),
+          phoneMatches,
+          eq(leads.removed, false),
+          or(eq(leads.sold, false), gte(leads.createdAt, cutoff))!,
         )
-      );
+      )
+      .limit(1);
     return !!existing;
+  }
+
+  async reportLeadOutcome(
+    orderId: number,
+    buyerUserId: string,
+    input: { outcome: LeadOutcomeValue; notes?: string },
+  ): Promise<{ outcome: LeadOutcome; firstReport: boolean }> {
+    const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
+    if (!order) throw new Error("Order not found");
+    if (order.userId !== buyerUserId) throw new Error("Order does not belong to user");
+    if (order.status === "refunded") throw new Error("Cannot report an outcome on a refunded order");
+
+    const [prior] = await db
+      .select({ id: leadOutcomes.id })
+      .from(leadOutcomes)
+      .where(eq(leadOutcomes.orderId, orderId));
+    const firstReport = !prior;
+
+    const [row] = await db
+      .insert(leadOutcomes)
+      .values({
+        orderId,
+        leadId: order.leadId,
+        buyerUserId,
+        outcome: input.outcome,
+        notes: input.notes ?? null,
+      })
+      .onConflictDoUpdate({
+        target: leadOutcomes.orderId,
+        set: {
+          outcome: input.outcome,
+          notes: input.notes ?? null,
+          buyerUserId,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    // "closed" is the conversion ground truth: it's what buyer ROI reports
+    // and the weekly MediScore calibration read (`status === "converted"`).
+    // Re-reporting away from closed reverts to "completed"; "refunded" is
+    // unreachable here (guarded above), so this never clobbers a refund.
+    if (input.outcome === "closed" && order.status !== "converted") {
+      await db.update(orders).set({ status: "converted" }).where(eq(orders.id, orderId));
+    } else if (input.outcome !== "closed" && order.status === "converted") {
+      await db.update(orders).set({ status: "completed" }).where(eq(orders.id, orderId));
+    }
+
+    // One-time reporting credit — recordEvent is internally best-effort and
+    // never throws, so a reputation hiccup can't fail the report.
+    if (firstReport) {
+      await recordReputationEventCore({
+        agentUserId: buyerUserId,
+        eventType: "outcome_reported",
+        relatedLeadId: order.leadId,
+        metadata: { orderId, outcome: input.outcome },
+      });
+    }
+
+    return { outcome: row, firstReport };
+  }
+
+  async getOutcomesByOrderIds(orderIds: number[]): Promise<Record<number, LeadOutcome>> {
+    if (orderIds.length === 0) return {};
+    const rows = await db
+      .select()
+      .from(leadOutcomes)
+      .where(inArray(leadOutcomes.orderId, orderIds.slice(0, 500)));
+    const map: Record<number, LeadOutcome> = {};
+    for (const row of rows) map[row.orderId] = row;
+    return map;
+  }
+
+  async applyVendorEnforcement(vendorId: number): Promise<EnforcementDecision> {
+    const cutoff = new Date(Date.now() - ENFORCE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+    // Windowed counts. Denominator = every order on the vendor's leads in the
+    // window (refunded included — a refunded sale is exactly the signal we're
+    // measuring); numerator = approved disputes RESOLVED in the window.
+    const [{ soldCount }] = await db
+      .select({ soldCount: count() })
+      .from(orders)
+      .innerJoin(leads, eq(orders.leadId, leads.id))
+      .where(and(eq(leads.vendorId, vendorId), gte(orders.createdAt, cutoff)));
+
+    const [{ disputeCount }] = await db
+      .select({ disputeCount: count() })
+      .from(leadDisputes)
+      .innerJoin(leads, eq(leadDisputes.leadId, leads.id))
+      .where(
+        and(
+          eq(leads.vendorId, vendorId),
+          eq(leadDisputes.status, "approved"),
+          gte(leadDisputes.resolvedAt, cutoff),
+        ),
+      );
+
+    const decision = computeVendorStatus({
+      soldCount: Number(soldCount),
+      disputeCount: Number(disputeCount),
+    });
+
+    await db
+      .update(vendors)
+      .set({
+        status: decision.status,
+        statusReason: decision.reason,
+        statusChangedAt: new Date(),
+      })
+      .where(and(eq(vendors.id, vendorId), ne(vendors.status, decision.status)));
+
+    return decision;
+  }
+
+  async countVendorLeadsSince(vendorId: number, since: Date): Promise<number> {
+    const [{ n }] = await db
+      .select({ n: count() })
+      .from(leads)
+      .where(and(eq(leads.vendorId, vendorId), gte(leads.createdAt, since)));
+    return Number(n);
   }
 
   async flagLead(id: number, flagged: boolean): Promise<Lead> {
@@ -3191,6 +3349,9 @@ export class DatabaseStorage implements IStorage {
     // the buyer's `users` row `FOR UPDATE`, so an in-tx reputation insert
     // (FK -> users) would self-deadlock.
     let pendingReputation: RecordEventInput | null = null;
+    // Captured in-tx for the post-commit enforcement recompute (needs the
+    // lead's vendor; running it in-tx would nest queries inside row locks).
+    let vendorIdForEnforcement: number | null = null;
     const result = await db.transaction(async (tx) => {
       const [dispute] = await tx
         .select()
@@ -3218,6 +3379,7 @@ export class DatabaseStorage implements IStorage {
         .from(leads)
         .where(eq(leads.id, dispute.leadId));
       if (!lead) throw new Error("Lead not found");
+      vendorIdForEnforcement = lead.vendorId;
 
       // Clamp refund to the order price so we never refund more than was
       // paid. Caller may request more; we silently floor it.
@@ -3294,6 +3456,16 @@ export class DatabaseStorage implements IStorage {
     });
 
     if (pendingReputation) await recordReputationEventCore(pendingReputation);
+
+    // Trust enforcement: an approved dispute moves the vendor's windowed
+    // dispute rate, so recompute their status now. Best-effort — the refund
+    // is already committed and must not be un-done by an enforcement error.
+    if (vendorIdForEnforcement !== null) {
+      await this.applyVendorEnforcement(vendorIdForEnforcement).catch((err) =>
+        logError(`[enforcement] recompute failed for vendor ${vendorIdForEnforcement}`, err),
+      );
+    }
+
     return result;
   }
 

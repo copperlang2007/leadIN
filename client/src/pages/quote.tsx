@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ShieldCheck, Sparkles } from "lucide-react";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { QUOTE_TCPA_DISCLOSURE } from "@shared/consent";
 
 interface QuoteResult {
   eligible: boolean;
@@ -151,11 +152,9 @@ export default function Quote() {
 
           <label className="flex items-start gap-2 text-xs text-muted-foreground">
             <Checkbox checked={form.consent} onCheckedChange={v => set("consent", !!v)} className="mt-0.5" />
-            <span>
-              By checking this box I agree to be contacted by a licensed insurance agent at the phone number
-              provided, including via autodialer and prerecorded messages (TCPA consent). Consent is not a
-              condition of purchase.
-            </span>
+            {/* Shared constant: the server snapshots this exact text into the
+                lead's consent record, so form and evidence can never drift. */}
+            <span>{QUOTE_TCPA_DISCLOSURE}</span>
           </label>
 
           <Button onClick={submit} disabled={loading || !form.age || form.state.length !== 2 || !form.zip}>

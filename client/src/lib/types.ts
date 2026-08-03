@@ -76,6 +76,10 @@ export interface Lead {
   tcpaVerifiedAt: string | null;
   tcpaCertId: string | null;
   tcpaVerifiedSource: string | null;
+  // Wave 13: structured consent provenance + first-party origination
+  consentTimestamp?: string | null;
+  consentSourceUrl?: string | null;
+  firstParty?: boolean;
   mediscore?: number;
   mediscoreSignals?: {
     score: number;
