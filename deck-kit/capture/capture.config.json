@@ -1,0 +1,10 @@
+{
+  "$comment": "Customize for this repository before running screenshot capture.",
+  "startCommand": "npm run dev",
+  "baseURL": "http://127.0.0.1:3000",
+  "healthPath": "/",
+  "viewport": { "width": 1320, "height": 880 },
+  "deviceScaleFactor": 2,
+  "seed": [],
+  "screens": [{ "name": "dashboard", "path": "/" }]
+}
