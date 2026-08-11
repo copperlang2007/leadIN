@@ -1,0 +1,60 @@
+# Pitch-deck screenshots — copy this file to .github/workflows/deck-screenshots.yml
+# Captures real screenshots of your app for deck-kit/ and opens a PR with them.
+# Manual (workflow_dispatch). Adapt the "Prepare your app" step to your runtime.
+name: deck-screenshots
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --- Prepare your app so capture.config.json `startCommand` can boot it. ---
+      # Edit this for your stack. Examples:
+      #   Python:  uses: actions/setup-python@v5 + pip install -r requirements.txt (+ build a frontend)
+      #   Node:    npm ci && npm run build
+      - name: Prepare app (EDIT FOR YOUR STACK)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install app deps
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f web/package.json ]; then (cd web && npm ci && npm run build); fi
+
+      - name: Install Playwright
+        working-directory: deck-kit/capture
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Capture screenshots
+        working-directory: deck-kit/capture
+        run: npm run shots
+
+      - name: Open a PR with refreshed screenshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain deck-kit/shots)" ]; then echo "No changes."; exit 0; fi
+          branch="automation/deck-screenshots-${{ github.run_id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add deck-kit/shots
+          git commit -m "Refresh pitch-deck screenshots (automated)"
+          git push -u origin "$branch"
+          gh pr create --base "${{ github.ref_name }}" --head "$branch" \
+            --title "Refresh pitch-deck screenshots" \
+            --body "Auto-captured screenshots for deck-kit/."
