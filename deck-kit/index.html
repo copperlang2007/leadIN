@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pitch deck</title>
+<style>
+  :root{
+    --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono","Fira Code",Menlo,monospace;
+    --accent:#0d9488;--accent2:#38bdf8;
+    --bg:#0b1120;--panel:#111a2e;--ink:#e8eef7;--soft:#9fb0c9;--faint:#64748b;--border:#233149;
+    --pass:#34d399;--fail:#f87171;--warn:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:var(--font-sans);background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden}
+  .deck{height:100vh;width:100vw;position:relative}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:6vh 8vw;overflow:auto;
+    background:radial-gradient(1200px 600px at 80% -10%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 60%),
+               radial-gradient(900px 500px at -10% 110%, rgba(56,189,248,.14), transparent 55%), var(--bg);
+    animation:fade .35s ease}
+  .slide.active{display:flex}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .eyebrow{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:800}
+  h1{font-size:clamp(34px,6vw,68px);line-height:1.03;letter-spacing:-.025em;margin:.18em 0;font-weight:800}
+  h2{font-size:clamp(26px,3.6vw,44px);line-height:1.08;letter-spacing:-.02em;margin:.1em 0 .4em;font-weight:780}
+  h3{font-size:18px;margin:0 0 .3em;font-weight:700}
+  em{font-style:normal;background:linear-gradient(100deg,#5eead4,var(--accent) 45%,var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  p{font-size:clamp(15px,1.5vw,19px);line-height:1.55;color:var(--soft);margin:.4em 0;max-width:62ch}
+  .lead{font-size:clamp(18px,2vw,24px);color:var(--ink)}
+  .muted{color:var(--faint)}
+  strong,b{color:var(--ink);font-weight:700}
+  ul{margin:.4em 0;padding-left:0;list-style:none;max-width:66ch}
+  li{font-size:clamp(15px,1.5vw,19px);line-height:1.5;color:var(--soft);padding:7px 0 7px 30px;position:relative}
+  li::before{content:"";position:absolute;left:4px;top:15px;width:9px;height:9px;border-radius:3px;background:var(--accent)}
+  li.bad::before{background:var(--fail)}li.warn::before{background:var(--warn)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:36px;align-items:center}
+  .cols.lean{grid-template-columns:1.05fr .95fr}
+  .stack>*+*{margin-top:10px}
+  .pill{display:inline-flex;align-items:center;gap:8px;background:color-mix(in srgb,var(--accent) 14%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);color:#5eead4;font-weight:700;font-size:13px;padding:5px 12px;border-radius:999px;width:fit-content}
+  .kpis{display:flex;gap:30px;flex-wrap:wrap;margin-top:18px}
+  .kpi .n{font-size:clamp(28px,4vw,46px);font-weight:820;letter-spacing:-.02em;color:#fff}
+  .kpi .l{font-size:13px;color:var(--faint);font-weight:600}
+  .logo{display:inline-flex;align-items:center;gap:11px;font-weight:800;letter-spacing:-.02em;margin-bottom:22px;font-size:18px}
+  .logo .mark{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:#04201d;font-weight:900;
+    background:linear-gradient(135deg,#5eead4,var(--accent))}
+  .tags span{display:inline-block;font-size:12px;font-weight:700;color:var(--soft);border:1px solid var(--border);border-radius:999px;padding:3px 10px;margin:3px 6px 3px 0}
+  /* flow */
+  .flow{display:flex;align-items:stretch;gap:14px;flex-wrap:wrap;margin-top:10px}
+  .node{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;flex:1;min-width:150px}
+  .node .nt{font-weight:750;color:#fff;font-size:15px}.node .nd{color:var(--soft);font-size:12.5px;margin-top:4px}
+  .node.key{border-color:color-mix(in srgb,var(--accent) 45%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%,transparent) inset}
+  .node.stop{border-color:rgba(248,113,113,.4)}
+  .arrow{align-self:center;color:var(--accent);font-size:22px}
+  /* screenshot frame */
+  .shot{border-radius:14px;overflow:hidden;border:1px solid var(--border);box-shadow:0 30px 70px rgba(0,0,0,.5);background:#0e1726}
+  .shot .bar{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#0e1726;border-bottom:1px solid var(--border)}
+  .shot .bar i{width:11px;height:11px;border-radius:50%;background:#33425e}
+  .shot .bar i:nth-child(1){background:#ef5f5f}.shot .bar i:nth-child(2){background:#f6be4f}.shot .bar i:nth-child(3){background:#57c66a}
+  .shot .url{margin-left:10px;font-family:var(--font-mono);font-size:11px;color:#7f8ea8;background:#0b1322;padding:4px 12px;border-radius:6px;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .shot img{display:block;width:100%;height:auto}
+  .shot .ph{display:grid;place-items:center;min-height:300px;color:var(--faint);text-align:center;padding:30px;
+    background:repeating-linear-gradient(45deg,#0e1726,#0e1726 12px,#101c30 12px,#101c30 24px)}
+  .shot .ph b{color:var(--soft);display:block;font-size:14px;margin-bottom:4px}
+  /* roadmap */
+  .road{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:14px}
+  .road .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .road .when{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+  .road li{font-size:13px;padding:5px 0 5px 22px}.road li::before{top:12px;width:7px;height:7px}
+  /* cta */
+  .cmd{font-family:var(--font-mono);font-size:15px;background:#0b1322;border:1px solid var(--border);border-radius:10px;padding:14px 18px;color:#aee9df;white-space:pre-wrap;margin-top:14px;width:fit-content;max-width:100%}
+  .cmd b{color:#5eead4}
+  /* nav */
+  .nav{position:fixed;bottom:18px;right:24px;display:flex;gap:8px;z-index:20}
+  .nav button{background:var(--panel);border:1px solid var(--border);color:var(--ink);width:38px;height:34px;border-radius:8px;font-size:15px;cursor:pointer}
+  .nav button:hover{border-color:var(--accent)}
+  .count{position:fixed;bottom:24px;left:24px;font-size:12px;color:var(--faint);z-index:20;font-variant-numeric:tabular-nums}
+  .dots{position:fixed;top:18px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:20}
+  .dots i{width:7px;height:7px;border-radius:50%;background:var(--border);cursor:pointer;transition:.2s}
+  .dots i.on{background:var(--accent);width:20px;border-radius:4px}
+  .hint{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);color:var(--faint);font-size:11px;z-index:20}
+  .err{padding:8vh 8vw;color:var(--soft);font-family:var(--font-mono)}
+  @media (max-width:860px){.cols,.cols.lean{grid-template-columns:1fr}.road{grid-template-columns:1fr}}
+  @media print{body{overflow:visible}.slide{display:flex!important;position:relative;inset:auto;height:100vh;page-break-after:always;animation:none}.nav,.count,.dots,.hint{display:none}}
+</style>
+</head>
+<body>
+<div class="deck" id="deck"></div>
+<div class="dots" id="dots"></div>
+<div class="count" id="count"></div>
+<div class="hint">← → / Space · F fullscreen · P → PDF</div>
+<div class="nav"><button id="prev">‹</button><button id="next">›</button></div>
+
+<script src="deck.config.js"></script>
+<script>
+/* Generic, data-driven pitch-deck renderer. Content lives in deck.config.js
+   (window.DECK). Edit that file to retheme/repurpose for any project. */
+(function(){
+  const D = window.DECK;
+  const deck = document.getElementById('deck');
+  if(!D || !Array.isArray(D.slides)){
+    deck.innerHTML = '<div class="err">No deck.config.js found (expected window.DECK = { slides:[…] }).</div>';
+    return;
+  }
+  if(D.brand && D.brand.accent) document.documentElement.style.setProperty('--accent', D.brand.accent);
+  if(D.brand && D.brand.accent2) document.documentElement.style.setProperty('--accent2', D.brand.accent2);
+
+  const esc = s => (s==null?'':String(s));
+  const brandLogo = () => D.brand ? `<div class="logo"><span class="mark">${esc(D.brand.mark||'◆')}</span><span>${esc(D.brand.name||'')}</span></div>` : '';
+  const bullets = (arr=[]) => `<ul>${arr.map(b=>{const o=typeof b==='string'?{t:b}:b;return `<li class="${o.tone||''}">${esc(o.t)}</li>`}).join('')}</ul>`;
+  const kpis = (arr=[]) => arr.length?`<div class="kpis">${arr.map(k=>`<div class="kpi"><div class="n">${esc(k.n)}</div><div class="l">${esc(k.l)}</div></div>`).join('')}</div>`:'';
+  const head = s => `${s.eyebrow?`<div class="eyebrow">${esc(s.eyebrow)}</div>`:''}${s.title?`<h2>${esc(s.title)}</h2>`:''}`;
+
+  function frame(shot, caption){
+    const safe = String(shot||'').replace(/[^a-z0-9_-]/gi,'');
+    return `<div class="shot" data-shot="${safe}">
+      <div class="bar"><i></i><i></i><i></i><span class="url">${esc(caption||'')}</span></div>
+      <div class="ph"><div><b>${esc(safe||'screen')}.png</b>Run the screenshots workflow to drop a real capture here.</div></div>
+    </div>`;
+  }
+
+  const R = {
+    title: s => `${brandLogo()}${s.eyebrow?`<div class="eyebrow">${esc(s.eyebrow)}</div>`:''}<h1>${esc(s.title)}</h1>${s.lead?`<p class="lead" style="margin-top:14px">${esc(s.lead)}</p>`:''}${kpis(s.kpis)}${s.pill?`<span class="pill" style="margin-top:24px">${esc(s.pill)}</span>`:''}`,
+    statement: s => `${head(s)}${s.lead?`<p class="lead">${esc(s.lead)}</p>`:''}${s.sub?`<p>${esc(s.sub)}</p>`:''}`,
+    bullets: s => `${head(s)}${s.aside?`<div class="cols lean"><div>${bullets(s.bullets)}</div><div class="stack">${s.aside.pill?`<span class="pill">${esc(s.aside.pill)}</span>`:''}${s.aside.lead?`<p class="lead">${esc(s.aside.lead)}</p>`:''}${s.aside.text?`<p>${esc(s.aside.text)}</p>`:''}</div></div>`:bullets(s.bullets)}`,
+    split: s => `${head(s)}<div class="cols">${[s.left,s.right].map((c,idx)=>`<div class="stack">${c.heading?`<h3 style="color:${idx?'var(--fail)':'var(--accent)'}">${esc(c.heading)}</h3>`:''}${bullets(c.bullets)}${c.muted?`<p class="muted">${esc(c.muted)}</p>`:''}</div>`).join('')}</div>`,
+    flow: s => `${head(s)}<div class="flow">${(s.nodes||[]).map((n,i)=>`${i?'<div class="arrow">→</div>':''}<div class="node ${n.kind||''}"><div class="nt">${esc(n.t)}</div><div class="nd">${esc(n.d)}</div></div>`).join('')}</div>${s.note?`<p style="margin-top:18px">${esc(s.note)}</p>`:''}`,
+    screen: s => `${head(s)}<div class="cols ${s.wide?'':'lean'}">${frame(s.shot,s.caption)}<div class="stack">${s.lead?`<p class="lead">${esc(s.lead)}</p>`:''}${bullets(s.points)}</div></div>`,
+    roadmap: s => `${head(s)}<div class="road">${(s.columns||[]).map(c=>`<div class="col"><div class="when" style="color:${c.color||'#5eead4'}">${esc(c.when)}</div>${bullets(c.items)}</div>`).join('')}</div>`,
+    cta: s => `${brandLogo()}${s.eyebrow?`<div class="eyebrow">${esc(s.eyebrow)}</div>`:''}<h1>${esc(s.title)}</h1>${(s.cmd||[]).map(c=>`<div class="cmd">${c}</div>`).join('')}${bullets(s.points)}${s.lead?`<p class="lead" style="margin-top:16px">${esc(s.lead)}</p>`:''}`
+  };
+
+  D.slides.forEach(s=>{
+    const el=document.createElement('section'); el.className='slide';
+    el.innerHTML=(R[s.type]||R.statement)(s);
+    deck.appendChild(el);
+  });
+
+  const slides=[...document.querySelectorAll('.slide')];
+  const dots=document.getElementById('dots'); let i=0;
+  slides.forEach((_,n)=>{const d=document.createElement('i');d.onclick=()=>go(n);dots.appendChild(d);});
+  const pad=n=>String(n).padStart(2,'0');
+  function go(n){i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    [...dots.children].forEach((d,k)=>d.classList.toggle('on',k===i));
+    document.getElementById('count').textContent=`${pad(i+1)} / ${pad(slides.length)}`;}
+  document.getElementById('next').onclick=()=>go(i+1);
+  document.getElementById('prev').onclick=()=>go(i-1);
+  addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();go(i+1);}
+    else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();go(i-1);}
+    else if(e.key==='Home')go(0); else if(e.key==='End')go(slides.length-1);
+    else if(e.key.toLowerCase()==='f'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();}
+    else if(e.key.toLowerCase()==='p')window.print();
+  });
+  // Swap placeholder frames for real screenshots when present.
+  document.querySelectorAll('.shot[data-shot]').forEach(shot=>{
+    const name=shot.getAttribute('data-shot'); if(!name) return;
+    const probe=new Image();
+    probe.onload=()=>{const ph=shot.querySelector('.ph');if(ph)ph.remove();
+      const img=document.createElement('img');img.src=probe.src;img.alt=name;shot.appendChild(img);};
+    probe.src='shots/'+name+'.png';
+  });
+  go(0);
+})();
+</script>
+</body>
+</html>
