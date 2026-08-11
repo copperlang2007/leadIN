@@ -1,0 +1,12 @@
+{
+  "name": "deck-kit-capture",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Screenshot capture for the pitch-deck kit.",
+  "scripts": {
+    "shots": "playwright test -c playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}
