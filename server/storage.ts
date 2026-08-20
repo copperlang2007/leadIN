@@ -390,6 +390,12 @@ export interface IStorage {
   ): Promise<{ outcome: LeadOutcome; firstReport: boolean }>;
   getOutcomesByOrderIds(orderIds: number[]): Promise<Record<number, LeadOutcome>>;
 
+  // Session-to-caller binding: true when the tracker session has posted at
+  // least one behavioral event from this IP. Gates /api/quote's session
+  // linking so a stolen session id can't graft a victim's behavioral events
+  // onto an attacker's lead.
+  sessionSeenFromIp(sessionId: string, ip: string): Promise<boolean>;
+
   // ──── Wave 13: vendor trust enforcement ────
   // Recompute a vendor's enforcement status from windowed dispute stats and
   // persist it when it changed. Fired post-commit on dispute resolution.
@@ -1441,6 +1447,15 @@ export class DatabaseStorage implements IStorage {
     const map: Record<number, LeadOutcome> = {};
     for (const row of rows) map[row.orderId] = row;
     return map;
+  }
+
+  async sessionSeenFromIp(sessionId: string, ip: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: behavioralEvents.id })
+      .from(behavioralEvents)
+      .where(and(eq(behavioralEvents.sessionId, sessionId), eq(behavioralEvents.ip, ip)))
+      .limit(1);
+    return !!row;
   }
 
   async applyVendorEnforcement(vendorId: number): Promise<EnforcementDecision> {

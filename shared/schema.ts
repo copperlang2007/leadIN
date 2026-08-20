@@ -555,6 +555,9 @@ export const behavioralEvents = pgTable("behavioral_events", {
   index("idx_events_lead").on(table.leadId),
   index("idx_events_type").on(table.eventType),
   index("idx_events_created").on(table.createdAt),
+  // Backs sessionSeenFromIp — the /api/quote session-binding check filters on
+  // (session_id, ip) for every quote that carries a session id.
+  index("idx_events_session_ip").on(table.sessionId, table.ip),
 ]);
 
 // Content articles for the autonomous content engine
