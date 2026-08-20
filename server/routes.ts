@@ -179,6 +179,11 @@ export async function adminHealthHandler(req: any, res: any) {
   }
 }
 
+// How long after ingest to re-fold late behavioral events into the persisted
+// MediScore of a session-linked lead. 90s comfortably covers unload-fired
+// dwell/scroll events arriving right after the quote submits.
+const LATE_BEHAVIOR_RECOMPUTE_MS = 90_000;
+
 function stripPII(lead: any) {
   const {
     consumerName: _name,
@@ -355,6 +360,22 @@ async function ingestLeadForVendor(
   });
 
   await recomputeAndPersistMediScore(lead.id).catch(err => logError("[mediscore] init error:", err));
+
+  // Late-behavior recompute: for session-linked (first-party) leads, the
+  // visitor's tail-end events — time_on_page fires on unload, final scroll
+  // depth, post-submit CTA clicks — land AFTER ingest, and nothing else
+  // refreshes the persisted score (the /api/events/track recompute needs a
+  // leadId the public quote page never has). One deferred recompute folds the
+  // tail into leads.mediscore, which is what smart-match ranking and pricing
+  // read. Best-effort and unref'd: a restart just leaves the ingest-time score.
+  if (opts?.sessionId) {
+    const timer = setTimeout(() => {
+      recomputeAndPersistMediScore(lead.id).catch(err =>
+        logError("[mediscore] late-behavior recompute error:", err),
+      );
+    }, LATE_BEHAVIOR_RECOMPUTE_MS);
+    timer.unref?.();
+  }
 
   broadcastNewLead({
     id: lead.id,
@@ -1392,6 +1413,20 @@ export async function registerRoutes(
             consumerEmail: b.email ? String(b.email) : undefined,
           });
           if (parsed.success) {
+            // Session-to-caller binding: only link the tracker session when it
+            // has posted at least one behavioral event from THIS caller's IP
+            // (same derivation as /api/events/track stores). Without this, a
+            // stolen session id grafts the victim's dwell/scroll/CTA events —
+            // up to +16 MediScore — onto the attacker's lead. An unbound or
+            // malformed id is dropped, never fatal: the lead still captures,
+            // it just earns no behavioral signals.
+            let boundSessionId: string | undefined;
+            if (sessionIdSchema.safeParse(b.sessionId).success) {
+              const trackIp = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+              if (await storage.sessionSeenFromIp(String(b.sessionId), trackIp)) {
+                boundSessionId = String(b.sessionId);
+              }
+            }
             // Only report capture when ingestion actually succeeds (201).
             try {
               // First-party consent evidence: the consumer checked the TCPA
@@ -1404,12 +1439,7 @@ export async function registerRoutes(
                 parsed.data,
                 {
                   firstParty: true,
-                  // Shared validator with the event-tracking endpoint; a
-                  // malformed id is dropped rather than rejected — the lead
-                  // still captures, it just earns no behavioral signals.
-                  sessionId: sessionIdSchema.safeParse(b.sessionId).success
-                    ? (b.sessionId as string)
-                    : undefined,
+                  sessionId: boundSessionId,
                   consent: {
                     timestamp: new Date(),
                     ip: quoteIp === "unknown" ? undefined : String(quoteIp).slice(0, 45),
