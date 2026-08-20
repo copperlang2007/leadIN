@@ -666,8 +666,14 @@ export type CmsPlanSignal = typeof cmsPlanSignals.$inferSelect;
 export type InsertBehavioralEvent = typeof behavioralEvents.$inferInsert;
 export type BehavioralEvent = typeof behavioralEvents.$inferSelect;
 
+// Single source of truth for tracker session-id shape (client tracker emits
+// `s_` + 24 hex, or `s_` + base36 fallback — both fit). Used by the event
+// tracking endpoint and by /api/quote when linking a lead to its session, so
+// the two can never drift.
+export const sessionIdSchema = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, "invalid session id");
+
 export const trackEventSchema = z.object({
-  sessionId: z.string().min(8).max(64),
+  sessionId: sessionIdSchema,
   leadId: z.number().int().optional(),
   eventType: z.enum(["page_view", "scroll_depth", "time_on_page", "tool_interaction", "cta_click"]),
   path: z.string().max(500).optional(),

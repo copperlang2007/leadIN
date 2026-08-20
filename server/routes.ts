@@ -11,6 +11,7 @@ import {
   subscriptionCheckoutSchema,
   createDisputeSchema,
   reportOutcomeSchema,
+  sessionIdSchema,
 } from "@shared/schema";
 import { QUOTE_TCPA_DISCLOSURE } from "@shared/consent";
 import { normalizePhone, assessEmail } from "./leadValidation";
@@ -1403,13 +1404,12 @@ export async function registerRoutes(
                 parsed.data,
                 {
                   firstParty: true,
-                  // Same shape + bounds as trackEventSchema's sessionId; a
+                  // Shared validator with the event-tracking endpoint; a
                   // malformed id is dropped rather than rejected — the lead
                   // still captures, it just earns no behavioral signals.
-                  sessionId:
-                    typeof b.sessionId === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(b.sessionId)
-                      ? b.sessionId
-                      : undefined,
+                  sessionId: sessionIdSchema.safeParse(b.sessionId).success
+                    ? (b.sessionId as string)
+                    : undefined,
                   consent: {
                     timestamp: new Date(),
                     ip: quoteIp === "unknown" ? undefined : String(quoteIp).slice(0, 45),
