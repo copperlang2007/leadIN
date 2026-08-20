@@ -11,6 +11,7 @@ import {
   subscriptionCheckoutSchema,
   createDisputeSchema,
   reportOutcomeSchema,
+  sessionIdSchema,
 } from "@shared/schema";
 import { QUOTE_TCPA_DISCLOSURE } from "@shared/consent";
 import { normalizePhone, assessEmail } from "./leadValidation";
@@ -213,6 +214,12 @@ async function ingestLeadForVendor(
     consent?: { timestamp: Date; ip?: string; userAgent?: string; disclosureText?: string; sourceUrl?: string };
     /** True when the platform originated the lead (not a vendor submission). */
     firstParty?: boolean;
+    /**
+     * Tracker session id from the source form, linking the visitor's
+     * behavioral events to the lead (MediScore behavior_* signals).
+     * First-party only — vendor-supplied session ids would be meaningless.
+     */
+    sessionId?: string;
   },
 ): Promise<{ status: number; body: any }> {
   // Trust enforcement gate: suspended vendors can't ingest at all; throttled
@@ -344,6 +351,7 @@ async function ingestLeadForVendor(
     consentDisclosureText: consentEvidence?.disclosureText ?? null,
     consentSourceUrl: consentEvidence?.sourceUrl ?? null,
     firstParty: opts?.firstParty ?? false,
+    sessionId: opts?.sessionId ?? null,
   });
 
   await recomputeAndPersistMediScore(lead.id).catch(err => logError("[mediscore] init error:", err));
@@ -1396,6 +1404,12 @@ export async function registerRoutes(
                 parsed.data,
                 {
                   firstParty: true,
+                  // Shared validator with the event-tracking endpoint; a
+                  // malformed id is dropped rather than rejected — the lead
+                  // still captures, it just earns no behavioral signals.
+                  sessionId: sessionIdSchema.safeParse(b.sessionId).success
+                    ? (b.sessionId as string)
+                    : undefined,
                   consent: {
                     timestamp: new Date(),
                     ip: quoteIp === "unknown" ? undefined : String(quoteIp).slice(0, 45),
