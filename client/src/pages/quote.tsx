@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { ShieldCheck, Sparkles } from "lucide-react";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { QUOTE_TCPA_DISCLOSURE } from "@shared/consent";
+import { getTrackerSessionId } from "@/lib/tracker";
 
 interface QuoteResult {
   eligible: boolean;
@@ -64,6 +65,10 @@ export default function Quote() {
         email: form.email || undefined,
         consent: form.consent,
         utmSource,
+        // Tracker session id: links this visitor's behavioral events (dwell,
+        // scroll, CTA clicks) to the captured lead so first-party leads earn
+        // the behavioral MediScore signals vendor leads can't.
+        sessionId: getTrackerSessionId(),
       });
       setResult((await res.json()) as QuoteResult);
     } catch (e: any) {
