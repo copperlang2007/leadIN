@@ -180,9 +180,10 @@ export async function adminHealthHandler(req: any, res: any) {
 }
 
 // How long after ingest to re-fold late behavioral events into the persisted
-// MediScore of a session-linked lead. 90s comfortably covers unload-fired
-// dwell/scroll events arriving right after the quote submits.
-const LATE_BEHAVIOR_RECOMPUTE_MS = 90_000;
+// MediScore of a session-linked lead. Default 90s comfortably covers
+// unload-fired dwell/scroll events arriving right after the quote submits;
+// env-tunable for environments with slower event delivery.
+const LATE_BEHAVIOR_RECOMPUTE_MS = Number(process.env.LATE_BEHAVIOR_RECOMPUTE_MS) || 90_000;
 
 function stripPII(lead: any) {
   const {
@@ -1422,7 +1423,10 @@ export async function registerRoutes(
             // it just earns no behavioral signals.
             let boundSessionId: string | undefined;
             if (sessionIdSchema.safeParse(b.sessionId).success) {
-              const trackIp = String(req.ip ?? req.socket?.remoteAddress ?? "0.0.0.0").slice(0, 64);
+              // Same source as quoteIp (single derivation), reshaped to the
+              // exact format /api/events/track stores: "0.0.0.0" fallback,
+              // 64-char cap.
+              const trackIp = (quoteIp === "unknown" ? "0.0.0.0" : String(quoteIp)).slice(0, 64);
               if (await storage.sessionSeenFromIp(String(b.sessionId), trackIp)) {
                 boundSessionId = String(b.sessionId);
               }

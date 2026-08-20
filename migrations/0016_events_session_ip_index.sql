@@ -1,0 +1,1 @@
+CREATE INDEX "idx_events_session_ip" ON "behavioral_events" USING btree ("session_id","ip");
