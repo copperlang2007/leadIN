@@ -174,12 +174,15 @@ export function startSeoSignalCron(): void {
 
   // Warm the table on startup if it's empty. Wrap in an advisory lock so only
   // one instance does the seed when multi-process deploys boot together.
-  (async () => {
+  // Best-effort warm: a failure here (including one from the lock query
+  // itself) must never reject unhandled and kill a process that is already
+  // serving traffic.
+  void (async () => {
     await withAdvisoryLock("seo-bootstrap", async () => {
       const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(keywordSignals);
       if (!row || Number(row.c ?? 0) === 0) {
         await refreshKeywordSignals().catch(err => logError("[seo] warm failed:", err));
       }
     });
-  })();
+  })().catch(err => logError("[seo] warm failed:", err));
 }

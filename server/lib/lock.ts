@@ -30,11 +30,19 @@ export async function withAdvisoryLock<T>(
   fn: () => Promise<T>,
 ): Promise<T | null> {
   const key = lockKey(name);
-  const [row] = await db.execute<{ ok: boolean }>(
+  // `db.execute()` returns the driver's result object (node-postgres
+  // `Result`, with the rows under `.rows`) — not an array. Older drizzle
+  // releases handed back the row array directly, so normalize both shapes
+  // here rather than destructuring: array-destructuring a `Result` throws
+  // `(intermediate value) is not iterable`, which at boot took the whole
+  // process down before it could serve a request.
+  const result: unknown = await db.execute<{ ok: boolean }>(
     sql`SELECT pg_try_advisory_lock(${sql.raw(key.toString())}) AS ok`,
-  ) as any as Array<{ ok: boolean }>;
-  const rows = Array.isArray(row) ? row : (row as any)?.rows ?? [row];
-  const acquired = rows?.[0]?.ok === true;
+  );
+  const rows: Array<{ ok: boolean }> = Array.isArray(result)
+    ? (result as Array<{ ok: boolean }>)
+    : ((result as { rows?: Array<{ ok: boolean }> } | null)?.rows ?? []);
+  const acquired = rows[0]?.ok === true;
   if (!acquired) return null;
   try {
     return await fn();

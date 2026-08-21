@@ -165,9 +165,12 @@ export function startCmsSignalCron(): void {
 
   // Bootstrap load on startup — gated behind an advisory lock so only one
   // instance does the seed when multi-process deploys boot together.
-  (async () => {
+  // The seed is best-effort: a failure here (including one from the lock
+  // query itself) must never reject unhandled and kill a process that is
+  // already serving traffic.
+  void (async () => {
     await withAdvisoryLock("cms-bootstrap", async () => {
       await refreshCmsPlanSignals().catch(err => logError("[cms] startup load failed:", err));
     });
-  })();
+  })().catch(err => logError("[cms] startup load failed:", err));
 }
