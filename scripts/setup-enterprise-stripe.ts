@@ -1,4 +1,7 @@
-import "dotenv/config";
+// No `import "dotenv/config"` — dotenv is not a dependency of this repo,
+// so importing it made this script fail at startup with MODULE_NOT_FOUND.
+// Pass the key inline instead:
+//   STRIPE_SECRET_KEY=sk_... npx tsx scripts/setup-enterprise-stripe.ts
 import Stripe from "stripe";
 
 const secret = process.env.STRIPE_SECRET_KEY;
