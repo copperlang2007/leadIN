@@ -108,6 +108,51 @@ export function validateEnv(
     warnings.push("REDIS_URL unset — rate limiter will fall back to in-memory (not safe across instances).");
   }
 
+  // Neon Auth (Stack). These are deliberately NOT requiredInProd:
+  // server/neonAuth.ts documents "unset = auth off" as the dev/CI posture, and
+  // making them hard requirements would change that contract. But a production
+  // deploy where the sign-in handshake is dead boots perfectly green and looks
+  // healthy, so silence here is the wrong default. Warn instead, naming the
+  // user-visible consequence.
+  //
+  // Both VITE_-prefixed values are baked into the client bundle at build time,
+  // so setting them only at runtime is not enough: the host must have them
+  // present for the build that produces the bundle.
+  if (isProd) {
+    const hasProjectId = isPresent(env.VITE_STACK_PROJECT_ID);
+    const hasClientKey = isPresent(env.VITE_STACK_PUBLISHABLE_CLIENT_KEY);
+
+    // client/src/lib/stack.ts gates on `projectId && publishableClientKey`, so
+    // ANY missing value leaves stackClientApp null and /auth showing a config
+    // notice. There is no half-configured state where sign-in renders — the
+    // difference between these branches is only what else is broken behind it.
+    if (!hasProjectId && !hasClientKey) {
+      warnings.push(
+        "VITE_STACK_PROJECT_ID and VITE_STACK_PUBLISHABLE_CLIENT_KEY unset — Neon Auth is off: " +
+          "/auth shows a config notice, POST /api/auth/session returns 503, and every guarded route 401s. " +
+          "No one can sign in to this deployment.",
+      );
+    } else if (!hasProjectId) {
+      warnings.push(
+        "VITE_STACK_PROJECT_ID unset while VITE_STACK_PUBLISHABLE_CLIENT_KEY is set — the client SDK needs " +
+          "both values, so it is null and /auth shows a config notice. POST /api/auth/session would also " +
+          "return 503, since the JWKS URL is derived from the project id. No one can sign in.",
+      );
+    } else if (!hasClientKey) {
+      warnings.push(
+        "VITE_STACK_PUBLISHABLE_CLIENT_KEY unset while VITE_STACK_PROJECT_ID is set — the client SDK needs " +
+          "both values, so it is null and /auth shows a config notice. No one can sign in.",
+      );
+    } else if (!isPresent(env.STACK_SECRET_SERVER_KEY)) {
+      // Degraded rather than broken, so it warns only once sign-in actually
+      // works — same shape as the SENTRY_DSN warning above.
+      warnings.push(
+        "STACK_SECRET_SERVER_KEY unset — Neon Auth profile enrichment is silently disabled: user rows fall " +
+          "back to access-token claims, so name and avatar stay empty. Sign-in itself still works.",
+      );
+    }
+  }
+
   return { ok: missing.length === 0, isProd, ruleCount: rules.length, missing, warnings };
 }
 
