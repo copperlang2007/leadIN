@@ -22,6 +22,7 @@ function fullProd(): NodeJS.ProcessEnv {
     REDIS_URL: "redis://x",
     VITE_STACK_PROJECT_ID: "proj_x",
     VITE_STACK_PUBLISHABLE_CLIENT_KEY: "pck_x",
+    STACK_SECRET_SERVER_KEY: "ssk_x",
   } as NodeJS.ProcessEnv;
 }
 
@@ -86,21 +87,48 @@ describe("envValidation — Neon Auth (Stack) warnings", () => {
     expect(w[0]).toMatch(/No one can sign in/i);
   });
 
-  it("calls out the half-configured case: client key set, project id missing", () => {
+  // client/src/lib/stack.ts gates on `projectId && publishableClientKey`, so
+  // neither half-configured state renders a sign-in form. An earlier version of
+  // this warning claimed the opposite; these pin the real outcome.
+  it("half-configured (client key set, project id missing) reports the config notice, not a working form", () => {
     const env = fullProd();
     delete env.VITE_STACK_PROJECT_ID;
     const w = authWarnings(env);
     expect(w).toHaveLength(1);
-    // Sign-in renders and appears to work; only the server exchange fails.
+    expect(w[0]).toMatch(/config notice/i);
+    expect(w[0]).toMatch(/No one can sign in/i);
+    // The server exchange is broken too — the JWKS URL derives from the project id.
     expect(w[0]).toMatch(/503/);
+    expect(w[0]).not.toMatch(/sign-in will render/i);
   });
 
-  it("calls out the reverse half-configured case: project id set, client key missing", () => {
+  it("half-configured (project id set, client key missing) also reports the config notice", () => {
     const env = fullProd();
     delete env.VITE_STACK_PUBLISHABLE_CLIENT_KEY;
     const w = authWarnings(env);
     expect(w).toHaveLength(1);
-    expect(w[0]).toMatch(/client SDK is null/i);
+    expect(w[0]).toMatch(/config notice/i);
+    expect(w[0]).toMatch(/No one can sign in/i);
+  });
+
+  it("warns that profile enrichment is off when only STACK_SECRET_SERVER_KEY is missing", () => {
+    const env = fullProd();
+    delete env.STACK_SECRET_SERVER_KEY;
+    const w = authWarnings(env);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/STACK_SECRET_SERVER_KEY/);
+    // Degraded, not broken — the message must not imply sign-in is down.
+    expect(w[0]).toMatch(/Sign-in itself still works/i);
+  });
+
+  it("reports only the sign-in blocker when the server key is missing too — no double warning", () => {
+    const env = fullProd();
+    delete env.VITE_STACK_PROJECT_ID;
+    delete env.VITE_STACK_PUBLISHABLE_CLIENT_KEY;
+    delete env.STACK_SECRET_SERVER_KEY;
+    const w = authWarnings(env);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/Neon Auth is off/i);
   });
 
   it("stays quiet outside production — unset auth is the documented dev/CI posture", () => {
