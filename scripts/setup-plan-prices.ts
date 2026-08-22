@@ -42,11 +42,13 @@ const TIERS = [
 ] as const;
 
 // The events server/routes.ts actually handles at POST /api/stripe/webhook.
-const WEBHOOK_EVENTS: Stripe.WebhookEndpointCreateParams.EnabledEvent[] = [
+// An endpoint that does not deliver all three leaves subscription state stale,
+// so this list is enforced on reuse as well as on creation.
+const WEBHOOK_EVENTS = [
   "checkout.session.completed",
   "customer.subscription.updated",
   "customer.subscription.deleted",
-];
+] as const;
 
 const APP = "lead-connect-pro";
 
@@ -68,7 +70,10 @@ async function findPrice(productId: string, monthlyCents: number): Promise<Strip
       price.active &&
       price.currency === "usd" &&
       price.unit_amount === monthlyCents &&
-      price.recurring?.interval === "month"
+      price.recurring?.interval === "month" &&
+      // Without this, a quarterly price (interval "month", interval_count 3)
+      // at the same amount would be reused as if it billed monthly.
+      price.recurring?.interval_count === 1
     ) {
       return price;
     }
@@ -104,16 +109,38 @@ async function provisionTier(tier: (typeof TIERS)[number]): Promise<string> {
 
 async function provisionWebhook(url: string): Promise<string | null> {
   for await (const endpoint of stripe.webhookEndpoints.list({ limit: 100 })) {
-    if (endpoint.url === url && endpoint.status === "enabled") {
-      console.error(`  endpoint already exists: ${endpoint.id}`);
-      // Stripe returns the signing secret only when the endpoint is created,
-      // so an existing endpoint's secret has to come from the dashboard.
-      return null;
+    if (endpoint.url !== url || endpoint.status !== "enabled") continue;
+
+    // An endpoint at this URL may predate this script or belong to another
+    // integration. Reusing it blindly is how subscription events go missing:
+    // Stripe simply does not deliver what the endpoint has not subscribed to.
+    // "*" means every event, so nothing is missing in that case.
+    const subscribed = new Set(endpoint.enabled_events);
+    const missing = subscribed.has("*")
+      ? []
+      : WEBHOOK_EVENTS.filter((event) => !subscribed.has(event));
+
+    if (missing.length > 0) {
+      await stripe.webhookEndpoints.update(endpoint.id, {
+        enabled_events: [
+          ...new Set([...endpoint.enabled_events, ...WEBHOOK_EVENTS]),
+        ] as Stripe.WebhookEndpointUpdateParams.EnabledEvent[],
+      });
+      console.error(
+        `  endpoint ${endpoint.id} existed but was missing ${missing.join(", ")} — added`,
+      );
+    } else {
+      console.error(`  endpoint already exists and covers every required event: ${endpoint.id}`);
     }
+
+    // Stripe returns the signing secret only when the endpoint is created,
+    // so an existing endpoint's secret has to come from the dashboard.
+    return null;
   }
+
   const endpoint = await stripe.webhookEndpoints.create({
     url,
-    enabled_events: WEBHOOK_EVENTS,
+    enabled_events: [...WEBHOOK_EVENTS] as Stripe.WebhookEndpointCreateParams.EnabledEvent[],
     metadata: { app: APP },
   });
   console.error(`  created endpoint ${endpoint.id} for ${url}`);
