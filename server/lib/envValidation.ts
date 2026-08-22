@@ -108,6 +108,41 @@ export function validateEnv(
     warnings.push("REDIS_URL unset — rate limiter will fall back to in-memory (not safe across instances).");
   }
 
+  // Neon Auth (Stack). These are deliberately NOT requiredInProd: server/neonAuth.ts
+  // documents "unset = auth off" as the dev/CI posture, and making them hard
+  // requirements would change that contract. But a production deploy where the
+  // sign-in handshake is dead boots perfectly green and looks healthy — the
+  // exchange endpoint just 503s and every guarded route 401s — so silence here
+  // is the wrong default. Warn instead, naming the user-visible consequence.
+  //
+  // Both VITE_-prefixed values are baked into the client bundle at build time,
+  // so setting them only at runtime is not enough: the host must have them
+  // present for the build that produces the bundle.
+  if (isProd) {
+    const hasProjectId = isPresent(env.VITE_STACK_PROJECT_ID);
+    const hasClientKey = isPresent(env.VITE_STACK_PUBLISHABLE_CLIENT_KEY);
+    if (!hasProjectId && !hasClientKey) {
+      warnings.push(
+        "VITE_STACK_PROJECT_ID and VITE_STACK_PUBLISHABLE_CLIENT_KEY unset — Neon Auth is off: " +
+          "/auth shows a config notice, POST /api/auth/session returns 503, and every guarded route 401s. " +
+          "No one can sign in to this deployment.",
+      );
+    } else if (!hasProjectId) {
+      // Half-configured is the insidious case: the SPA renders a working
+      // sign-in form, the user authenticates with Stack, and only the
+      // server-side exchange fails.
+      warnings.push(
+        "VITE_STACK_PROJECT_ID unset while VITE_STACK_PUBLISHABLE_CLIENT_KEY is set — sign-in will render " +
+          "but POST /api/auth/session returns 503, so no session is ever created.",
+      );
+    } else if (!hasClientKey) {
+      warnings.push(
+        "VITE_STACK_PUBLISHABLE_CLIENT_KEY unset while VITE_STACK_PROJECT_ID is set — the client SDK is null, " +
+          "so /auth renders a config notice and no sign-in is possible.",
+      );
+    }
+  }
+
   return { ok: missing.length === 0, isProd, ruleCount: rules.length, missing, warnings };
 }
 
