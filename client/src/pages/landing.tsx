@@ -142,7 +142,7 @@ export default function Landing() {
               <Button
                 size="lg"
                 className="text-lg px-8 py-6 shadow-xl hover:shadow-2xl transition-shadow"
-                onClick={() => (window.location.href = "/api/login")}
+                onClick={() => (navigate("/auth"))}
                 data-track-cta="landing-get-started-hero"
               >
                 Get Started Free
@@ -313,7 +313,7 @@ export default function Landing() {
           <Button
             size="lg"
             className="text-lg px-8 py-6"
-            onClick={() => (window.location.href = "/api/login")}
+            onClick={() => (navigate("/auth"))}
             data-track-cta="landing-get-started-footer"
           >
             Get Started Free

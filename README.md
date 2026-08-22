@@ -5,10 +5,10 @@ LeadMarket is a multi-tenant marketplace for verified insurance leads. Vendors s
 ## Stack
 
 - **Frontend** — React 19 + Vite, wouter, TanStack Query, Tailwind 4, Radix primitives
-- **Backend** — Express 4 (ESM) on Node 20, Passport (local + Replit OIDC)
+- **Backend** — Express 4 (ESM) on Node 20
 - **Database** — Postgres 16 + Drizzle ORM (`drizzle-kit` migrations)
 - **Payments** — Stripe (per-lead wallet, subscription tiers, webhooks)
-- **Auth** — Replit OIDC in production, local password in dev
+- **Auth** — Neon Auth (Stack) — SPA sign-in exchanged for a PG-backed server session
 - **Optional** — Redis (distributed mode), SendGrid/Resend (email), Google Search Console + DataForSEO (SEO signals)
 
 ## Quickstart

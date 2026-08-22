@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
+import { setupAuth, isAuthenticated } from "./neonAuth";
 import { addToComparison, removeFromComparison } from "./leadComparison";
 import {
   insertUserProfileSchema,
@@ -4115,7 +4115,7 @@ export async function registerRoutes(
   app.get("/sitemap.xml", async (_req, res) => {
     try {
       const articles = await storage.getContentArticles(true);
-      const baseUrl = process.env.APP_URL || "https://leadmarket.replit.app";
+      const baseUrl = process.env.APP_URL || "https://leadmarket.app";
 
       type SitemapUrl = { loc: string; priority: string; changefreq: string; lastmod?: string };
       const staticUrls: SitemapUrl[] = [

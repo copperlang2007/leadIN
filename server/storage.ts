@@ -141,7 +141,7 @@ import { computeTrustSignal, type VendorTrustStats } from "./vendorTrust";
 import { MAX_TRUST_VENDOR_IDS } from "@shared/constants";
 
 export interface IStorage {
-  // User operations (mandatory for Replit Auth)
+  // User operations (auth user upsert + lookup)
   getUser(id: string): Promise<User | undefined>;
   upsertUser(user: UpsertUser): Promise<User>;
 
@@ -563,7 +563,7 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  // User operations (mandatory for Replit Auth)
+  // User operations (auth user upsert + lookup)
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;

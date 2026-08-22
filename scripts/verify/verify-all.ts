@@ -7,7 +7,7 @@
 //
 // Use before promoting a build to a real prod environment.
 
-import { verifyOidc } from "./verify-oidc";
+import { verifyNeonAuth } from "./verify-neon-auth";
 import { verifyStripe } from "./verify-stripe";
 import { verifyTwilio } from "./verify-twilio";
 import { verifyNipr } from "./verify-nipr";
@@ -18,7 +18,7 @@ import { formatResult, type VerifyResult } from "./_shared";
 async function runAll(): Promise<void> {
   console.log("Running external-service verifications…\n");
   const probes: Array<() => Promise<VerifyResult>> = [
-    verifyOidc,
+    verifyNeonAuth,
     verifyStripe,
     verifyTwilio,
     verifyNipr,
