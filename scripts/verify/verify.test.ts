@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { verifyOidc } from "./verify-oidc";
+import { verifyNeonAuth } from "./verify-neon-auth";
 import { verifyStripe } from "./verify-stripe";
 import { verifyTwilio } from "./verify-twilio";
 import { verifyNipr } from "./verify-nipr";
@@ -30,10 +30,10 @@ function withClearedEnv<T extends (...args: any[]) => any>(
 }
 
 describe("verify probes — offline skip paths", () => {
-  it("verifyOidc skips when ISSUER_URL is unset", async () => {
-    const r = await withClearedEnv(["ISSUER_URL"], () => verifyOidc());
+  it("verifyNeonAuth skips when VITE_STACK_PROJECT_ID is unset", async () => {
+    const r = await withClearedEnv(["VITE_STACK_PROJECT_ID"], () => verifyNeonAuth());
     expect(r.outcome).toBe("skip");
-    expect(r.service).toBe("oidc");
+    expect(r.service).toBe("neon-auth");
   });
 
   it("verifyStripe skips when STRIPE_SECRET_KEY is unset", async () => {

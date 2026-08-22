@@ -192,7 +192,7 @@ export default function SettingsPage() {
       return res.json();
     },
     onSuccess: () => {
-      // Server already destroyed the session; bounce through OIDC logout.
+      // Server already destroyed the session; bounce through the logout redirect (also clears the Neon Auth client cookies).
       window.location.href = "/api/logout";
     },
     onError: (err: Error) => {
@@ -339,7 +339,7 @@ export default function SettingsPage() {
               Account
             </CardTitle>
             <CardDescription>
-              Your account details are managed via Replit authentication.
+              Your account details are managed via Neon Auth.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -451,7 +451,7 @@ export default function SettingsPage() {
               <div>
                 <p className="text-sm font-medium">Current Session</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Authenticated via Replit — session is encrypted and server-side.
+                  Authenticated via Neon Auth — session is encrypted and server-side.
                 </p>
               </div>
               <Badge variant="secondary" className="gap-1 text-xs shrink-0">

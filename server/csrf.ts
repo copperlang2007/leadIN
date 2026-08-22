@@ -21,10 +21,6 @@ const HEADER_NAME = "x-csrf-token";
 const EXEMPT_PATHS = new Set<string>([
   "/api/stripe/webhook",
   "/api/v1/leads/ingest",
-  // The login flow is OAuth-redirect-based; the callback comes back to GET.
-  "/api/login",
-  "/api/callback",
-  "/api/logout",
 ]);
 
 function parseCookieHeader(header: string | undefined): Record<string, string> {

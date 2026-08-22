@@ -16,7 +16,7 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Session storage table (mandatory for Replit Auth)
+// Session storage table (backs express-session via connect-pg-simple)
 export const sessions = pgTable(
   "sessions",
   {
@@ -50,7 +50,7 @@ export const organizations = pgTable("organizations", {
   index("idx_orgs_slug").on(table.slug),
 ]);
 
-// User storage table (mandatory for Replit Auth)
+// User storage table (populated by the Neon Auth session exchange)
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique(),

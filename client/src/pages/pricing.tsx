@@ -2,7 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Check, Loader2, ShieldCheck, Zap } from "lucide-react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -81,6 +81,7 @@ export default function Pricing() {
   useDocumentTitle("Pricing");
   useCanonicalUrl("/pricing");
   const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
 
   const orgsQuery = useQuery<OrgsResponse>({
@@ -153,9 +154,7 @@ export default function Pricing() {
           variant={variant}
           data-track-cta={`pricing-${tierId}`}
           data-testid={`button-signin-${tierId}`}
-          onClick={() => {
-            window.location.href = "/api/login?returnTo=/pricing";
-          }}
+          onClick={() => navigate("/auth")}
         >
           Sign in to subscribe
         </Button>
@@ -219,9 +218,9 @@ export default function Pricing() {
           <nav className="flex items-center gap-4 text-sm">
             <Link href="/blog" className="text-muted-foreground hover:text-foreground">Blog</Link>
             <Link href="/architect" className="text-muted-foreground hover:text-foreground">Platform</Link>
-            <a href="/api/login" className="inline-flex h-9 items-center rounded-md bg-primary text-primary-foreground px-3 text-sm font-medium hover:bg-primary/90">
+            <Link href="/auth" className="inline-flex h-9 items-center rounded-md bg-primary text-primary-foreground px-3 text-sm font-medium hover:bg-primary/90">
               Sign in
-            </a>
+            </Link>
           </nav>
         </div>
       </header>

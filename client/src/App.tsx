@@ -49,6 +49,9 @@ const SmartMatchPage = lazy(() => import("@/pages/smart-match"));
 const BuyerRoi = lazy(() => import("@/pages/buyer-roi"));
 const VerifyCertificate = lazy(() => import("@/pages/verify-certificate"));
 const Quote = lazy(() => import("@/pages/quote"));
+// Neon Auth sign-in + the SDK's /handler/* callback routes. Lazy so the
+// Stack SDK chunk only loads when someone actually authenticates.
+const AuthPage = lazy(() => import("@/pages/auth"));
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -68,6 +71,8 @@ function Router() {
         <Route path="/tcpa-compliance" component={TcpaCompliance} />
         <Route path="/verify" component={VerifyCertificate} />
         <Route path="/quote" component={Quote} />
+        <Route path="/auth" component={AuthPage} />
+        <Route path="/handler/:rest*" component={AuthPage} />
         <Route path="/" component={Landing} />
         {/* Unknown routes should render NotFound, not silently fall back to
             Landing. A guest hitting a stale link previously got a confusing
@@ -103,6 +108,8 @@ function Router() {
       <Route path="/smart-match" component={SmartMatchPage} />
       <Route path="/blog" component={Blog} />
       <Route path="/blog/:slug" component={BlogPost} />
+      <Route path="/auth" component={AuthPage} />
+      <Route path="/handler/:rest*" component={AuthPage} />
       {/* Mirror the legal pages into the authenticated tree so signed-in
           users following a footer link don't bounce through the
           unauthenticated tree. */}

@@ -7,7 +7,7 @@ This document is the source of truth for what has been built vs. what is planned
 - **Frontend:** React 19 + Vite + TanStack Query + Tailwind
 - **Backend:** Node 20 + Express + WebSocket (`ws`)
 - **DB:** PostgreSQL via Drizzle ORM. Migrations live in `migrations/` and are tracked in git.
-- **Auth:** Replit OIDC (passport-based) with PG-backed sessions
+- **Auth:** Neon Auth (Stack) token exchange with PG-backed sessions
 - **Payments:** Stripe Checkout (per-lead wallet top-up + recurring subscriptions)
 - **Tests:** Vitest (run via `npm test`)
 - **CI:** `.github/workflows/ci.yml` runs `tsc`, `vitest`, and a drizzle schema check on every PR

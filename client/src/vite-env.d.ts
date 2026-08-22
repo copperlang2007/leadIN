@@ -28,6 +28,14 @@ interface ImportMetaEnv {
    *  https://leadmarket.app when unset. Override only if the
    *  production domain changes. */
   readonly VITE_CANONICAL_ORIGIN?: string;
+
+  /** Neon Auth (Stack) project id — required for sign-in. When unset,
+   *  the /auth page renders a configuration notice instead of the
+   *  sign-in UI (dev/CI-safe). Also read server-side for JWKS. */
+  readonly VITE_STACK_PROJECT_ID?: string;
+
+  /** Neon Auth publishable client key, paired with the project id. */
+  readonly VITE_STACK_PUBLISHABLE_CLIENT_KEY?: string;
 }
 
 interface ImportMeta {

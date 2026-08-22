@@ -3,8 +3,9 @@ import fs from 'fs';
 import path from 'path';
 
 /**
- * Vite plugin that updates og:image and twitter:image meta tags
- * to point to the app's opengraph image with the correct Replit domain.
+ * Vite plugin that updates og:image and twitter:image meta tags to point to
+ * the app's opengraph image on the deployed origin (APP_URL or
+ * VITE_CANONICAL_ORIGIN at build time).
  */
 export function metaImagesPlugin(): Plugin {
   return {
@@ -12,7 +13,7 @@ export function metaImagesPlugin(): Plugin {
     transformIndexHtml(html) {
       const baseUrl = getDeploymentUrl();
       if (!baseUrl) {
-        log('[meta-images] no Replit deployment domain found, skipping meta tag updates');
+        log('[meta-images] no deployment origin configured (APP_URL / VITE_CANONICAL_ORIGIN), skipping meta tag updates');
         return html;
       }
 
@@ -56,18 +57,15 @@ export function metaImagesPlugin(): Plugin {
 }
 
 function getDeploymentUrl(): string | null {
-  if (process.env.REPLIT_INTERNAL_APP_DOMAIN) {
-    const url = `https://${process.env.REPLIT_INTERNAL_APP_DOMAIN}`;
-    log('[meta-images] using internal app domain:', url);
+  // Prefer the canonical client origin, then the server's APP_URL. Only
+  // absolute https origins are usable in og:image (crawlers won't resolve
+  // localhost), so anything else is treated as unset.
+  const raw = process.env.VITE_CANONICAL_ORIGIN || process.env.APP_URL;
+  if (raw && /^https:\/\//.test(raw)) {
+    const url = raw.replace(/\/$/, '');
+    log('[meta-images] using deployment origin:', url);
     return url;
   }
-
-  if (process.env.REPLIT_DEV_DOMAIN) {
-    const url = `https://${process.env.REPLIT_DEV_DOMAIN}`;
-    log('[meta-images] using dev domain:', url);
-    return url;
-  }
-
   return null;
 }
 
