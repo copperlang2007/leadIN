@@ -9,6 +9,7 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "provision:house-vendor": "tsx scripts/ensure-house-vendor.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run server/__integration__",
